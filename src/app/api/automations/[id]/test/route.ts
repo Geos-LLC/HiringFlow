@@ -181,14 +181,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   // test recipient was expecting to receive. Multi-step / multi-channel rules
   // run end-to-end against the test session so users can inspect the full
   // sequence in the candidate timeline.
-  const execution = await prisma.automationExecution.findUnique({
+  const execution = await prisma.automationExecution.findFirst({
     where: {
-      stepId_sessionId_channel: {
-        stepId: firstStep.id,
-        sessionId: session.id,
-        channel: testChannel,
-      },
+      stepId: firstStep.id,
+      sessionId: session.id,
+      channel: testChannel,
+      stageEntryId: null,
     },
+    orderBy: { createdAt: 'desc' },
     select: { status: true, errorMessage: true },
   })
 

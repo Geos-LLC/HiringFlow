@@ -22,6 +22,7 @@ interface PipelineRow {
   isDefault: boolean
   stages: FunnelStage[]
   flowCount: number
+  transitionsV2Enabled: boolean
   createdAt: string
 }
 
@@ -147,6 +148,28 @@ export default function PipelinesPage() {
       setError(err instanceof Error ? err.message : 'Failed')
     } finally {
       setBusyId(null)
+    }
+  }
+
+  // Per-pipeline V2 opt-in toggle. Optimistic update so the section
+  // expand/collapse feels instant; if the PATCH fails we revert and surface
+  // the error in the page-level banner.
+  const toggleV2 = async (id: string, next: boolean) => {
+    setPipelines((cur) => cur.map((p) => (p.id === id ? { ...p, transitionsV2Enabled: next } : p)))
+    try {
+      const res = await fetch(`/api/pipelines/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transitionsV2Enabled: next }),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error(d?.error || 'Failed to update')
+      }
+    } catch (err) {
+      // Revert on failure.
+      setPipelines((cur) => cur.map((p) => (p.id === id ? { ...p, transitionsV2Enabled: !next } : p)))
+      setError(err instanceof Error ? err.message : 'Failed to toggle V2')
     }
   }
 
@@ -291,6 +314,36 @@ export default function PipelinesPage() {
                       </>
                     )}
                   </div>
+                </div>
+
+                {/*
+                  Pipeline Transitions v2 toggle. When on, candidates moving
+                  through this pipeline are driven by PipelineTransitionRule
+                  rows (edited inside the Stages drawer, per stage) instead
+                  of V1's embedded stage.triggers[] + completion-pair
+                  auto-advance + legacy fallback. Off by default — pipelines
+                  with no V2 rules MUST stay off or candidates get stuck.
+                */}
+                <div className="flex items-center justify-between gap-2 mb-3 px-3 py-2 rounded-[10px] bg-surface-light border border-surface-divider">
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium text-ink">
+                      Rule-driven transitions (V2)
+                    </div>
+                    <div className="text-[11px] text-grey-40 leading-snug mt-0.5">
+                      Replace V1 triggers with explicit PipelineTransitionRule rows.
+                      Edit rules per stage from the kanban &rarr; Stages drawer.
+                      {p.transitionsV2Enabled && ' Disable to fall back to V1.'}
+                    </div>
+                  </div>
+                  <label className="shrink-0 inline-flex items-center gap-2 cursor-pointer">
+                    <span className="text-[11px] text-grey-35">{p.transitionsV2Enabled ? 'On' : 'Off'}</span>
+                    <input
+                      type="checkbox"
+                      checked={p.transitionsV2Enabled}
+                      onChange={(e) => toggleV2(p.id, e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                  </label>
                 </div>
 
                 <div className="flex flex-wrap gap-1.5 mb-4">

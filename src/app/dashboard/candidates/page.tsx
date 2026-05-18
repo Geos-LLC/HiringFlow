@@ -128,6 +128,7 @@ interface PipelineSummary {
   isDefault: boolean
   stages: FunnelStage[]
   flowCount: number
+  transitionsV2Enabled: boolean
 }
 
 const STAGE_SORT_KEY = 'hiringflow:kanban-stage-sorts'
@@ -956,6 +957,7 @@ export default function CandidatesPage() {
         onClose={() => setSettingsOpen(false)}
         pipelineId={selectedPipelineId}
         pipelineName={pipelines.find((p) => p.id === selectedPipelineId)?.name ?? 'Default'}
+        transitionsV2Enabled={pipelines.find((p) => p.id === selectedPipelineId)?.transitionsV2Enabled ?? false}
         stages={stages}
         candidateCounts={candidateCounts}
         onSaved={(next) => {

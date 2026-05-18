@@ -73,6 +73,17 @@ export type GuardCtx = {
   force?: boolean
   /** Used to stamp triggeredByUserId on the resulting AutomationExecution. */
   actorUserId?: string | null
+  /**
+   * Pipeline Transitions v2 — the StageEntry this send is pinned to. Set
+   * only for `stage_entered` triggers; null/undefined for raw-event triggers
+   * (flow_completed, training_completed, meeting_*, before_meeting, etc.).
+   *
+   * Threaded into the idempotency lookup so a candidate re-entering a stage
+   * after leaving it produces a fresh execution row (the StageEntry id is
+   * unique per entry, so the new (stepId, sessionId, channel, stageEntryId)
+   * tuple cannot collide with the previous entry's row).
+   */
+  stageEntryId?: string | null
 }
 
 export type GuardResult =
@@ -406,11 +417,20 @@ export async function canExecuteAutomationStep(ctx: GuardCtx): Promise<GuardResu
     }
   }
 
-  // 5. Idempotency — never send twice for the same (step, session, channel)
-  //    on the automatic paths. `manual_rerun` is short-circuited above so it
-  //    is not subject to this check. `debug` may still use `force` to bypass.
-  const existing = await prisma.automationExecution.findUnique({
-    where: { stepId_sessionId_channel: { stepId: step.id, sessionId: session.id, channel } },
+  // 5. Idempotency — never send twice for the same (step, session, channel,
+  //    stageEntry) on the automatic paths. `manual_rerun` is short-circuited
+  //    above so it is not subject to this check. `debug` may still use
+  //    `force` to bypass.
+  //
+  //    For raw-event triggers (flow_*, meeting_*, training_*, before_meeting)
+  //    stageEntryId is null → behaves identically to the V1 lookup. For
+  //    `stage_entered` triggers the lookup is scoped to one specific
+  //    StageEntry, so a candidate re-entering the same stage later produces
+  //    a fresh entry id and a new execution.
+  const stageEntryId = ctx.stageEntryId ?? null
+  const existing = await prisma.automationExecution.findFirst({
+    where: { stepId: step.id, sessionId: session.id, channel, stageEntryId },
+    orderBy: { createdAt: 'desc' },
     select: { id: true, status: true },
   })
   if (existing && existing.status === 'sent') {
@@ -448,12 +468,16 @@ export async function recordSkip(opts: {
   actorUserId?: string | null
   result: Extract<GuardResult, { allowed: false }>
   session: Session
+  /** Same shape as GuardCtx.stageEntryId — see that field's comment. */
+  stageEntryId?: string | null
 }): Promise<void> {
+  const stageEntryId = opts.stageEntryId ?? null
   const data = {
     automationRuleId: opts.ruleId,
     stepId: opts.stepId,
     sessionId: opts.sessionId,
     channel: opts.channel,
+    stageEntryId,
     status: opts.result.reason,
     skipReason: opts.result.reason,
     evaluatedStage: opts.session.pipelineStatus ?? null,
@@ -470,8 +494,9 @@ export async function recordSkip(opts: {
     }).slice(0, 1000),
   } as const
 
-  const existing = await prisma.automationExecution.findUnique({
-    where: { stepId_sessionId_channel: { stepId: opts.stepId, sessionId: opts.sessionId, channel: opts.channel } },
+  const existing = await prisma.automationExecution.findFirst({
+    where: { stepId: opts.stepId, sessionId: opts.sessionId, channel: opts.channel, stageEntryId },
+    orderBy: { createdAt: 'desc' },
     select: { id: true, status: true },
   })
 

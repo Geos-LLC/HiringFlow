@@ -95,6 +95,32 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     validatedSteps = v.steps
   }
 
+  // stage_entered validation — applied to the EFFECTIVE post-update values
+  // (body overrides existing). Mirrors the POST handler so a PATCH cannot
+  // leave a rule in a state the create endpoint would have rejected.
+  const effectiveTrigger = typeof body.triggerType === 'string' ? body.triggerType : rule.triggerType
+  if (effectiveTrigger === 'stage_entered') {
+    const effectivePipelineId = pipelineUpdate ? pipelineUpdate.pipelineId : rule.pipelineId
+    const effectiveStageId = typeof body.stageId === 'string' && body.stageId
+      ? body.stageId
+      : (body.stageId === null || body.stageId === '' ? null : rule.stageId)
+    if (!effectivePipelineId) {
+      return NextResponse.json({ error: 'stage_entered rules require a pipeline' }, { status: 400 })
+    }
+    if (!effectiveStageId) {
+      return NextResponse.json({ error: 'stage_entered rules require a stageId' }, { status: 400 })
+    }
+    const { normalizeStages } = await import('@/lib/funnel-stages')
+    const pipelineRow = await prisma.pipeline.findUnique({
+      where: { id: effectivePipelineId },
+      select: { stages: true },
+    })
+    const stageIds = new Set(normalizeStages(pipelineRow?.stages).map((s) => s.id))
+    if (!stageIds.has(effectiveStageId)) {
+      return NextResponse.json({ error: `stageId "${effectiveStageId}" is not a stage in the selected pipeline` }, { status: 400 })
+    }
+  }
+
   // For any step that points to a training, switch the training to invitation_only
   if (validatedSteps) {
     const trainingIds = validatedSteps

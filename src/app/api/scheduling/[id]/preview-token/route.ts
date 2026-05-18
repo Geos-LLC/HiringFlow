@@ -52,6 +52,16 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
         message: 'Create at least one flow with a session before previewing the picker',
       }, { status: 409 })
     }
+    // V1: writes 'training_completed' for the preview session. V2: writes
+    // the pipeline's first stage id. Preview sessions are throwaway so the
+    // fallback path doesn't matter much here, but we route through the same
+    // helper for consistency.
+    const { getInitialPipelineStatusForCreate } = await import('@/lib/pipeline-transitions')
+    const initialStatus = await getInitialPipelineStatusForCreate({
+      workspaceId: ws.workspaceId,
+      flowId: flow.id,
+      legacyStatus: 'training_completed',
+    })
     const synthetic = await prisma.session.create({
       data: {
         workspaceId: ws.workspaceId,
@@ -59,7 +69,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
         candidateName: 'Preview',
         candidateEmail: 'preview@example.com',
         source: 'preview',
-        pipelineStatus: 'training_completed',
+        pipelineStatus: initialStatus,
       },
     })
     sessionId = synthetic.id

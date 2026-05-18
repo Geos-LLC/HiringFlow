@@ -37,29 +37,37 @@ model PasswordResetToken {
 }
 
 model Workspace {
-  id                       String    @id @default(uuid())
-  name                     String
-  slug                     String    @unique
-  plan                     String    @default("free") // 'free' | 'starter' | 'pro' | 'enterprise'
-  isActive                 Boolean   @default(true) @map("is_active")
-  website                  String?
-  phone                    String?
-  timezone                 String    @default("America/New_York")
-  logoUrl                  String?   @map("logo_url")
-  senderName               String?   @map("sender_name") // from name for emails
-  senderEmail              String?   @map("sender_email") // reply-to for emails
-  senderVerifiedId         String?   @map("sender_verified_id") // legacy: SendGrid single-sender id
-  senderVerifiedAt         DateTime? @map("sender_verified_at") // legacy
-  senderAddress            Json?     @map("sender_address") // { line1, line2, city, state, zip, country }
-  senderDomain             String?   @map("sender_domain") // e.g. "spotless.homes"
-  senderDomainId           String?   @map("sender_domain_id") // SendGrid whitelabel domain id
-  senderDomainValidatedAt  DateTime? @map("sender_domain_validated_at")
-  settings                 Json? // extensible provider config: { indeed: {...}, calendly: {...} }
+  id                           String    @id @default(uuid())
+  name                         String
+  slug                         String    @unique
+  plan                         String    @default("free") // 'free' | 'starter' | 'pro' | 'enterprise'
+  isActive                     Boolean   @default(true) @map("is_active")
+  website                      String?
+  phone                        String?
+  timezone                     String    @default("America/New_York")
+  logoUrl                      String?   @map("logo_url")
+  senderName                   String?   @map("sender_name") // from name for emails
+  senderEmail                  String?   @map("sender_email") // reply-to for emails
+  senderVerifiedId             String?   @map("sender_verified_id") // legacy: SendGrid single-sender id
+  senderVerifiedAt             DateTime? @map("sender_verified_at") // legacy
+  senderAddress                Json?     @map("sender_address") // { line1, line2, city, state, zip, country }
+  senderDomain                 String?   @map("sender_domain") // e.g. "spotless.homes"
+  senderDomainId               String?   @map("sender_domain_id") // SendGrid whitelabel domain id
+  senderDomainValidatedAt      DateTime? @map("sender_domain_validated_at")
+  settings                     Json? // extensible provider config: { indeed: {...}, calendly: {...} }
   // Meet integration v2 feature flag — gates the new in-app Google Meet scheduling
   // flow. Off by default so the existing Calendly/Calendar path stays intact.
-  meetIntegrationV2Enabled Boolean   @default(false) @map("meet_integration_v2_enabled")
-  createdAt                DateTime  @default(now()) @map("created_at")
-  updatedAt                DateTime  @updatedAt @map("updated_at")
+  meetIntegrationV2Enabled     Boolean   @default(false) @map("meet_integration_v2_enabled")
+  // Pipeline Transitions v2 — workspace-level opt-in for the rule-driven
+  // pipeline engine. Even when the global env flag PIPELINE_TRANSITIONS_V2 is
+  // on, a pipeline only uses the V2 path when BOTH this flag (or the per-
+  // pipeline flag below) AND the env flag are true. Off by default so
+  // workspaces relying on legacy fallback / completion-pair auto-advance
+  // (e.g. Dispatcher pipelines with zero stage triggers) keep their current
+  // behavior until the recruiter opts in.
+  pipelineTransitionsV2Enabled Boolean   @default(false) @map("pipeline_transitions_v2_enabled")
+  createdAt                    DateTime  @default(now()) @map("created_at")
+  updatedAt                    DateTime  @updatedAt @map("updated_at")
 
   members           WorkspaceMember[]
   videos            Video[]
@@ -82,6 +90,8 @@ model Workspace {
   extensionTokens   ExtensionToken[]
   captureResponses  CaptureResponse[]
   pipelines         Pipeline[]
+  transitionRules   PipelineTransitionRule[]
+  stageEntries      StageEntry[]
 
   @@map("workspaces")
 }
@@ -100,24 +110,120 @@ model Workspace {
 // app layer in src/lib/pipelines.ts). The default acts as the fallback for
 // flows with `pipelineId = null` and is the one new flows are wired to.
 model Pipeline {
-  id          String   @id @default(uuid())
-  workspaceId String   @map("workspace_id")
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  name        String
+  id                   String    @id @default(uuid())
+  workspaceId          String    @map("workspace_id")
+  workspace            Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name                 String
   // Validated by normalizeStages(). Stored as JSON for the same reason
   // funnelStages did: stages are user-editable and the migration cost of
   // turning each property into a column doesn't pay off.
-  stages      Json
-  isDefault   Boolean  @default(false) @map("is_default")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  stages               Json
+  isDefault            Boolean   @default(false) @map("is_default")
+  // Pipeline Transitions v2 — per-pipeline opt-in. Same semantics as
+  // Workspace.pipelineTransitionsV2Enabled but scoped to one pipeline so a
+  // workspace can migrate role-by-role (Cleaner first, Dispatcher later). The
+  // engine uses V2 when (env flag is true) AND (this flag OR the workspace
+  // flag is true). Off by default; pipelines with no PipelineTransitionRule
+  // rows MUST NOT have this turned on, otherwise candidates get stuck.
+  transitionsV2Enabled Boolean   @default(false) @map("transitions_v2_enabled")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   flows           Flow[]
   automationRules AutomationRule[]
+  transitionRules PipelineTransitionRule[]
+  stageEntries    StageEntry[]
 
   @@index([workspaceId])
   @@index([workspaceId, isDefault])
   @@map("pipelines")
+}
+
+// Configurable rule that decides when a candidate moves between stages.
+// One row = "when {eventType} fires on a candidate currently in {fromStageId}
+// (null = any), move them to {toStageId}". Targeted variants narrow on a
+// specific Flow / Training / SchedulingConfig via {targetId}.
+//
+// Resolution order (src/lib/pipeline-transitions.ts):
+//   1. Filter by pipelineId + eventType + enabled.
+//   2. Keep rows where fromStageId is null OR equals session.pipelineStatus.
+//   3. Keep rows where targetId is null OR equals the event's target id.
+//   4. Pick highest priority; ties broken by most-specific (non-null
+//      fromStageId beats null; non-null targetId beats null).
+//   5. Apply furthest-wins guard unless allowBackward=true.
+//
+// If no rule matches under V2, pipelineStatus is NOT mutated.
+model PipelineTransitionRule {
+  id            String    @id @default(uuid())
+  workspaceId   String    @map("workspace_id")
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipelineId    String    @map("pipeline_id")
+  pipeline      Pipeline  @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  // Stage id the candidate must currently be in for the rule to match.
+  // Null = wildcard (matches any current stage). Stages live in
+  // Pipeline.stages JSON so this is a plain string, no FK.
+  fromStageId   String?   @map("from_stage_id")
+  // One of StageTriggerEvent in src/lib/funnel-stages.ts (flow_completed,
+  // meeting_scheduled, training_completed, etc.).
+  eventType     String    @map("event_type")
+  // Optional target narrowing — usually a Flow id (for flow_* events),
+  // Training id (training_*), or SchedulingConfig id (meeting_*). Null =
+  // wildcard.
+  targetId      String?   @map("target_id")
+  toStageId     String    @map("to_stage_id")
+  // Higher wins when multiple rules match. Default 0; recruiters use bigger
+  // numbers (e.g. 100) to make targeted rules beat workspace-wide fallbacks.
+  priority      Int       @default(0)
+  // When true, the rule may move a candidate backwards through the funnel
+  // (toStage.order < currentStage.order). Default false so the historical
+  // furthest-stage-wins guard still protects against accidental loops.
+  // Recruiters opt in for legitimate rework flows: no-show recovery,
+  // re-screen after a failed background check, etc.
+  allowBackward Boolean   @default(false) @map("allow_backward")
+  enabled       Boolean   @default(true)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  stageEntries StageEntry[]
+
+  @@index([pipelineId, eventType, enabled])
+  @@index([workspaceId])
+  @@map("pipeline_transition_rules")
+}
+
+// One row per stage entry. Created every time a transition rule (or a
+// recruiter's manual move under V2) actually changes Session.pipelineStatus.
+// Distinct from PipelineStatusChange (which is an audit log for ANY mutation,
+// including no-op legacy writes); StageEntry only captures real entries and
+// is the join target for stage_entered automation idempotency:
+// AutomationExecution.stageEntryId pins a send to one specific entry so
+// re-entering the stage later produces a fresh execution row.
+model StageEntry {
+  id               String                  @id @default(uuid())
+  workspaceId      String                  @map("workspace_id")
+  workspace        Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipelineId       String                  @map("pipeline_id")
+  pipeline         Pipeline                @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  sessionId        String                  @map("session_id")
+  session          Session                 @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  stageId          String                  @map("stage_id")
+  enteredAt        DateTime                @default(now()) @map("entered_at")
+  // The system event that drove this entry — e.g. 'meeting_scheduled',
+  // 'flow_completed', 'manual'. Null only for backfilled/bootstrap rows.
+  sourceEventType  String?                 @map("source_event_type")
+  // Optional pointer to the originating event row (SchedulingEvent.id,
+  // CandidateSubmission.id, etc.) for deep tracing. Free-form because the
+  // source table varies by event type.
+  sourceEventId    String?                 @map("source_event_id")
+  transitionRuleId String?                 @map("transition_rule_id")
+  transitionRule   PipelineTransitionRule? @relation(fields: [transitionRuleId], references: [id], onDelete: SetNull)
+  previousStageId  String?                 @map("previous_stage_id")
+
+  executions AutomationExecution[]
+
+  @@index([sessionId, enteredAt])
+  @@index([pipelineId, stageId])
+  @@map("stage_entries")
 }
 
 model GoogleIntegration {
@@ -185,53 +291,53 @@ model GoogleIntegration {
 // typed, unique-per-conference entity that the Workspace Events webhook
 // correlates against and that the UI joins to the candidate timeline.
 model InterviewMeeting {
-  id                          String    @id @default(uuid())
-  workspaceId                 String    @map("workspace_id")
-  workspace                   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  sessionId                   String    @map("session_id")
-  session                     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  schedulingConfigId          String?   @map("scheduling_config_id")
+  id                          String                     @id @default(uuid())
+  workspaceId                 String                     @map("workspace_id")
+  workspace                   Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sessionId                   String                     @map("session_id")
+  session                     Session                    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  schedulingConfigId          String?                    @map("scheduling_config_id")
   // Meet resource identifiers
-  meetSpaceName               String    @unique @map("meet_space_name") // "spaces/abc..."
-  meetingCode                 String?   @map("meeting_code")
-  meetingUri                  String    @map("meeting_uri")
+  meetSpaceName               String                     @unique @map("meet_space_name") // "spaces/abc..."
+  meetingCode                 String?                    @map("meeting_code")
+  meetingUri                  String                     @map("meeting_uri")
   // Calendar event tied to this Meet space
-  googleCalendarEventId       String    @unique @map("google_calendar_event_id")
-  scheduledStart              DateTime  @map("scheduled_start")
-  scheduledEnd                DateTime  @map("scheduled_end")
+  googleCalendarEventId       String                     @unique @map("google_calendar_event_id")
+  scheduledStart              DateTime                   @map("scheduled_start")
+  scheduledEnd                DateTime                   @map("scheduled_end")
   // Set by Workspace Events conference.started / conference.ended
-  actualStart                 DateTime? @map("actual_start")
-  actualEnd                   DateTime? @map("actual_end")
+  actualStart                 DateTime?                  @map("actual_start")
+  actualEnd                   DateTime?                  @map("actual_end")
   // Recording state
-  recordingEnabled            Boolean   @default(false) @map("recording_enabled")
-  recordingProvider           String?   @map("recording_provider") // 'google_meet' | 'recall_ai' | null
+  recordingEnabled            Boolean                    @default(false) @map("recording_enabled")
+  recordingProvider           String?                    @map("recording_provider") // 'google_meet' | 'recall_ai' | null
   // 'disabled' | 'requested' | 'recording' | 'processing' | 'ready' | 'failed' | 'unavailable'
-  recordingState              String    @default("disabled") @map("recording_state")
+  recordingState              String                     @default("disabled") @map("recording_state")
   // 'disabled' | 'processing' | 'ready' | 'failed'
-  transcriptState             String    @default("disabled") @map("transcript_state")
-  driveRecordingFileId        String?   @map("drive_recording_file_id")
-  driveTranscriptFileId       String?   @map("drive_transcript_file_id")
+  transcriptState             String                     @default("disabled") @map("transcript_state")
+  driveRecordingFileId        String?                    @map("drive_recording_file_id")
+  driveTranscriptFileId       String?                    @map("drive_transcript_file_id")
   // Workspace Events subscription for this space (one per space)
-  workspaceEventsSubName      String?   @map("workspace_events_sub_name")
-  workspaceEventsSubExpiresAt DateTime? @map("workspace_events_sub_expires_at")
+  workspaceEventsSubName      String?                    @map("workspace_events_sub_name")
+  workspaceEventsSubExpiresAt DateTime?                  @map("workspace_events_sub_expires_at")
   // [{email, displayName, joinTime, leaveTime}] — appended by participant events
   participants                Json?
   // Capped ring buffer of recent CloudEvent payloads for debugging / replay
-  rawEvents                   Json?     @map("raw_events")
+  rawEvents                   Json?                      @map("raw_events")
   // Timestamp of the most recent on-read sync from Meet API. Throttles repeat
   // sync attempts when many concurrent listings hit a stale meeting; null
   // means we've never synced via the API path.
-  meetApiSyncedAt             DateTime? @map("meet_api_synced_at")
+  meetApiSyncedAt             DateTime?                  @map("meet_api_synced_at")
   // True if this row's Meet space was changed via reschedule adoption (the
   // calendar event's Meet link was regenerated). Diagnostic only.
-  spaceAdoptedFromReschedule  Boolean   @default(false) @map("space_adopted_from_reschedule")
+  spaceAdoptedFromReschedule  Boolean                    @default(false) @map("space_adopted_from_reschedule")
   // Drive file id of the "Notes by Gemini" doc associated with this meeting
   // (when present). Personal Gmail tenants get attendance from this artifact's
   // existence even when conferenceRecords is empty.
-  driveGeminiNotesFileId      String?   @map("drive_gemini_notes_file_id")
+  driveGeminiNotesFileId      String?                    @map("drive_gemini_notes_file_id")
   // Drive file id of the attendance-extension spreadsheet matched to this
   // meeting (when present + enabled).
-  attendanceSheetFileId       String?   @map("attendance_sheet_file_id")
+  attendanceSheetFileId       String?                    @map("attendance_sheet_file_id")
   // Full history of every Drive artifact (recording, transcript, gemini notes,
   // attendance sheet) we've discovered for this meeting. Reschedules that swap
   // the Meet URL and second sessions on the same link both produce extra
@@ -242,9 +348,9 @@ model InterviewMeeting {
   // Set when the candidate replies YES/CONFIRM to a before_meeting SMS
   // reminder (or any future channel that lands on this row). Null until
   // confirmation. Surfaced on the candidate detail page as a green pill.
-  confirmedAt                 DateTime? @map("confirmed_at")
-  createdAt                   DateTime  @default(now()) @map("created_at")
-  updatedAt                   DateTime  @updatedAt @map("updated_at")
+  confirmedAt                 DateTime?                  @map("confirmed_at")
+  createdAt                   DateTime                   @default(now()) @map("created_at")
+  updatedAt                   DateTime                   @updatedAt @map("updated_at")
 
   @@index([workspaceId, sessionId])
   @@index([scheduledStart])
@@ -399,42 +505,42 @@ model Picture {
 // ============ FLOWS ============
 
 model Flow {
-  id                        String            @id @default(uuid())
-  workspaceId               String            @map("workspace_id")
-  workspace                 Workspace         @relation(fields: [workspaceId], references: [id])
-  createdById               String            @map("created_by_id")
-  name                      String
-  slug                      String            @unique
-  isPublished               Boolean           @default(false) @map("is_published")
-  startMessage              String            @default("Welcome! Please complete the following steps.") @map("start_message")
-  endMessage                String            @default("Thank you for your participation!") @map("end_message")
-  branding                  Json?
+  id                         String            @id @default(uuid())
+  workspaceId                String            @map("workspace_id")
+  workspace                  Workspace         @relation(fields: [workspaceId], references: [id])
+  createdById                String            @map("created_by_id")
+  name                       String
+  slug                       String            @unique
+  isPublished                Boolean           @default(false) @map("is_published")
+  startMessage               String            @default("Welcome! Please complete the following steps.") @map("start_message")
+  endMessage                 String            @default("Thank you for your participation!") @map("end_message")
+  branding                   Json?
   // Per-flow timeouts (days/hours) consumed by the cron stalled detector.
   // Null → use the platform DEFAULT_TIMEOUTS in src/lib/candidate-status.ts.
   // Roles with longer hiring loops (e.g. specialty trades) can extend these
   // without affecting other flows in the same workspace.
-  videoInterviewTimeoutDays  Int?             @map("video_interview_timeout_days")
-  trainingTimeoutDays        Int?             @map("training_timeout_days")
-  noShowTimeoutHours         Int?             @map("no_show_timeout_hours")
-  schedulingTimeoutHours     Int?             @map("scheduling_timeout_hours")
-  backgroundCheckTimeoutDays Int?             @map("background_check_timeout_days")
+  videoInterviewTimeoutDays  Int?              @map("video_interview_timeout_days")
+  trainingTimeoutDays        Int?              @map("training_timeout_days")
+  noShowTimeoutHours         Int?              @map("no_show_timeout_hours")
+  schedulingTimeoutHours     Int?              @map("scheduling_timeout_hours")
+  backgroundCheckTimeoutDays Int?              @map("background_check_timeout_days")
   // Which Pipeline (funnel stage list) this flow's candidates flow through.
   // Null falls back to the workspace's default pipeline so existing flows
   // keep working without an explicit assignment. Roles with different
   // hiring loops point at different pipelines (e.g. Cleaner → with-training,
   // Dispatcher → no-training).
-  pipelineId                String?           @map("pipeline_id")
-  pipeline                  Pipeline?         @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+  pipelineId                 String?           @map("pipeline_id")
+  pipeline                   Pipeline?         @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
   // Schema-view canvas layout: { [stepId]: { x: number, y: number } }.
   // Persists the user's manual arrangement of cards so reopening the schema
   // restores their layout instead of re-running BFS from scratch.
-  canvasLayout              Json?             @map("canvas_layout")
-  createdAt                 DateTime          @default(now()) @map("created_at")
-  steps                     FlowStep[]
-  sessions                  Session[]
-  ads                       Ad[]
-  automationRules           AutomationRule[]
-  captureResponses          CaptureResponse[]
+  canvasLayout               Json?             @map("canvas_layout")
+  createdAt                  DateTime          @default(now()) @map("created_at")
+  steps                      FlowStep[]
+  sessions                   Session[]
+  ads                        Ad[]
+  automationRules            AutomationRule[]
+  captureResponses           CaptureResponse[]
 
   @@index([pipelineId])
   @@map("flows")
@@ -602,6 +708,7 @@ model Session {
   backgroundChecks        BackgroundCheck[]
   pipelineStatusChanges   PipelineStatusChange[]
   captureResponses        CaptureResponse[]
+  stageEntries            StageEntry[]
 
   // Composite index for the board's default "active candidates" filter and
   // for the cron stalled detector's per-workspace sweep — both query by
@@ -1102,12 +1209,24 @@ model AutomationExecution {
   // User id when the execution was produced by a manual_rerun or debug path.
   // Null for automatic paths.
   triggeredByUserId String?         @map("triggered_by_user_id")
+  // ─── Pipeline Transitions v2 ──────────────────────────────────────────
+  // Pins a stage_entered execution to one specific StageEntry. Null for
+  // raw-event executions (flow_completed, meeting_*, etc.) which key off
+  // sessionId alone.
+  //
+  // Idempotency: the unique constraint below treats (stepId, sessionId,
+  // channel, stageEntryId) as the key. Postgres treats NULL as distinct, so
+  // raw-event execs (stageEntryId IS NULL) no longer get DB-level dedup —
+  // the automation guard's pre-insert lookup is the source of truth for
+  // those (it already runs and was the de-facto dedup gate even before V2).
+  // For stage_entered execs, every re-entry mints a fresh StageEntry, so a
+  // candidate looping back into a stage triggers the automation again.
+  stageEntryId      String?         @map("stage_entry_id")
+  stageEntry        StageEntry?     @relation(fields: [stageEntryId], references: [id], onDelete: SetNull)
 
-  // One execution per (step, session, channel). channel is in the key so
-  // step.channel='both' can produce one email and one sms execution for the
-  // same session without colliding.
-  @@unique([stepId, sessionId, channel])
+  @@unique([stepId, sessionId, channel, stageEntryId])
   @@index([sessionId, status])
+  @@index([stageEntryId])
   @@map("automation_executions")
 }
 

@@ -40,6 +40,11 @@ async function handler(request: NextRequest) {
             ? payload.triggerContext
             : undefined,
           executionMode: 'delayed_callback',
+          // Rehydrate the StageEntry pin set by queueStepAtDelay so the
+          // delayed send's idempotency and execution row land on the same
+          // StageEntry as the enqueue-time decision. Missing/null in the
+          // payload for raw-event triggers; required for stage_entered.
+          stageEntryId: typeof payload.stageEntryId === 'string' ? payload.stageEntryId : null,
         },
       })
       trace.push('executeStep returned')

@@ -725,6 +725,75 @@ export async function cancelStageMismatchedQueued(
 }
 
 /**
+ * Fire automation rules with triggerType='stage_entered' pinned to the
+ * stage the candidate just entered. Called from applyStageTrigger's V2
+ * branch after a real transition (kind='transitioned'), with the freshly
+ * created StageEntry row.
+ *
+ * Match criteria (closed AND list; all must hold):
+ *   - workspaceId = opts.workspaceId    (security boundary)
+ *   - pipelineId  = opts.pipelineId     (intrinsically pipeline-scoped;
+ *                                        wildcard `null` is intentionally
+ *                                        NOT supported — stage ids are not
+ *                                        unique across pipelines)
+ *   - stageId     = opts.stageId
+ *   - triggerType = 'stage_entered'
+ *   - isActive    = true
+ *
+ * Each step is queued through the existing dispatchRule path so timing,
+ * channel expansion ('both' → email+sms), and the central guard all behave
+ * identically to raw-event dispatch. The only differences:
+ *   - DispatchContext.stageEntryId is set so AutomationExecution rows carry
+ *     the pin (unique constraint and guard idempotency both key on it).
+ *   - QStash payloads carry stageEntryId so delayed callbacks rehydrate it.
+ *
+ * Re-entry semantics: every fresh StageEntry row produces a fresh
+ * stageEntryId, so the (stepId, sessionId, channel, stageEntryId) unique
+ * never collides with the prior entry. A candidate who left and re-entered
+ * the stage will receive the automation again — by design.
+ */
+export async function fireStageEnteredAutomations(opts: {
+  stageEntryId: string
+  sessionId: string
+  stageId: string
+  pipelineId: string
+  workspaceId: string
+}): Promise<void> {
+  try {
+    const rules = await prisma.automationRule.findMany({
+      where: {
+        workspaceId: opts.workspaceId,
+        pipelineId: opts.pipelineId,
+        stageId: opts.stageId,
+        triggerType: 'stage_entered',
+        isActive: true,
+      },
+      select: { id: true },
+    })
+    if (rules.length === 0) {
+      console.log(`[Automation] No stage_entered rules for stage ${opts.stageId} (pipeline ${opts.pipelineId})`)
+      return
+    }
+    console.log(`[Automation] Dispatching ${rules.length} stage_entered rule(s) for session ${opts.sessionId} (stage ${opts.stageId}, entry ${opts.stageEntryId})`)
+    const dispatchCtx: DispatchContext = {
+      triggerType: 'stage_entered',
+      executionMode: 'immediate',
+      stageEntryId: opts.stageEntryId,
+      triggerContext: {
+        stageEntryId: opts.stageEntryId,
+        stageId: opts.stageId,
+        pipelineId: opts.pipelineId,
+      },
+    }
+    for (const rule of rules) {
+      await dispatchRule(rule.id, opts.sessionId, dispatchCtx)
+    }
+  } catch (err) {
+    console.error('[Automation] fireStageEnteredAutomations failed:', err)
+  }
+}
+
+/**
  * Cancel queued follow-ups whose value depended on the meeting still
  * happening — i.e. delayed steps from rules with triggerType
  * `meeting_scheduled` or `meeting_rescheduled` (e.g. "thanks for booking,
@@ -763,6 +832,16 @@ type DispatchContext = {
    * end-to-end. Honoured only when the session.source === 'test'.
    */
   bypassEligibilityForTest?: boolean
+  /**
+   * Pipeline Transitions v2 — set only for `stage_entered` triggers. Threaded
+   * end-to-end (dispatch → queue → QStash body → callback → executeStep →
+   * guard → upsertExecution) so the AutomationExecution row carries
+   * stageEntryId and idempotency dedups per StageEntry, not per session.
+   *
+   * Null/undefined for raw-event triggers — those preserve V1 dedup
+   * semantics (`[stepId, sessionId, channel, NULL]`).
+   */
+  stageEntryId?: string | null
 }
 
 async function dispatchRulesForTrigger(
@@ -963,15 +1042,22 @@ async function upsertExecution(opts: {
    * behaviour that left orphan QStash messages firing with no DB pointer.
    */
   resetQueueState?: boolean
+  /**
+   * StageEntry id for `stage_entered` execs. Scopes both the lookup and the
+   * created row so re-entry to the same stage produces a fresh execution
+   * row (the new StageEntry id never collides with the previous one).
+   */
+  stageEntryId?: string | null
 }) {
-  const existing = await prisma.automationExecution.findUnique({
+  const stageEntryId = opts.stageEntryId ?? null
+  const existing = await prisma.automationExecution.findFirst({
     where: {
-      stepId_sessionId_channel: {
-        stepId: opts.stepId,
-        sessionId: opts.sessionId,
-        channel: opts.channel,
-      },
+      stepId: opts.stepId,
+      sessionId: opts.sessionId,
+      channel: opts.channel,
+      stageEntryId,
     },
+    orderBy: { createdAt: 'desc' },
   })
   if (existing) {
     return prisma.automationExecution.update({
@@ -998,6 +1084,7 @@ async function upsertExecution(opts: {
       stepId: opts.stepId,
       sessionId: opts.sessionId,
       channel: opts.channel,
+      stageEntryId,
       status: opts.status,
       scheduledFor: opts.scheduledFor ?? null,
       executionMode: opts.executionMode ?? null,
@@ -1021,8 +1108,10 @@ async function queueStepAtDelay(
     return false
   }
   const scheduledFor = new Date(Date.now() + delaySeconds * 1000)
-  const existing = await prisma.automationExecution.findUnique({
-    where: { stepId_sessionId_channel: { stepId, sessionId, channel } },
+  const stageEntryId = ctx.stageEntryId ?? null
+  const existing = await prisma.automationExecution.findFirst({
+    where: { stepId, sessionId, channel, stageEntryId },
+    orderBy: { createdAt: 'desc' },
   })
   if (existing?.status === 'sent') return false
   // Delete any previously-queued QStash msg for this row before re-publishing.
@@ -1043,6 +1132,7 @@ async function queueStepAtDelay(
     status: 'queued',
     scheduledFor,
     executionMode: ctx.executionMode,
+    stageEntryId,
     // Caller deleted the old QStash msg above (line ~785); reset the queue
     // state so the new publish below replaces the prior messageId cleanly.
     resetQueueState: true,
@@ -1063,6 +1153,11 @@ async function queueStepAtDelay(
         channel,
         triggerType: ctx.triggerType,
         triggerContext: ctx.triggerContext,
+        // Carry the StageEntry pin so the delayed callback re-applies it
+        // when calling executeStep — without this, a queued stage_entered
+        // step would land on the callback path with stageEntryId=null and
+        // dedupe against the wrong key.
+        stageEntryId: ctx.stageEntryId ?? null,
       },
       delay: delaySeconds,
     })
@@ -1258,6 +1353,7 @@ export async function executeStep(
       executionMode: dispatchCtx?.executionMode ?? 'immediate',
       force: options?.force ?? dispatchCtx?.force,
       actorUserId: dispatchCtx?.actorUserId,
+      stageEntryId: dispatchCtx?.stageEntryId,
     })
     if (!guard.allowed) {
       console.log(`[Automation] Step ${stepId} BLOCKED by guard: ${guard.reason} (session ${sessionId})`)
@@ -1270,6 +1366,7 @@ export async function executeStep(
         actorUserId: dispatchCtx?.actorUserId ?? null,
         result: guard,
         session,
+        stageEntryId: dispatchCtx?.stageEntryId,
       })
       return
     }
@@ -1279,6 +1376,7 @@ export async function executeStep(
     ruleId: rule.id, stepId, sessionId, channel,
     status: 'pending',
     executionMode: dispatchCtx?.executionMode,
+    stageEntryId: dispatchCtx?.stageEntryId,
   })
 
   // ─── Resolve merge tokens (training link, scheduling link, meeting info) ──

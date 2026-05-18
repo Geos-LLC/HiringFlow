@@ -122,6 +122,16 @@ export async function POST(request: NextRequest, { params }: { params: { configI
         data: { candidateName: name, candidatePhone: phone || null },
       })
     } else {
+      // V1: writes 'training_completed' as before. V2 (workspace/pipeline
+      // opted in): writes the pipeline's first stage id. Fallback to the
+      // legacy value if V2 pipeline resolution fails — public booking must
+      // never 500 on session create.
+      const { getInitialPipelineStatusForCreate } = await import('@/lib/pipeline-transitions')
+      const initialStatus = await getInitialPipelineStatusForCreate({
+        workspaceId: config.workspaceId,
+        flowId: flow.id,
+        legacyStatus: 'training_completed',
+      })
       const created = await prisma.session.create({
         data: {
           workspaceId: config.workspaceId,
@@ -130,7 +140,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
           candidateEmail: email,
           candidatePhone: phone || null,
           source: 'public_booking',
-          pipelineStatus: 'training_completed',
+          pipelineStatus: initialStatus,
         },
         select: { id: true },
       })

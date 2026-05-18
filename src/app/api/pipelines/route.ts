@@ -19,6 +19,7 @@ export async function GET() {
     isDefault: r.pipeline.isDefault,
     stages: normalizeStages(r.pipeline.stages),
     flowCount: r.flowCount,
+    transitionsV2Enabled: r.pipeline.transitionsV2Enabled,
     createdAt: r.pipeline.createdAt.toISOString(),
   })))
 }

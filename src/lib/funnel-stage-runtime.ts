@@ -67,7 +67,73 @@ export async function applyStageTrigger(opts: {
   // Status to write if no auto-rule matches — preserves the pre-existing
   // hardcoded behaviour for unconfigured workspaces.
   legacyStatus?: string
+  // Optional V2 context fields. Pulled into PipelineTransitionRule.targetId
+  // matching when V2 is enabled for the session. Ignored by V1.
+  schedulingConfigId?: string
+  sourceEventId?: string
 }): Promise<string | null> {
+  // ── V2 dispatch ───────────────────────────────────────────────────────
+  // When the env flag is on AND the session's workspace/pipeline has opted
+  // in, route to the rule-driven engine instead of V1's triple-path
+  // (configured trigger → completion-pair auto-advance → legacy fallback).
+  //
+  // V2 is intentionally additive — V1 callers passing `legacyStatus` get
+  // the legacy fallback when their workspace hasn't opted in. Once a
+  // workspace flips its flag, the legacy string is silently dropped on
+  // the floor (that's the whole point — no more hidden "scheduled" writes).
+  const { isV2EnabledForSession, applyTransitionV2 } = await import('./pipeline-transitions')
+  if (await isV2EnabledForSession(opts.sessionId)) {
+    const result = await applyTransitionV2({
+      sessionId: opts.sessionId,
+      eventType: opts.event,
+      context: {
+        flowId: opts.flowId,
+        trainingId: opts.trainingId,
+        schedulingConfigId: opts.schedulingConfigId,
+        sourceEventId: opts.sourceEventId,
+      },
+    })
+
+    // Only a real transition triggers stage_entered automations and queue
+    // cleanup. no_rule_matched / blocked_backward / same_stage are all
+    // observed-but-noop outcomes; they MUST NOT fall back to V1 (that's
+    // exactly the silent-legacy-write bug V2 exists to kill) and they
+    // MUST NOT fan out automations.
+    if (result.kind === 'transitioned') {
+      const { cancelStageMismatchedQueued, fireStageEnteredAutomations } = await import('./automation')
+      // Pipeline lookup so the stage_entered dispatcher knows which
+      // pipeline scope to filter rules by.
+      const pipeline = await (async () => {
+        const { resolvePipelineForSession } = await import('./pipelines')
+        return resolvePipelineForSession({
+          sessionId: opts.sessionId,
+          workspaceId: opts.workspaceId,
+        })
+      })()
+      await cancelStageMismatchedQueued(opts.sessionId, result.toStageId).catch((err) => {
+        console.error('[funnel-stage-runtime] V2 cancelStageMismatchedQueued failed:', err)
+      })
+      if (pipeline) {
+        await fireStageEnteredAutomations({
+          stageEntryId: result.stageEntryId,
+          sessionId: opts.sessionId,
+          stageId: result.toStageId,
+          pipelineId: pipeline.id,
+          workspaceId: opts.workspaceId,
+        }).catch((err) => {
+          console.error('[funnel-stage-runtime] V2 fireStageEnteredAutomations failed:', err)
+        })
+      }
+      return result.toStageId
+    }
+
+    // All other V2 outcomes return null — stage was NOT changed.
+    // (Audit row was already written inside applyTransitionV2 for
+    // no_rule_matched and blocked_backward.)
+    return null
+  }
+
+  // ── V1 path (unchanged) ───────────────────────────────────────────────
   // Resolve which pipeline applies to this candidate. Stages now live on
   // Pipeline rows — the session's flow points at one, falling back to the
   // workspace default. Workspaces with no Pipeline rows yet get one created

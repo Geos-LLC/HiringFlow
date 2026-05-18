@@ -27,9 +27,10 @@ export async function PATCH(
     name?: string
     stages?: unknown
     makeDefault?: boolean
+    transitionsV2Enabled?: boolean
   }
 
-  const data: { name?: string; stages?: object; isDefault?: boolean } = {}
+  const data: { name?: string; stages?: object; isDefault?: boolean; transitionsV2Enabled?: boolean } = {}
   if (body.name !== undefined) {
     const trimmed = typeof body.name === 'string' ? body.name.trim() : ''
     if (!trimmed) return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 })
@@ -49,6 +50,14 @@ export async function PATCH(
       return NextResponse.json({ error: 'Pipeline must have at least one stage' }, { status: 400 })
     }
     data.stages = validated as unknown as object
+  }
+  // Pipeline Transitions v2 opt-in. Independent of stages — flipping the
+  // flag does not validate that the pipeline has any PipelineTransitionRule
+  // rows. That's intentional: the recruiter may want to flip the flag, then
+  // build rules; the empty-state UI warning surfaces the half-configured
+  // state separately.
+  if (typeof body.transitionsV2Enabled === 'boolean') {
+    data.transitionsV2Enabled = body.transitionsV2Enabled
   }
 
   // makeDefault is a single transactional swap so the workspace always has
@@ -78,6 +87,7 @@ export async function PATCH(
     name: fresh.name,
     isDefault: fresh.isDefault,
     stages: normalizeStages(fresh.stages),
+    transitionsV2Enabled: fresh.transitionsV2Enabled,
   })
 }
 

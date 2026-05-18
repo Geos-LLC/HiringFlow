@@ -57,14 +57,53 @@ interface Props {
   // Stages are persisted via PATCH /api/pipelines/[id] (not workspace.settings).
   pipelineId: string | null
   pipelineName?: string
+  // Pipeline Transitions v2 opt-in (Pipeline.transitionsV2Enabled). When true,
+  // the V1 trigger editor is disabled in-place and a V2 rule editor appears
+  // per stage. The toggle itself stays on /dashboard/pipelines (we read,
+  // never write here) so the recruiter has one canonical place to flip it.
+  transitionsV2Enabled?: boolean
   stages: FunnelStage[]
   candidateCounts: Record<string, number>
   onSaved: (stages: FunnelStage[]) => void
 }
 
+// Shape of a PipelineTransitionRule as returned by /api/pipelines/[id]/transition-rules.
+// Kept minimal — only the fields the drawer reads/writes.
+interface TransitionRule {
+  id: string
+  pipelineId: string
+  fromStageId: string | null
+  eventType: string
+  targetId: string | null
+  toStageId: string
+  priority: number
+  allowBackward: boolean
+  enabled: boolean
+}
+
+// Per-stage "add rule" form state. Keyed by stageId in the drawer.
+interface DraftRule {
+  eventType: StageTriggerEvent
+  fromStageId: string  // '' = Any
+  targetMode: 'any' | 'specific'
+  targetId: string
+  priority: number
+  allowBackward: boolean
+  enabled: boolean
+}
+const emptyDraft: DraftRule = {
+  eventType: 'flow_completed',
+  fromStageId: '',
+  targetMode: 'any',
+  targetId: '',
+  priority: 0,
+  allowBackward: false,
+  enabled: true,
+}
+
 type DeleteTarget = { stage: FunnelStage; count: number } | null
 
-export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, stages: initial, candidateCounts, onSaved }: Props) {
+export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, transitionsV2Enabled = false, stages: initial, candidateCounts, onSaved }: Props) {
   const [stages, setStages] = useState<FunnelStage[]>(initial)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -79,6 +118,26 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, s
     byStage: Record<string, number>
   }>(null)
   const [applying, setApplying] = useState(false)
+  // ── V2 transition rules state ──────────────────────────────────────────
+  // Loaded once per drawer open when V2 is enabled. Empty array means
+  // "fetched and no rules exist yet" (used by the empty-state warning);
+  // null means "not yet fetched".
+  const [v2Rules, setV2Rules] = useState<TransitionRule[] | null>(null)
+  const [v2Loading, setV2Loading] = useState(false)
+  const [drafts, setDrafts] = useState<Record<string, DraftRule>>({})
+  const [v2Busy, setV2Busy] = useState<string | null>(null)  // ruleId or `add:${stageId}`
+
+  useEffect(() => {
+    if (!open || !transitionsV2Enabled || !pipelineId) { setV2Rules(null); return }
+    let cancelled = false
+    setV2Loading(true)
+    fetch(`/api/pipelines/${pipelineId}/transition-rules`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rules: TransitionRule[]) => { if (!cancelled) setV2Rules(rules) })
+      .catch(() => { if (!cancelled) setV2Rules([]) })
+      .finally(() => { if (!cancelled) setV2Loading(false) })
+    return () => { cancelled = true }
+  }, [open, transitionsV2Enabled, pipelineId])
 
   useEffect(() => { setStages(initial) }, [initial, open])
 
@@ -143,6 +202,106 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, s
       { id, label, tone: 'neutral', color: 'var(--neutral-fg)', order: prev.length },
     ])
   }
+
+  // ── V2 rule CRUD ────────────────────────────────────────────────────────
+  // All API calls return the freshly-persisted row(s); we update local state
+  // from the response so optimistic-vs-server divergence is impossible.
+  // Errors surface via setError and revert nothing — the local list and the
+  // server stay aligned because we only mutate on success.
+  const setDraft = (stageId: string, patch: Partial<DraftRule>) => {
+    setDrafts((prev) => ({
+      ...prev,
+      [stageId]: { ...(prev[stageId] ?? emptyDraft), ...patch },
+    }))
+  }
+
+  const addV2Rule = async (stageId: string) => {
+    if (!pipelineId) return
+    const draft = drafts[stageId] ?? emptyDraft
+    setV2Busy(`add:${stageId}`)
+    setError(null)
+    try {
+      const res = await fetch(`/api/pipelines/${pipelineId}/transition-rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          eventType: draft.eventType,
+          fromStageId: draft.fromStageId || null,
+          targetId: draft.targetMode === 'specific' && draft.targetId.trim() ? draft.targetId.trim() : null,
+          toStageId: stageId,
+          priority: draft.priority,
+          allowBackward: draft.allowBackward,
+          enabled: draft.enabled,
+        }),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error(d?.error || 'Failed to add rule')
+      }
+      const created: TransitionRule = await res.json()
+      setV2Rules((prev) => [...(prev ?? []), created])
+      // Reset the draft for this stage so the add-form clears.
+      setDrafts((prev) => { const next = { ...prev }; delete next[stageId]; return next })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to add rule')
+    } finally {
+      setV2Busy(null)
+    }
+  }
+
+  const patchV2Rule = async (ruleId: string, patch: Partial<TransitionRule>) => {
+    if (!pipelineId) return
+    setV2Busy(ruleId)
+    setError(null)
+    try {
+      const res = await fetch(`/api/pipelines/${pipelineId}/transition-rules/${ruleId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(patch),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error(d?.error || 'Failed to update rule')
+      }
+      const updated: TransitionRule = await res.json()
+      setV2Rules((prev) => (prev ?? []).map((r) => (r.id === ruleId ? updated : r)))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update rule')
+    } finally {
+      setV2Busy(null)
+    }
+  }
+
+  const deleteV2Rule = async (ruleId: string) => {
+    if (!pipelineId) return
+    if (!confirm('Delete this transition rule?')) return
+    setV2Busy(ruleId)
+    setError(null)
+    try {
+      const res = await fetch(`/api/pipelines/${pipelineId}/transition-rules/${ruleId}`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error(d?.error || 'Failed to delete rule')
+      }
+      setV2Rules((prev) => (prev ?? []).filter((r) => r.id !== ruleId))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete rule')
+    } finally {
+      setV2Busy(null)
+    }
+  }
+
+  // Stages that have any V1 trigger configured anywhere. Drives the
+  // "Convert legacy triggers to V2 rules" nudge when V2 is enabled but no
+  // V2 rules have been created yet — the recruiter has existing V1 config
+  // that could seed V2 rules.
+  const hasV1Triggers = stages.some((s) => (s.triggers?.length ?? 0) > 0)
+  const v2RulesEmpty = transitionsV2Enabled && v2Rules !== null && v2Rules.length === 0
 
   const move = (id: string, dir: -1 | 1) => {
     setStages((prev) => {
@@ -296,6 +455,29 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, s
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-2">
+          {transitionsV2Enabled && (
+            <div className="mb-3 px-3 py-2.5 rounded-[10px] bg-brand-50 border border-brand-100 text-brand-900 text-[12px] leading-snug">
+              <div className="font-medium mb-0.5">This pipeline uses V2 rule-driven transitions</div>
+              <div className="text-brand-800">
+                V1 triggers are read-only below. Edit movement using the &ldquo;Rule-based transitions (V2)&rdquo; section on each stage.
+                Toggle V2 off from <a href="/dashboard/pipelines" className="underline">Pipelines</a> to return to V1.
+              </div>
+              {v2RulesEmpty && (
+                <div className="mt-2 pt-2 border-t border-brand-100/70 text-amber-900 bg-amber-50/40 -mx-3 -mb-2.5 px-3 py-2 rounded-b-[10px]">
+                  <div className="font-medium">No transition rules yet</div>
+                  <div className="text-amber-800 mt-0.5">
+                    V2 is enabled but no rules exist. Candidates will <strong>not</strong> automatically move between stages until you add rules below.
+                    {hasV1Triggers && (
+                      <span> Your existing legacy triggers can be converted later via the backfill script.</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {v2Loading && (
+                <div className="mt-1.5 text-[11px] text-brand-700">Loading V2 rules…</div>
+              )}
+            </div>
+          )}
           {stages.map((s, idx) => {
             const count = candidateCounts[s.id] ?? 0
             return (
@@ -349,10 +531,13 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, s
                   </div>
                 </div>
 
-                {/* Triggers — system events that auto-place candidates here */}
-                <div className="mt-3 pt-3 border-t border-surface-divider">
-                  <div className="font-mono text-[9px] uppercase text-grey-50 mb-2" style={{ letterSpacing: '0.1em' }}>
-                    Auto-move when…
+                {/* Legacy V1 triggers — system events that auto-place candidates here.
+                    When V2 is enabled, this section is disabled in-place (visible
+                    for context but not editable) so users don't accidentally edit
+                    two systems at once. */}
+                <div className={`mt-3 pt-3 border-t border-surface-divider ${transitionsV2Enabled ? 'opacity-50 pointer-events-none select-none' : ''}`}>
+                  <div className="font-mono text-[9px] uppercase text-grey-50 mb-2 flex items-center gap-2" style={{ letterSpacing: '0.1em' }}>
+                    {transitionsV2Enabled ? 'Legacy triggers (V1) — disabled' : 'Auto-move when…'}
                   </div>
                   {(s.triggers ?? []).length === 0 ? (
                     <div className="text-[11px] text-grey-50 mb-2">No triggers — only manual moves.</div>
@@ -377,6 +562,163 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, s
                     + Add trigger
                   </button>
                 </div>
+
+                {/* Rule-based transitions (V2) — replaces V1 when the pipeline
+                    flag is on. Each row is a PipelineTransitionRule whose
+                    toStageId points at this stage. Persisted via separate
+                    /api/pipelines/[id]/transition-rules endpoints (independent
+                    of the stages save below). */}
+                {transitionsV2Enabled && (
+                  <div className="mt-3 pt-3 border-t border-surface-divider">
+                    <div className="font-mono text-[9px] uppercase text-grey-50 mb-2" style={{ letterSpacing: '0.1em' }}>
+                      Rule-based transitions (V2) — move candidates here when…
+                    </div>
+                    {(() => {
+                      const stageRules = (v2Rules ?? []).filter((r) => r.toStageId === s.id)
+                      if (stageRules.length === 0) {
+                        return <div className="text-[11px] text-grey-50 mb-2">No rules — only manual moves into this stage.</div>
+                      }
+                      return (
+                        <div className="space-y-1 mb-2">
+                          {stageRules.map((r) => (
+                            <div key={r.id} className="bg-surface-light rounded-md px-2 py-1.5 text-[11px]">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-ink truncate">
+                                  <strong>{EVENT_LABELS[r.eventType as StageTriggerEvent] ?? r.eventType}</strong>
+                                  {r.fromStageId && (
+                                    <> from <em>{stages.find((x) => x.id === r.fromStageId)?.label ?? r.fromStageId}</em></>
+                                  )}
+                                  {!r.fromStageId && <> from any stage</>}
+                                  {r.targetId && <> · target <code className="text-[10px]">{r.targetId.slice(0, 8)}</code></>}
+                                </span>
+                                <div className="shrink-0 flex items-center gap-1">
+                                  <label className="inline-flex items-center gap-1 text-[10px] text-grey-50">
+                                    <input
+                                      type="checkbox"
+                                      checked={r.enabled}
+                                      disabled={v2Busy === r.id}
+                                      onChange={(e) => patchV2Rule(r.id, { enabled: e.target.checked })}
+                                      className="h-3 w-3"
+                                    />
+                                    on
+                                  </label>
+                                  <button
+                                    onClick={() => deleteV2Rule(r.id)}
+                                    disabled={v2Busy === r.id}
+                                    className="text-grey-35 hover:text-[color:var(--danger-fg)] w-5 h-5 flex items-center justify-center"
+                                    title="Delete rule"
+                                  >×</button>
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 mt-1 text-[10px] text-grey-50">
+                                <span>priority {r.priority}</span>
+                                <label className="inline-flex items-center gap-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={r.allowBackward}
+                                    disabled={v2Busy === r.id}
+                                    onChange={(e) => patchV2Rule(r.id, { allowBackward: e.target.checked })}
+                                    className="h-3 w-3"
+                                  />
+                                  allow backward
+                                </label>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+
+                    {/* Add-rule inline form. Wildcard target is the default;
+                        the recruiter can opt into a Specific target via the
+                        dropdown (raw UUID input, no pickers in this pass per
+                        scope). */}
+                    {(() => {
+                      const draft = drafts[s.id] ?? emptyDraft
+                      const adding = v2Busy === `add:${s.id}`
+                      return (
+                        <div className="mt-2 p-2 bg-white border border-dashed border-surface-border rounded-md space-y-1.5 text-[11px]">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <select
+                              value={draft.eventType}
+                              onChange={(e) => setDraft(s.id, { eventType: e.target.value as StageTriggerEvent })}
+                              className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                            >
+                              {(Object.keys(EVENT_LABELS) as StageTriggerEvent[]).map((ev) => (
+                                <option key={ev} value={ev}>{EVENT_LABELS[ev]}</option>
+                              ))}
+                            </select>
+                            <select
+                              value={draft.fromStageId}
+                              onChange={(e) => setDraft(s.id, { fromStageId: e.target.value })}
+                              className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                              title="From stage (Any = wildcard)"
+                            >
+                              <option value="">From: Any stage</option>
+                              {stages.filter((x) => x.id !== s.id).map((x) => (
+                                <option key={x.id} value={x.id}>From: {x.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <select
+                              value={draft.targetMode}
+                              onChange={(e) => setDraft(s.id, { targetMode: e.target.value as 'any' | 'specific', targetId: '' })}
+                              className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                              title="Target: Any (wildcard) or specific id"
+                            >
+                              <option value="any">Target: Any</option>
+                              <option value="specific">Target: Specific</option>
+                            </select>
+                            {draft.targetMode === 'specific' && (
+                              <input
+                                type="text"
+                                placeholder="Flow / training / config id"
+                                value={draft.targetId}
+                                onChange={(e) => setDraft(s.id, { targetId: e.target.value })}
+                                className="flex-1 min-w-[160px] px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                              />
+                            )}
+                            <label className="inline-flex items-center gap-1 text-grey-50">
+                              priority
+                              <input
+                                type="number"
+                                value={draft.priority}
+                                onChange={(e) => setDraft(s.id, { priority: parseInt(e.target.value) || 0 })}
+                                className="w-14 px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                              />
+                            </label>
+                            <label className="inline-flex items-center gap-1 text-grey-50">
+                              <input
+                                type="checkbox"
+                                checked={draft.allowBackward}
+                                onChange={(e) => setDraft(s.id, { allowBackward: e.target.checked })}
+                                className="h-3 w-3"
+                              />
+                              allow backward
+                            </label>
+                            <label className="inline-flex items-center gap-1 text-grey-50">
+                              <input
+                                type="checkbox"
+                                checked={draft.enabled}
+                                onChange={(e) => setDraft(s.id, { enabled: e.target.checked })}
+                                className="h-3 w-3"
+                              />
+                              enabled
+                            </label>
+                          </div>
+                          <button
+                            onClick={() => addV2Rule(s.id)}
+                            disabled={adding || (draft.targetMode === 'specific' && !draft.targetId.trim())}
+                            className="text-[11px] text-brand-700 hover:text-brand-900 underline-offset-2 hover:underline disabled:text-grey-40 disabled:no-underline disabled:cursor-not-allowed"
+                          >
+                            {adding ? 'Adding…' : '+ Add rule'}
+                          </button>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
               </div>
             )
           })}

@@ -139,6 +139,29 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'before_meeting rules need minutesBefore (positive integer)' }, { status: 400 })
   }
 
+  // stage_entered rules MUST pin to a specific (pipeline, stage). Without
+  // both, fireStageEnteredAutomations can never match the rule — so reject
+  // at the API boundary rather than persisting a rule that can never fire.
+  // We also verify the stage exists in the pipeline's normalized stages so
+  // a typo doesn't make it through to the DB.
+  if (triggerType === 'stage_entered') {
+    if (!resolvedPipelineId) {
+      return NextResponse.json({ error: 'stage_entered rules require a pipeline' }, { status: 400 })
+    }
+    if (typeof stageId !== 'string' || !stageId) {
+      return NextResponse.json({ error: 'stage_entered rules require a stageId' }, { status: 400 })
+    }
+    const { normalizeStages } = await import('@/lib/funnel-stages')
+    const pipelineRow = await prisma.pipeline.findUnique({
+      where: { id: resolvedPipelineId },
+      select: { stages: true },
+    })
+    const stageIds = new Set(normalizeStages(pipelineRow?.stages).map((s) => s.id))
+    if (!stageIds.has(stageId)) {
+      return NextResponse.json({ error: `stageId "${stageId}" is not a stage in the selected pipeline` }, { status: 400 })
+    }
+  }
+
   // For any step that points to a training, switch the training to invitation_only
   const trainingIdsToGate = stepInputs
     .filter((s) => s.nextStepType === 'training' && s.trainingId)

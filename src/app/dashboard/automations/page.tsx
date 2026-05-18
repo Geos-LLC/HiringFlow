@@ -105,12 +105,17 @@ const TRIGGERS = [
   { value: 'background_check_failed', label: 'Background Check Failed' },
   { value: 'background_check_needs_review', label: 'Background Check — Needs Review' },
   { value: 'automation_completed', label: 'After Automation' },
+  // Pipeline Transitions v2 — fires after PipelineTransitionRule moves a
+  // candidate into the configured stage. Requires both pipelineId and
+  // stageId; the server rejects creates/updates without them.
+  { value: 'stage_entered', label: 'Stage Entered (V2)' },
 ]
 
 const SESSION_WIDE_TRIGGERS = new Set([
   'training_started',
   'training_completed',
   'automation_completed',
+  'stage_entered',
   'meeting_scheduled',
   'meeting_rescheduled',
   'before_meeting',
@@ -141,6 +146,7 @@ const TRIGGER_LABELS: Record<string, string> = {
   background_check_failed: 'Background Check Failed',
   background_check_needs_review: 'Background Check — Needs Review',
   automation_completed: 'After Automation',
+  stage_entered: 'Stage Entered (V2)',
 }
 
 const DELAY_PRESETS: Array<{ value: number; label: string }> = [
@@ -739,6 +745,13 @@ export default function AutomationsPage() {
   const save = async (opts: { forceAck?: boolean } = {}) => {
     setSaveError(null)
     if (!name.trim()) { setSaveError('Name is required'); return }
+    // stage_entered rules must pin to a specific (pipeline, stage). The
+    // server enforces this too; the client check is just for a friendlier
+    // inline error instead of a round-trip 400.
+    if (triggerType === 'stage_entered') {
+      if (!pipelineIdField) { setSaveError('Stage Entered rules require a pipeline'); return }
+      if (!stageIdField) { setSaveError('Stage Entered rules require a stage'); return }
+    }
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i]
       const wantsEmail = s.channel === 'email' || s.channel === 'both'
@@ -1492,6 +1505,17 @@ export default function AutomationsPage() {
                       <div className="text-grey-40 mt-0.5">First step waits until Meet finishes processing the recording (usually within 10 minutes). Falls back after 4 hours if the recording never lands. Subsequent follow-up steps still queue at their delays.</div>
                     </div>
                   </label>
+                </div>
+              )}
+              {triggerType === 'stage_entered' && (
+                <div className="p-3 bg-brand-50 border border-brand-100 rounded-[8px]">
+                  <div className="text-xs">
+                    <div className="font-medium text-brand-800">Pipeline Transitions v2 trigger</div>
+                    <div className="text-brand-700 mt-0.5 leading-snug">
+                      Fires after a <code className="px-1 bg-white/60 rounded">PipelineTransitionRule</code> moves a candidate into the stage you select below.
+                      <strong> Both pipeline and stage are required.</strong> Only fires on pipelines with V2 enabled — toggle on the pipeline first.
+                    </div>
+                  </div>
                 </div>
               )}
               {!SESSION_WIDE_TRIGGERS.has(triggerType) && (
