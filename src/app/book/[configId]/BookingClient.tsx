@@ -61,7 +61,7 @@ export function BookingClient(props: Props) {
           : `/api/public/booking/${props.configId}/availability?t=${encodeURIComponent(props.token)}`
         const r = await fetch(url)
         const data = await r.json()
-        if (!r.ok) throw new Error(data.error || 'Failed to load availability')
+        if (!r.ok) throw new Error(data.message || data.error || 'Failed to load availability')
         if (!cancelled) setAvailability(data)
       } catch (err) {
         if (!cancelled) setLoadError((err as Error).message)
@@ -149,7 +149,11 @@ export function BookingClient(props: Props) {
           window.location.reload()
           return
         }
-        throw new Error(data.error || data.message || 'Booking failed')
+        // Prefer `message` (human-readable text written by the server for the
+        // candidate) over `error` (machine key like `free_busy_failed` that
+        // means nothing to the candidate). Fall back to the key only if no
+        // message was sent.
+        throw new Error(data.message || data.error || 'Booking failed')
       }
       setConfirmedMeetingUri(data.meetingUri || null)
       setConfirmedRescheduleToken(data.rescheduleToken || null)

@@ -126,6 +126,16 @@ export async function GET(request: NextRequest, { params }: { params: { configId
   }
 
   const busyChunks: BusyInterval[][] = []
+  // Track per-calendar errors so we can detect the "all calendars failed"
+  // case. Previously a per-calendar `.catch` returned `[]` and we kept
+  // marching — when EVERY calendar failed (e.g. workspace OAuth refresh
+  // token revoked, returning invalid_grant on every freebusy call) the
+  // picker rendered a fully-free grid. Candidates filled in name/email/
+  // phone/notes, hit Confirm, and only THEN saw `free_busy_failed` from
+  // the booking POST (which re-validates with bustCache). Fail at listing
+  // time instead so the candidate sees the problem before they invest in
+  // filling the form.
+  let failedCalendars = 0
   try {
     const results = await Promise.all(
       Array.from(calendarIds).map((calId) =>
@@ -135,9 +145,8 @@ export async function GET(request: NextRequest, { params }: { params: { configId
           fromUtc,
           toUtc,
         }).catch((err) => {
-          // One bad calendar shouldn't 502 the whole picker — log and skip
-          // so the other sources still contribute.
           console.error('[availability] freeBusy failed for', calId, err)
+          failedCalendars++
           return [] as BusyInterval[]
         }),
       ),
@@ -145,7 +154,18 @@ export async function GET(request: NextRequest, { params }: { params: { configId
     busyChunks.push(...results)
   } catch (err) {
     console.error('[availability] freeBusy fan-out failed:', err)
-    return NextResponse.json({ error: 'free_busy_failed', message: (err as Error).message }, { status: 502 })
+    return NextResponse.json({
+      error: 'free_busy_failed',
+      message: "We couldn't load available times right now. Please try again in a few minutes, or contact us if the problem persists.",
+      detail: (err as Error).message,
+    }, { status: 502 })
+  }
+
+  if (failedCalendars > 0 && failedCalendars === calendarIds.size) {
+    return NextResponse.json({
+      error: 'free_busy_failed',
+      message: "We couldn't load available times right now. Please try again in a few minutes, or contact us if the problem persists.",
+    }, { status: 502 })
   }
 
   // Existing meetings as a backstop. Includes the workspace's own bookings

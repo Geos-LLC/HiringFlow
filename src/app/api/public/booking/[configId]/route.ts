@@ -186,8 +186,17 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       bustCache: true,
     })
   } catch (err) {
+    // Log the underlying Google error (e.g. `invalid_grant` when the
+    // workspace's OAuth refresh token has been revoked) so admins can
+    // diagnose, but surface a candidate-friendly message — the raw key
+    // `free_busy_failed` was previously bubbling up onto the booking form
+    // verbatim and leaving candidates stuck.
     console.error('[booking] freeBusy failed:', err)
-    return NextResponse.json({ error: 'free_busy_failed', message: (err as Error).message }, { status: 502 })
+    return NextResponse.json({
+      error: 'free_busy_failed',
+      message: "We couldn't reach our scheduling calendar to confirm this slot. Please try again in a few minutes, or contact us if the problem persists.",
+      detail: (err as Error).message,
+    }, { status: 502 })
   }
 
   const stillAvailable = computeAvailableSlots({
