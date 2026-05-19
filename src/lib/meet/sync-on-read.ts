@@ -321,20 +321,22 @@ async function syncFromDriveRecording(
     return { updated: false, recordingFileId: null, createdAt: null }
   }
   if (!folderId) return { updated: false, recordingFileId: null, createdAt: null }
-  const session = await prisma.session.findUnique({
-    where: { id: meeting.sessionId },
-    select: { candidateName: true },
-  })
-  if (!session?.candidateName) return { updated: false, recordingFileId: null, createdAt: null }
 
-  // Search window: 1h before scheduledStart through 3h after scheduledEnd.
+  // Search window: 15 min before scheduledStart through actualEnd (or
+  // scheduledEnd) + 30 min. Drive search no longer filters by candidate name —
+  // Meet's filename is derived from the calendar event title and won't always
+  // contain the stored `session.candidateName` (e.g. Cyrillic-displayed
+  // candidate, Latin-stored session name). To keep the wider scan from
+  // picking up the prior back-to-back meeting's recording, the window is tied
+  // tightly to this meeting's bounds; Drive recordings finalize within a few
+  // minutes of conference end, so +30 min upper bound is enough to catch even
+  // a slow finalization.
   const start = meeting.scheduledStart ?? new Date(0)
-  const end = meeting.scheduledEnd ?? new Date(Date.now() + 24 * 60 * 60 * 1000)
+  const endBound = meeting.actualEnd ?? meeting.scheduledEnd ?? new Date(Date.now() + 24 * 60 * 60 * 1000)
   const candidates = await searchMeetRecordings(client, {
     folderId,
-    candidateName: session.candidateName,
-    createdAfter: new Date(start.getTime() - 60 * 60 * 1000),
-    createdBefore: new Date(end.getTime() + 3 * 60 * 60 * 1000),
+    createdAfter: new Date(start.getTime() - 15 * 60 * 1000),
+    createdBefore: new Date(endBound.getTime() + 30 * 60 * 1000),
     limit: 10,
   }).catch((err) => {
     console.error('[meet-sync] searchMeetRecordings failed:', (err as Error).message)
@@ -360,11 +362,31 @@ async function syncFromDriveRecording(
   const chosen = pickPrimaryRecording(candidates)
   const createdAt = chosen.createdTime ? new Date(chosen.createdTime) : new Date()
 
-  // Honor the legacy "write once" semantics for the primary pointer: don't
-  // overwrite an existing pick that the recruiter might be relying on. The
-  // artifact table above carries the rest of the recordings either way.
-  const isNewPrimary = !meeting.driveRecordingFileId
-  if (!isNewPrimary) return { updated: false, recordingFileId: meeting.driveRecordingFileId, createdAt }
+  // Allow swapping the primary pointer when a later sync finds a clearly
+  // longer recording (1.5×+ the size of the current primary). The original
+  // write-once policy locked in whatever the first sync picked, which broke
+  // late-arriving-candidate cases: the host alone produced a short recording
+  // first; the conversation recording landed later and was bigger but the
+  // first pick stayed primary. Recruiter has no UI to manually re-pick, so
+  // the system has to self-correct from the artifact list.
+  if (meeting.driveRecordingFileId && meeting.driveRecordingFileId !== chosen.id) {
+    const current = candidates.find((c) => c.id === meeting.driveRecordingFileId)
+    const currentSize = current?.size && /^\d+$/.test(current.size) ? Number(current.size) : null
+    const chosenSize = chosen.size && /^\d+$/.test(chosen.size) ? Number(chosen.size) : null
+    const significantlyLarger =
+      currentSize !== null && chosenSize !== null && chosenSize >= currentSize * 1.5
+    const currentMissingFromDrive = !current
+    if (!significantlyLarger && !currentMissingFromDrive) {
+      return { updated: false, recordingFileId: meeting.driveRecordingFileId, createdAt }
+    }
+    console.log('[meet-sync] swapping primary recording', {
+      meetingId: meeting.id,
+      from: meeting.driveRecordingFileId,
+      to: chosen.id,
+      reason: currentMissingFromDrive ? 'current_not_in_drive' : 'larger_candidate_found',
+      currentSize, chosenSize,
+    })
+  }
 
   const data: Prisma.InterviewMeetingUpdateInput = {
     driveRecordingFileId: chosen.id,
@@ -376,9 +398,12 @@ async function syncFromDriveRecording(
   // and (b) trips the shouldSync lockout that prevents us from re-checking
   // for the attendance sheet once it lands. Let applyAttendanceSignal own
   // actualEnd from the sheet's data instead.
-  if (!opts.extensionEnabled) {
+  if (!opts.extensionEnabled && !meeting.actualEnd) {
     // Recording's createdTime is right after the meeting ends — close enough
     // for "Ended" UI. scheduledStart stays authoritative for the start time.
+    // Only stamp if actualEnd is unset; the HF Meet Tracker extension's
+    // attendance feed produces a more accurate end time and we don't want
+    // a later primary-pointer swap to silently move actualEnd.
     data.actualEnd = createdAt
   }
   const prevReady = meeting.recordingState === 'ready'

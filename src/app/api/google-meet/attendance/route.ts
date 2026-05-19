@@ -302,13 +302,23 @@ export async function POST(request: NextRequest) {
         await bumpSessionActivity(meeting.sessionId).catch(() => {})
       }
     } else {
-      // Final snapshot, no non-host presence → no-show.
-      const total = merged.reduce(
-        (acc, p) => acc + (isHostParticipant(p, hostEmail, hostName) ? 0 : (p.totalSecondsPresent ?? 0)),
-        0,
-      )
-      if (total < NO_SHOW_MIN_SECONDS) {
-        firedNoShow = await emitNoShowOnce(meeting.id, meeting.sessionId, meetingCode)
+      // Final snapshot, no non-host presence. Don't immediately fire
+      // meeting_no_show — the host may have closed/switched the tracked tab
+      // before the candidate joined (we've seen the extension upload
+      // isFinal=true within 4 min of scheduledStart while the candidate
+      // arrived a minute later). Wait until the scheduled meeting time has
+      // fully elapsed; by then either a later snapshot brought the candidate
+      // into participants[] (in which case nonHostPresent flips true on the
+      // next isFinal), or the meeting genuinely passed without attendance.
+      const meetingTimeElapsed = Date.now() >= meeting.scheduledEnd.getTime()
+      if (meetingTimeElapsed) {
+        const total = merged.reduce(
+          (acc, p) => acc + (isHostParticipant(p, hostEmail, hostName) ? 0 : (p.totalSecondsPresent ?? 0)),
+          0,
+        )
+        if (total < NO_SHOW_MIN_SECONDS) {
+          firedNoShow = await emitNoShowOnce(meeting.id, meeting.sessionId, meetingCode)
+        }
       }
     }
   }
