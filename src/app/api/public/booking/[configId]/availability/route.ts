@@ -53,7 +53,7 @@ export async function GET(request: NextRequest, { params }: { params: { configId
     if (!verified.ok) {
       return NextResponse.json({ error: 'invalid_token', message: bookingErrorMessage('invalid_token'), reason: verified.reason }, { status: 401 })
     }
-    if (verified.payload.purpose !== 'book') {
+    if (verified.payload.purpose !== 'book' && verified.payload.purpose !== 'reschedule') {
       return NextResponse.json({ error: 'wrong_purpose', message: bookingErrorMessage('wrong_purpose') }, { status: 401 })
     }
     if (verified.payload.configId !== params.configId) {
