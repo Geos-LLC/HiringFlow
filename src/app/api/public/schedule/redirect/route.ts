@@ -4,6 +4,15 @@ import { logSchedulingEvent } from '@/lib/scheduling'
 import { issueBookingToken } from '@/lib/scheduling/booking-links'
 import { getAppUrl } from '@/lib/google'
 
+// Email scanners (Gmail link safety, Microsoft Defender Safe Links, Mimecast,
+// Proofpoint, etc.) frequently hit this endpoint within milliseconds of
+// invite delivery — and again on periodic re-scan passes. Link previewers
+// (Slack, Discord, etc.) do the same. Without filtering, every scan shows up
+// as a "Scheduling link clicked" event on the candidate timeline, making it
+// look like the candidate clicked 5+ times when they may not have clicked at
+// all.
+const BOT_UA_PATTERN = /(googleimageproxy|microsoft office|mimecast|proofpoint|barracuda|safelinks|urldefense|slack-?linkexpanding|slackbot|bitlybot|skypeuripreview|whatsapp|telegrambot|facebookexternalhit|twitterbot|linkedinbot|discordbot|pinterest|vkshare|urlscan|virustotal|headlesschrome|phantomjs|puppeteer|playwright|crawler|spider|bot\b)/i
+
 export async function POST(request: NextRequest) {
   const { sessionId, configId } = await request.json()
 
@@ -23,12 +32,30 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Scheduling config not found or inactive' }, { status: 404 })
   }
 
-  // Log the click event regardless of which downstream provider we use.
-  await logSchedulingEvent({
-    sessionId,
-    schedulingConfigId: configId,
-    eventType: 'link_clicked',
-  }).catch((err) => console.error('[Schedule] Failed to log click:', err))
+  // Log the click only when (a) the caller doesn't smell like a known
+  // scanner / preview bot, and (b) we haven't already logged one for this
+  // session+config in the last 60s. The dedup window catches repeat scanner
+  // hits whose UAs we don't yet recognise, plus benign retries (browser
+  // back/forward, double-clicked link, React StrictMode re-renders).
+  const userAgent = request.headers.get('user-agent') || ''
+  if (!BOT_UA_PATTERN.test(userAgent)) {
+    const recent = await prisma.schedulingEvent.findFirst({
+      where: {
+        sessionId,
+        schedulingConfigId: configId,
+        eventType: 'link_clicked',
+        eventAt: { gt: new Date(Date.now() - 60_000) },
+      },
+      select: { id: true },
+    })
+    if (!recent) {
+      await logSchedulingEvent({
+        sessionId,
+        schedulingConfigId: configId,
+        eventType: 'link_clicked',
+      }).catch((err) => console.error('[Schedule] Failed to log click:', err))
+    }
+  }
 
   // Built-in scheduler path: issue a signed token and bounce to the in-app
   // booking page. The page re-validates the token server-side before

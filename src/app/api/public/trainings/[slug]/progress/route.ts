@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { completeEnrollment } from '@/lib/training-access'
-import { fireTrainingCompletedAutomations, fireTrainingStartedAutomations } from '@/lib/automation'
+import { fireTrainingStartedAutomations } from '@/lib/automation'
 import { bumpSessionActivity } from '@/lib/session-activity'
 
 // Progress JSON shape stored on TrainingEnrollment.progress.
@@ -181,14 +181,13 @@ export async function POST(request: NextRequest) {
 
   console.log(`[Training] Enrollment ${enrollmentId} completed for training ${enrollment.training.title}`)
 
-  // Fire training_completed automations (e.g., send scheduling email).
-  // executionMode='public_trigger' so the audit trail shows the public
-  // POST as the producer of any downstream skipped/sent executions.
-  if (enrollment.sessionId) {
-    await fireTrainingCompletedAutomations(enrollment.sessionId, enrollment.trainingId, {
-      executionMode: 'public_trigger',
-    })
-  }
+  // Note: training_completed automations fire via the Prisma lifecycle
+  // middleware on the TrainingEnrollment.completedAt write inside
+  // completeEnrollment. Calling fireTrainingCompletedAutomations explicitly
+  // here used to race the middleware: two concurrent dispatches both passed
+  // the guard's `status==='sent'` idempotency check (both still 'pending')
+  // and produced duplicate sends + duplicate invite_sent rows on the
+  // candidate timeline.
 
   await bumpSessionActivity(enrollment.sessionId)
 
