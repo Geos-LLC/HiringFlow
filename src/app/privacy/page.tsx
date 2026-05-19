@@ -265,6 +265,60 @@ export default function PrivacyPage() {
           The current list of subprocessors is available on request. We will give 30 days&rsquo;
           notice before adding a new subprocessor that processes substantial personal data.
         </p>
+
+        <h3>7.1 Google API Services — Limited Use disclosure</h3>
+        <p>
+          When you connect a Google Workspace account, HireFunnel requests access to specific
+          Google services (Calendar, Meet, Drive, and basic profile data) to power scheduling
+          and interview workflows. Our use of information received from Google APIs adheres
+          to the{' '}
+          <a
+            href="https://developers.google.com/terms/api-services-user-data-policy"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Google API Services User Data Policy
+          </a>
+          , including the <strong>Limited Use</strong> requirements.
+        </p>
+        <p>Specifically, HireFunnel:</p>
+        <ul>
+          <li>
+            Uses Google user data only to provide and improve the features the user
+            connected Google for (reading calendar availability, creating Meet events,
+            reading meeting recordings and transcripts saved to the user&rsquo;s Drive).
+          </li>
+          <li>
+            Does <strong>not</strong> use Google user data to train generalized or third-
+            party AI/ML models.
+          </li>
+          <li>
+            Does <strong>not</strong> sell or transfer Google user data to third parties for
+            advertising, market research, or any other unrelated purpose.
+          </li>
+          <li>
+            Does <strong>not</strong> allow humans to read Google user data unless we have
+            obtained the user&rsquo;s explicit consent for specific messages, it is necessary
+            for security purposes (such as investigating abuse), it is required by law, or
+            the data has been aggregated and anonymized for internal operations.
+          </li>
+          <li>
+            Stores Google user data only for as long as needed to provide the service and
+            deletes it on account disconnection or user request, subject to the retention
+            schedule in Section 8.
+          </li>
+        </ul>
+        <p>
+          You can revoke HireFunnel&rsquo;s access to your Google account at any time from{' '}
+          <a
+            href="https://myaccount.google.com/permissions"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            myaccount.google.com/permissions
+          </a>
+          .
+        </p>
       </section>
 
       <section id="retention">

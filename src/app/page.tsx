@@ -849,8 +849,8 @@ function Footer() {
     {
       title: 'Legal',
       links: [
-        { label: 'Privacy', href: '/privacy' },
-        { label: 'Terms', href: '/terms' },
+        { label: 'Privacy Policy', href: '/privacy' },
+        { label: 'Terms of Service', href: '/terms' },
         { label: 'Security', href: 'mailto:security@hirefunnel.app' },
         { label: 'DPA', href: 'mailto:privacy@hirefunnel.app?subject=DPA%20request' },
       ],
