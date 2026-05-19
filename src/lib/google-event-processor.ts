@@ -70,14 +70,25 @@ export async function processCalendarEvent(
   // — RSVP status, Calendly metadata touches, internal field updates. Only
   // count it as a reschedule when start/end/meeting URL actually changed,
   // otherwise the candidate timeline fills up with phantom reschedule rows.
+  //
+  // Timestamp normalisation is critical here: bookInterview writes the
+  // initial `meeting_scheduled` event with `start.toISOString()` (UTC `…Z`
+  // form), while the watch webhook that fires ~4s later carries the same
+  // moment in Google's RFC3339-with-offset form (e.g. `2026-05-20T10:00:00
+  // -04:00`). Comparing those strings raw always reports "changed" even
+  // though they're the same instant, so every fresh booking immediately
+  // gets a phantom meeting_rescheduled row + fires reschedule automations.
+  // Round-trip through Date.toISOString() to compare on instants.
   if (existing) {
     const prevMeta = (existing.metadata as Record<string, unknown> | null) || {}
-    const prevStart = (prevMeta.scheduledAt as string | null) ?? null
-    const prevEnd = (prevMeta.endAt as string | null) ?? null
+    const prevStart = normaliseTimestamp(prevMeta.scheduledAt as string | null)
+    const prevEnd = normaliseTimestamp(prevMeta.endAt as string | null)
     const prevUrl = (prevMeta.meetingUrl as string | null) ?? null
+    const newStart = normaliseTimestamp(start)
+    const newEnd = normaliseTimestamp(end)
     const unchanged =
-      prevStart === (start || null) &&
-      prevEnd === (end || null) &&
+      prevStart === newStart &&
+      prevEnd === newEnd &&
       prevUrl === (meetingUrl || null)
     if (unchanged) {
       return { matched: true, eventType: 'meeting_scheduled', sessionId }
@@ -257,6 +268,17 @@ function extractMeetingLink(text: string | null | undefined): string | null {
   if (!text) return null
   const match = text.match(/https?:\/\/[^\s<>"']+(meet\.google\.com|zoom\.us|teams\.microsoft\.com|whereby\.com)[^\s<>"']*/i)
   return match ? match[0] : null
+}
+
+// Compare two timestamp strings as the same moment, regardless of whether
+// one is RFC3339-with-offset (Google Calendar's `dateTime`) and the other
+// is `toISOString()` UTC form. Returns null for absent/unparseable inputs
+// so they compare equal to other null inputs.
+function normaliseTimestamp(s: string | null | undefined): string | null {
+  if (!s) return null
+  const d = new Date(s)
+  if (isNaN(d.getTime())) return null
+  return d.toISOString()
 }
 
 /**
