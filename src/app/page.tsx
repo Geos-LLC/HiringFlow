@@ -817,11 +817,44 @@ function CTABand() {
 /*  Footer                                                            */
 /* ------------------------------------------------------------------ */
 function Footer() {
-  const cols = [
-    { title: 'Product', links: ['Features', 'Pricing', 'Integrations', 'Changelog', 'Roadmap'] },
-    { title: 'Company', links: ['About', 'Customers', 'Careers', 'Contact'] },
-    { title: 'Resources', links: ['Documentation', 'Templates', 'Hiring guides', 'Blog'] },
-    { title: 'Legal', links: ['Privacy', 'Terms', 'Security', 'DPA'] },
+  const cols: { title: string; links: { label: string; href: string }[] }[] = [
+    {
+      title: 'Product',
+      links: [
+        { label: 'Features', href: '#features' },
+        { label: 'Pricing', href: '#pricing' },
+        { label: 'Integrations', href: '#' },
+        { label: 'Changelog', href: '#' },
+        { label: 'Roadmap', href: '#' },
+      ],
+    },
+    {
+      title: 'Company',
+      links: [
+        { label: 'About', href: '#' },
+        { label: 'Customers', href: '#' },
+        { label: 'Careers', href: '#' },
+        { label: 'Contact', href: 'mailto:hello@hirefunnel.app' },
+      ],
+    },
+    {
+      title: 'Resources',
+      links: [
+        { label: 'Documentation', href: '#' },
+        { label: 'Templates', href: '#' },
+        { label: 'Hiring guides', href: '#' },
+        { label: 'Blog', href: '#' },
+      ],
+    },
+    {
+      title: 'Legal',
+      links: [
+        { label: 'Privacy', href: '/privacy' },
+        { label: 'Terms', href: '/terms' },
+        { label: 'Security', href: 'mailto:security@hirefunnel.app' },
+        { label: 'DPA', href: 'mailto:privacy@hirefunnel.app?subject=DPA%20request' },
+      ],
+    },
   ]
   return (
     <footer style={{ background: '#1a1815', color: 'rgba(255,255,255,0.75)' }}>
@@ -842,11 +875,22 @@ function Footer() {
             <div key={col.title}>
               <div className="font-mono text-[10px] uppercase text-white/50 mb-4" style={{ letterSpacing: '0.14em' }}>{col.title}</div>
               <ul className="space-y-2.5">
-                {col.links.map((l) => (
-                  <li key={l}>
-                    <a href="#" className="text-[13px] font-medium hover:text-white transition-colors duration-100">{l}</a>
-                  </li>
-                ))}
+                {col.links.map((l) => {
+                  const isInternal = l.href.startsWith('/')
+                  return (
+                    <li key={l.label}>
+                      {isInternal ? (
+                        <Link href={l.href} className="text-[13px] font-medium hover:text-white transition-colors duration-100">
+                          {l.label}
+                        </Link>
+                      ) : (
+                        <a href={l.href} className="text-[13px] font-medium hover:text-white transition-colors duration-100">
+                          {l.label}
+                        </a>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           ))}
