@@ -25,7 +25,7 @@ import type { InterviewMeeting, Prisma } from '@prisma/client'
 import type { OAuth2Client } from 'google-auth-library'
 import { prisma } from '../prisma'
 import { fetchUserInfo, getAuthedClientForWorkspace, hasSheetsScope } from '../google'
-import { withWorkspaceMeetClient, listConferenceRecords, listParticipants, listRecordings, type Participant } from './google-meet'
+import { withWorkspaceMeetClient, listConferenceRecords, listParticipants, listRecordings, listTranscripts, type Participant } from './google-meet'
 import { findMeetRecordingsFolderId, searchMeetRecordings, searchMeetTranscripts } from './google-drive'
 import { findAttendanceForMeeting, type AttendanceSignal } from './attendance-fallback'
 import { recordArtifact, recordArtifacts } from './artifacts'
@@ -68,8 +68,14 @@ function shouldSync(m: SyncableMeeting, extensionEnabled = false): boolean {
     const recordingTerminal =
       m.recordingState === 'ready' || m.recordingState === 'failed' ||
       m.recordingState === 'unavailable' || m.recordingState === 'disabled'
-    // Recording artifact still pending → keep checking for it.
-    if (!recordingTerminal) {
+    const transcriptTerminal =
+      m.transcriptState === 'ready' || m.transcriptState === 'failed' ||
+      m.transcriptState === 'unavailable' || m.transcriptState === 'disabled'
+    // Recording or transcript artifact still pending → keep checking for it.
+    // Google sometimes lands the transcript long after the recording (esp. on
+    // Workspace tenants where the live transcript.fileGenerated webhook never
+    // delivered) so we must re-enter the sync until both are terminal.
+    if (!recordingTerminal || !transcriptTerminal) {
       if (m.meetApiSyncedAt && Date.now() - m.meetApiSyncedAt.getTime() < MIN_RESYNC_INTERVAL_MS) return false
       return true
     }
@@ -231,6 +237,28 @@ export async function syncMeetingFromMeetApi(
         }
       }
 
+      // Transcript artifact — mirrors the recording path. Required because the
+      // Workspace Events `transcript.fileGenerated` webhook may never fire
+      // (suspended subscription, dropped Pub/Sub delivery, or a meeting that
+      // happened before we were subscribed). Without this, the Doc exists in
+      // Drive but the UI stays stuck on "Transcript: processing" forever.
+      let transcriptJustReady = false
+      if (meeting.transcriptState !== 'unavailable' && meeting.transcriptState !== 'disabled') {
+        try {
+          const tx = await listTranscripts(client, conf.name)
+          const t = tx[0]
+          if (t?.docsDestination?.document && t.state === 'FILE_GENERATED') {
+            if (meeting.transcriptState !== 'ready') transcriptJustReady = true
+            data.transcriptState = 'ready'
+            data.driveTranscriptFileId = t.docsDestination.document
+          } else if (t && t.state && t.state !== 'FILE_GENERATED') {
+            if (meeting.transcriptState !== 'ready') data.transcriptState = 'processing'
+          }
+        } catch (err) {
+          console.error('[meet-sync] listTranscripts failed for', meeting.id, ':', (err as Error).message)
+        }
+      }
+
       await prisma.interviewMeeting.update({ where: { id: meeting.id }, data })
       updated = true
 
@@ -242,6 +270,15 @@ export async function syncMeetingFromMeetApi(
       if (recordingJustReady) {
         await fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready').catch((err) =>
           console.error('[meet-sync] fire recording_ready failed for', meeting.id, ':', (err as Error).message))
+      }
+      if (transcriptJustReady) {
+        await logSchedulingEvent({
+          sessionId: meeting.sessionId,
+          eventType: 'transcript_ready',
+          metadata: { interviewMeetingId: meeting.id, driveFileId: data.driveTranscriptFileId as string, source: 'meet_api_sync' },
+        }).catch((err) => console.error('[meet-sync] log transcript_ready failed for', meeting.id, ':', (err as Error).message))
+        await fireMeetingLifecycleAutomations(meeting.sessionId, 'transcript_ready').catch((err) =>
+          console.error('[meet-sync] fire transcript_ready failed for', meeting.id, ':', (err as Error).message))
       }
 
       // No-show evaluation, but only once we have a real end time. Mid-meeting
