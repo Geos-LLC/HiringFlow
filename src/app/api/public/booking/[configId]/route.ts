@@ -19,6 +19,8 @@ import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
 import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
 import { bookInterview, BookInterviewError } from '@/lib/scheduling/book-interview'
+import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
+import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
 
 export async function POST(request: NextRequest, { params }: { params: { configId: string } }) {
   const body = await request.json().catch(() => ({})) as {
@@ -31,11 +33,11 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   }
 
   if (!body.slotStartUtc) {
-    return NextResponse.json({ error: 'slotStartUtc required' }, { status: 400 })
+    return NextResponse.json({ error: 'slotStartUtc_required', message: bookingErrorMessage('slotStartUtc_required') }, { status: 400 })
   }
   const slotStart = new Date(body.slotStartUtc)
   if (isNaN(slotStart.getTime())) {
-    return NextResponse.json({ error: 'invalid_slot' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid_slot', message: bookingErrorMessage('invalid_slot') }, { status: 400 })
   }
 
   // Two modes:
@@ -49,22 +51,22 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   if (body.t) {
     const verified = verifyBookingToken(body.t)
     if (!verified.ok) {
-      return NextResponse.json({ error: 'invalid_token', reason: verified.reason }, { status: 401 })
+      return NextResponse.json({ error: 'invalid_token', message: bookingErrorMessage('invalid_token'), reason: verified.reason }, { status: 401 })
     }
     if (verified.payload.purpose !== 'book') {
-      return NextResponse.json({ error: 'wrong_purpose' }, { status: 401 })
+      return NextResponse.json({ error: 'wrong_purpose', message: bookingErrorMessage('wrong_purpose') }, { status: 401 })
     }
     if (verified.payload.configId !== params.configId) {
-      return NextResponse.json({ error: 'config_mismatch' }, { status: 401 })
+      return NextResponse.json({ error: 'config_mismatch', message: bookingErrorMessage('config_mismatch') }, { status: 401 })
     }
     sessionId = verified.payload.sessionId
   } else {
     isAnonymous = true
     const name = (body.candidateName || '').trim()
     const email = (body.candidateEmail || '').trim()
-    if (!name) return NextResponse.json({ error: 'name_required' }, { status: 400 })
+    if (!name) return NextResponse.json({ error: 'name_required', message: bookingErrorMessage('name_required') }, { status: 400 })
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return NextResponse.json({ error: 'invalid_email' }, { status: 400 })
+      return NextResponse.json({ error: 'invalid_email', message: bookingErrorMessage('invalid_email') }, { status: 400 })
     }
     // sessionId resolved below after we've loaded the config (need workspaceId).
     sessionId = ''
@@ -79,12 +81,13 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       bookingRules: true,
       calendarId: true,
       workspaceId: true,
-      workspace: { select: { timezone: true } },
+      workspace: { select: { timezone: true, senderEmail: true } },
     },
   })
   if (!config || !config.isActive || !config.useBuiltInScheduler) {
-    return NextResponse.json({ error: 'config_not_found' }, { status: 404 })
+    return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
+  const contactEmail = config.workspace.senderEmail
 
   // Anonymous-mode session creation: now that we have the workspace, find a
   // flow to attach to and either reuse a recent public_booking session for
@@ -98,7 +101,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     if (!flow) {
       return NextResponse.json({
         error: 'no_flow_available',
-        message: 'Workspace must have at least one flow before public bookings are possible',
+        message: bookingErrorMessage('no_flow_available', { contactEmail }),
       }, { status: 409 })
     }
     const email = (body.candidateEmail || '').trim()
@@ -188,13 +191,15 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   } catch (err) {
     // Log the underlying Google error (e.g. `invalid_grant` when the
     // workspace's OAuth refresh token has been revoked) so admins can
-    // diagnose, but surface a candidate-friendly message — the raw key
-    // `free_busy_failed` was previously bubbling up onto the booking form
-    // verbatim and leaving candidates stuck.
+    // diagnose, and fire the auth-notifier so the workspace owner gets
+    // emailed if the error is an OAuth one. Candidate sees a friendly
+    // message — the raw key `free_busy_failed` used to bubble up onto
+    // the booking form verbatim.
     console.error('[booking] freeBusy failed:', err)
+    void recordGoogleAuthError(config.workspaceId, err)
     return NextResponse.json({
       error: 'free_busy_failed',
-      message: "We couldn't reach our scheduling calendar to confirm this slot. Please try again in a few minutes, or contact us if the problem persists.",
+      message: bookingErrorMessage('free_busy_failed', { contactEmail }),
       detail: (err as Error).message,
     }, { status: 502 })
   }
@@ -209,7 +214,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   }).some((s) => s.startUtc.getTime() === slotStart.getTime())
 
   if (!stillAvailable) {
-    return NextResponse.json({ error: 'slot_unavailable' }, { status: 409 })
+    return NextResponse.json({ error: 'slot_unavailable', message: bookingErrorMessage('slot_unavailable') }, { status: 409 })
   }
 
   // For per-candidate (tokened) flow, update session contact info if the
@@ -268,9 +273,21 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     })
   } catch (err) {
     if (err instanceof BookInterviewError) {
-      return NextResponse.json({ error: err.code, message: err.message }, { status: err.status })
+      // bookInterview throws when Google Meet space creation / Calendar
+      // insert fails — those can be auth errors too.
+      void recordGoogleAuthError(config.workspaceId, err)
+      return NextResponse.json({
+        error: err.code,
+        message: bookingErrorMessage(err.code, { contactEmail }) || err.message,
+        detail: err.message,
+      }, { status: err.status })
     }
     console.error('[booking] unexpected error:', err)
-    return NextResponse.json({ error: 'internal', message: (err as Error).message }, { status: 500 })
+    void recordGoogleAuthError(config.workspaceId, err)
+    return NextResponse.json({
+      error: 'internal',
+      message: bookingErrorMessage('internal', { contactEmail }),
+      detail: (err as Error).message,
+    }, { status: 500 })
   }
 }

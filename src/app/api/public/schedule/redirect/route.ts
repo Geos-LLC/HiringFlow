@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { issueBookingToken } from '@/lib/scheduling/booking-links'
 import { getAppUrl } from '@/lib/google'
+import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
 
 // Email scanners (Gmail link safety, Microsoft Defender Safe Links, Mimecast,
 // Proofpoint, etc.) frequently hit this endpoint within milliseconds of
@@ -17,11 +18,14 @@ export async function POST(request: NextRequest) {
   const { sessionId, configId } = await request.json()
 
   if (!sessionId || !configId) {
-    return NextResponse.json({ error: 'sessionId and configId required' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid_request', message: bookingErrorMessage('invalid_slot') }, { status: 400 })
   }
 
   const [config, session] = await Promise.all([
-    prisma.schedulingConfig.findUnique({ where: { id: configId } }),
+    prisma.schedulingConfig.findUnique({
+      where: { id: configId },
+      include: { workspace: { select: { senderEmail: true } } },
+    }),
     prisma.session.findUnique({
       where: { id: sessionId },
       select: { candidateName: true, candidateEmail: true },
@@ -29,7 +33,10 @@ export async function POST(request: NextRequest) {
   ])
 
   if (!config || !config.isActive) {
-    return NextResponse.json({ error: 'Scheduling config not found or inactive' }, { status: 404 })
+    return NextResponse.json({
+      error: 'config_not_found',
+      message: bookingErrorMessage('config_not_found', { contactEmail: config?.workspace.senderEmail }),
+    }, { status: 404 })
   }
 
   // Log the click only when (a) the caller doesn't smell like a known

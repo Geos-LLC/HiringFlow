@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { issueBookingToken } from '@/lib/scheduling/booking-links'
+import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
 
 const ipBuckets = new Map<string, { count: number; resetAt: number }>()
 function rateOk(ip: string): boolean {
@@ -39,21 +40,25 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   const name = (body.name || '').trim()
   const email = (body.email || '').trim()
   const phone = (body.phone || '').trim()
-  if (!name) return NextResponse.json({ error: 'name_required' }, { status: 400 })
-  if (!email || !EMAIL_RX.test(email)) return NextResponse.json({ error: 'invalid_email' }, { status: 400 })
+  if (!name) return NextResponse.json({ error: 'name_required', message: bookingErrorMessage('name_required') }, { status: 400 })
+  if (!email || !EMAIL_RX.test(email)) return NextResponse.json({ error: 'invalid_email', message: bookingErrorMessage('invalid_email') }, { status: 400 })
 
   const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  if (!rateOk(ip)) return NextResponse.json({ error: 'rate_limited' }, { status: 429 })
+  if (!rateOk(ip)) return NextResponse.json({ error: 'rate_limited', message: bookingErrorMessage('rate_limited') }, { status: 429 })
 
   const config = await prisma.schedulingConfig.findUnique({
     where: { id: params.configId },
-    select: { id: true, workspaceId: true, isActive: true, useBuiltInScheduler: true },
+    select: {
+      id: true, workspaceId: true, isActive: true, useBuiltInScheduler: true,
+      workspace: { select: { senderEmail: true } },
+    },
   })
   if (!config || !config.isActive) {
-    return NextResponse.json({ error: 'config_not_found' }, { status: 404 })
+    return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
+  const contactEmail = config.workspace.senderEmail
   if (!config.useBuiltInScheduler) {
-    return NextResponse.json({ error: 'not_built_in' }, { status: 400 })
+    return NextResponse.json({ error: 'not_built_in', message: bookingErrorMessage('not_built_in', { contactEmail }) }, { status: 400 })
   }
 
   // Need a flow to attach the session to. Pick the workspace's first
@@ -67,7 +72,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   if (!flow) {
     return NextResponse.json({
       error: 'no_flow_available',
-      message: 'Workspace must have at least one flow before public bookings are possible',
+      message: bookingErrorMessage('no_flow_available', { contactEmail }),
     }, { status: 409 })
   }
 

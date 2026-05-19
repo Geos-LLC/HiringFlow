@@ -279,6 +279,17 @@ model GoogleIntegration {
   // extension is installed and the integration should scan Drive for its
   // exported spreadsheets to derive attendance for personal Gmail tenants.
   attendanceExtensionEnabled       Boolean   @default(false) @map("attendance_extension_enabled")
+  // Auth-error tracking. When a Google API call returns invalid_grant (the
+  // workspace's refresh token has been revoked, most commonly because the
+  // OAuth consent screen is still in "Testing" mode and Google rotates
+  // refresh tokens for personal Gmail every 7 days) or invalid_client (env
+  // GOOGLE_CLIENT_SECRET drifted out of sync with GCP), the calling site
+  // records it here and notifies the workspace owner — once per 24h —
+  // so candidate-facing scheduling silently breaking gets a human alerted
+  // instead of just bubbling `free_busy_failed` to the booking form.
+  authErrorAt                      DateTime? @map("auth_error_at")
+  authErrorCode                    String?   @map("auth_error_code")
+  authErrorNotifiedAt              DateTime? @map("auth_error_notified_at")
   createdAt                        DateTime  @default(now()) @map("created_at")
   updatedAt                        DateTime  @updatedAt @map("updated_at")
 

@@ -12,19 +12,21 @@ import { prisma } from '@/lib/prisma'
 import { verifyBookingToken } from '@/lib/scheduling/booking-links'
 import { deleteCalendarEvent } from '@/lib/google'
 import { logSchedulingEvent } from '@/lib/scheduling'
+import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
+import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
 
 export async function POST(request: NextRequest, { params }: { params: { configId: string } }) {
   const body = await request.json().catch(() => ({})) as { t?: string; reason?: string }
 
   const verified = verifyBookingToken(body.t)
   if (!verified.ok) {
-    return NextResponse.json({ error: 'invalid_token', reason: verified.reason }, { status: 401 })
+    return NextResponse.json({ error: 'invalid_token', message: bookingErrorMessage('invalid_token'), reason: verified.reason }, { status: 401 })
   }
   if (verified.payload.purpose !== 'cancel') {
-    return NextResponse.json({ error: 'wrong_purpose' }, { status: 401 })
+    return NextResponse.json({ error: 'wrong_purpose', message: bookingErrorMessage('wrong_purpose') }, { status: 401 })
   }
   if (verified.payload.configId !== params.configId) {
-    return NextResponse.json({ error: 'config_mismatch' }, { status: 401 })
+    return NextResponse.json({ error: 'config_mismatch', message: bookingErrorMessage('config_mismatch') }, { status: 401 })
   }
 
   // Find the most recent active interview meeting for this session.
@@ -37,7 +39,16 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     select: { id: true, googleCalendarEventId: true, workspaceId: true },
   })
   if (!meeting) {
-    return NextResponse.json({ error: 'no_meeting_to_cancel' }, { status: 404 })
+    // Look up workspace contact email via the config so the friendly
+    // message can include it.
+    const cfg = await prisma.schedulingConfig.findUnique({
+      where: { id: params.configId },
+      select: { workspace: { select: { senderEmail: true } } },
+    })
+    return NextResponse.json({
+      error: 'no_meeting_to_cancel',
+      message: bookingErrorMessage('no_meeting_to_cancel', { contactEmail: cfg?.workspace.senderEmail }),
+    }, { status: 404 })
   }
 
   if (meeting.googleCalendarEventId) {
@@ -45,6 +56,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       await deleteCalendarEvent(meeting.workspaceId, meeting.googleCalendarEventId)
     } catch (err) {
       console.error('[cancel] deleteCalendarEvent failed:', err)
+      void recordGoogleAuthError(meeting.workspaceId, err)
       // Continue — log the cancel locally even if Google delete failed,
       // so the candidate's pipeline state moves.
     }

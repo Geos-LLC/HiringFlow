@@ -21,6 +21,8 @@ import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
 import { getAuthedClientForWorkspace, hasMeetScopes } from '@/lib/google'
 import { logSchedulingEvent } from '@/lib/scheduling'
+import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
+import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
 
 export async function POST(request: NextRequest, { params }: { params: { configId: string } }) {
   const body = await request.json().catch(() => ({})) as {
@@ -30,20 +32,20 @@ export async function POST(request: NextRequest, { params }: { params: { configI
 
   const verified = verifyBookingToken(body.t)
   if (!verified.ok) {
-    return NextResponse.json({ error: 'invalid_token', reason: verified.reason }, { status: 401 })
+    return NextResponse.json({ error: 'invalid_token', message: bookingErrorMessage('invalid_token'), reason: verified.reason }, { status: 401 })
   }
   if (verified.payload.purpose !== 'reschedule') {
-    return NextResponse.json({ error: 'wrong_purpose' }, { status: 401 })
+    return NextResponse.json({ error: 'wrong_purpose', message: bookingErrorMessage('wrong_purpose') }, { status: 401 })
   }
   if (verified.payload.configId !== params.configId) {
-    return NextResponse.json({ error: 'config_mismatch' }, { status: 401 })
+    return NextResponse.json({ error: 'config_mismatch', message: bookingErrorMessage('config_mismatch') }, { status: 401 })
   }
   if (!body.slotStartUtc) {
-    return NextResponse.json({ error: 'slotStartUtc required' }, { status: 400 })
+    return NextResponse.json({ error: 'slotStartUtc_required', message: bookingErrorMessage('slotStartUtc_required') }, { status: 400 })
   }
   const slotStart = new Date(body.slotStartUtc)
   if (isNaN(slotStart.getTime())) {
-    return NextResponse.json({ error: 'invalid_slot' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid_slot', message: bookingErrorMessage('invalid_slot') }, { status: 400 })
   }
 
   const config = await prisma.schedulingConfig.findUnique({
@@ -51,12 +53,13 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     select: {
       id: true, isActive: true, useBuiltInScheduler: true, bookingRules: true,
       calendarId: true, workspaceId: true,
-      workspace: { select: { timezone: true } },
+      workspace: { select: { timezone: true, senderEmail: true } },
     },
   })
   if (!config || !config.isActive || !config.useBuiltInScheduler) {
-    return NextResponse.json({ error: 'config_not_found' }, { status: 404 })
+    return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
+  const contactEmail = config.workspace.senderEmail
 
   // Find the existing meeting for this session.
   const meeting = await prisma.interviewMeeting.findFirst({
@@ -64,10 +67,10 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     orderBy: { scheduledStart: 'asc' },
   })
   if (!meeting) {
-    return NextResponse.json({ error: 'no_meeting_to_reschedule' }, { status: 404 })
+    return NextResponse.json({ error: 'no_meeting_to_reschedule', message: bookingErrorMessage('no_meeting_to_reschedule', { contactEmail }) }, { status: 404 })
   }
   if (!meeting.googleCalendarEventId) {
-    return NextResponse.json({ error: 'no_calendar_event' }, { status: 409 })
+    return NextResponse.json({ error: 'no_calendar_event', message: bookingErrorMessage('no_calendar_event', { contactEmail }) }, { status: 409 })
   }
 
   const rules = parseBookingRulesOrDefault(config.bookingRules)
@@ -87,7 +90,12 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     })
   } catch (err) {
     console.error('[reschedule] freeBusy failed:', err)
-    return NextResponse.json({ error: 'free_busy_failed', message: (err as Error).message }, { status: 502 })
+    void recordGoogleAuthError(config.workspaceId, err)
+    return NextResponse.json({
+      error: 'free_busy_failed',
+      message: bookingErrorMessage('free_busy_failed', { contactEmail }),
+      detail: (err as Error).message,
+    }, { status: 502 })
   }
   // Filter out the current meeting's interval — it shows up as busy on its own calendar.
   const filteredBusy = busy.filter((b) => !(b.start.getTime() === meeting.scheduledStart.getTime() && b.end.getTime() === meeting.scheduledEnd.getTime()))
@@ -101,14 +109,14 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   }).some((s) => s.startUtc.getTime() === slotStart.getTime())
 
   if (!stillAvailable) {
-    return NextResponse.json({ error: 'slot_unavailable' }, { status: 409 })
+    return NextResponse.json({ error: 'slot_unavailable', message: bookingErrorMessage('slot_unavailable') }, { status: 409 })
   }
 
   // Patch the calendar event.
   const authed = await getAuthedClientForWorkspace(config.workspaceId)
-  if (!authed) return NextResponse.json({ error: 'google_not_connected' }, { status: 502 })
+  if (!authed) return NextResponse.json({ error: 'google_not_connected', message: bookingErrorMessage('google_not_connected', { contactEmail }) }, { status: 502 })
   if (!hasMeetScopes(authed.integration.grantedScopes)) {
-    return NextResponse.json({ error: 'reconnect_required' }, { status: 502 })
+    return NextResponse.json({ error: 'reconnect_required', message: bookingErrorMessage('reconnect_required', { contactEmail }) }, { status: 502 })
   }
   const calendar = google.calendar({ version: 'v3', auth: authed.client })
   try {
@@ -123,7 +131,12 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     })
   } catch (err) {
     console.error('[reschedule] events.patch failed:', err)
-    return NextResponse.json({ error: 'calendar_patch_failed', message: (err as Error).message }, { status: 502 })
+    void recordGoogleAuthError(config.workspaceId, err)
+    return NextResponse.json({
+      error: 'calendar_patch_failed',
+      message: bookingErrorMessage('calendar_patch_failed', { contactEmail }),
+      detail: (err as Error).message,
+    }, { status: 502 })
   }
 
   // Update local InterviewMeeting; the watch webhook would reconcile this

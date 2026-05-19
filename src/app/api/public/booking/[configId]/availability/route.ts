@@ -22,6 +22,8 @@ import { verifyBookingToken } from '@/lib/scheduling/booking-links'
 import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
 import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots, type BusyInterval } from '@/lib/scheduling/slot-computer'
+import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
+import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
 
 // Per-key rate limiter (in-memory). 30 req/min. Same shape used for both
 // the per-token (authoritative candidate flow) and per-IP (anonymous)
@@ -44,26 +46,28 @@ export async function GET(request: NextRequest, { params }: { params: { configId
   const t = url.searchParams.get('t')
 
   // ── Auth + rate limiting ──
+  // These all run before config is loaded, so no workspace contact email
+  // is available to interpolate into the friendly message.
   if (t) {
     const verified = verifyBookingToken(t)
     if (!verified.ok) {
-      return NextResponse.json({ error: 'invalid_token', reason: verified.reason }, { status: 401 })
+      return NextResponse.json({ error: 'invalid_token', message: bookingErrorMessage('invalid_token'), reason: verified.reason }, { status: 401 })
     }
     if (verified.payload.purpose !== 'book') {
-      return NextResponse.json({ error: 'wrong_purpose' }, { status: 401 })
+      return NextResponse.json({ error: 'wrong_purpose', message: bookingErrorMessage('wrong_purpose') }, { status: 401 })
     }
     if (verified.payload.configId !== params.configId) {
-      return NextResponse.json({ error: 'config_mismatch' }, { status: 401 })
+      return NextResponse.json({ error: 'config_mismatch', message: bookingErrorMessage('config_mismatch') }, { status: 401 })
     }
     if (!rateLimitOk(`tok:${t}`)) {
-      return NextResponse.json({ error: 'rate_limited' }, { status: 429 })
+      return NextResponse.json({ error: 'rate_limited', message: bookingErrorMessage('rate_limited') }, { status: 429 })
     }
   } else {
     // Anonymous flow: rate limit per IP. Cheaper bucket (30/min/IP) is fine
     // since each unique IP only browses for a few minutes.
     const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
     if (!rateLimitOk(`ip:${ip}:${params.configId}`)) {
-      return NextResponse.json({ error: 'rate_limited' }, { status: 429 })
+      return NextResponse.json({ error: 'rate_limited', message: bookingErrorMessage('rate_limited') }, { status: 429 })
     }
   }
 
@@ -76,14 +80,15 @@ export async function GET(request: NextRequest, { params }: { params: { configId
       bookingRules: true,
       calendarId: true,
       workspaceId: true,
-      workspace: { select: { timezone: true, name: true } },
+      workspace: { select: { timezone: true, name: true, senderEmail: true } },
     },
   })
   if (!config || !config.isActive) {
-    return NextResponse.json({ error: 'config_not_found' }, { status: 404 })
+    return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
+  const contactEmail = config.workspace.senderEmail
   if (!config.useBuiltInScheduler) {
-    return NextResponse.json({ error: 'built_in_disabled' }, { status: 409 })
+    return NextResponse.json({ error: 'built_in_disabled', message: bookingErrorMessage('built_in_disabled', { contactEmail }) }, { status: 409 })
   }
 
   const rules = parseBookingRulesOrDefault(config.bookingRules)
@@ -98,7 +103,7 @@ export async function GET(request: NextRequest, { params }: { params: { configId
     : new Date(nowUtc.getTime() + rules.maxDaysOut * 24 * 60 * 60 * 1000)
 
   if (isNaN(fromUtc.getTime()) || isNaN(toUtc.getTime()) || toUtc <= fromUtc) {
-    return NextResponse.json({ error: 'invalid_window' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid_window', message: bookingErrorMessage('invalid_window', { contactEmail }) }, { status: 400 })
   }
 
   // Build the busy set from THREE sources so a recruiter can never be
@@ -136,6 +141,7 @@ export async function GET(request: NextRequest, { params }: { params: { configId
   // time instead so the candidate sees the problem before they invest in
   // filling the form.
   let failedCalendars = 0
+  let lastCalendarError: unknown = null
   try {
     const results = await Promise.all(
       Array.from(calendarIds).map((calId) =>
@@ -147,6 +153,7 @@ export async function GET(request: NextRequest, { params }: { params: { configId
         }).catch((err) => {
           console.error('[availability] freeBusy failed for', calId, err)
           failedCalendars++
+          lastCalendarError = err
           return [] as BusyInterval[]
         }),
       ),
@@ -154,17 +161,22 @@ export async function GET(request: NextRequest, { params }: { params: { configId
     busyChunks.push(...results)
   } catch (err) {
     console.error('[availability] freeBusy fan-out failed:', err)
+    void recordGoogleAuthError(config.workspaceId, err)
     return NextResponse.json({
       error: 'free_busy_failed',
-      message: "We couldn't load available times right now. Please try again in a few minutes, or contact us if the problem persists.",
+      message: bookingErrorMessage('free_busy_failed', { contactEmail }),
       detail: (err as Error).message,
     }, { status: 502 })
   }
 
   if (failedCalendars > 0 && failedCalendars === calendarIds.size) {
+    // Every calendar threw. The integration is almost certainly broken at
+    // the auth layer — notify the workspace owner so the picker doesn't
+    // sit half-broken indefinitely.
+    void recordGoogleAuthError(config.workspaceId, lastCalendarError)
     return NextResponse.json({
       error: 'free_busy_failed',
-      message: "We couldn't load available times right now. Please try again in a few minutes, or contact us if the problem persists.",
+      message: bookingErrorMessage('free_busy_failed', { contactEmail }),
     }, { status: 502 })
   }
 
