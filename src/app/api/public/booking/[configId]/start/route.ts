@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { issueBookingToken } from '@/lib/scheduling/booking-links'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
+import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
 
 const ipBuckets = new Map<string, { count: number; resetAt: number }>()
 function rateOk(ip: string): boolean {
@@ -54,10 +55,12 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     },
   })
   if (!config || !config.isActive) {
+    if (config) void notifyTenantOfBookingFailure(config.workspaceId, 'config_not_found')
     return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
   const contactEmail = config.workspace.senderEmail
   if (!config.useBuiltInScheduler) {
+    void notifyTenantOfBookingFailure(config.workspaceId, 'not_built_in')
     return NextResponse.json({ error: 'not_built_in', message: bookingErrorMessage('not_built_in', { contactEmail }) }, { status: 400 })
   }
 
@@ -70,6 +73,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     select: { id: true },
   })
   if (!flow) {
+    void notifyTenantOfBookingFailure(config.workspaceId, 'no_flow_available')
     return NextResponse.json({
       error: 'no_flow_available',
       message: bookingErrorMessage('no_flow_available', { contactEmail }),

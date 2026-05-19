@@ -4,6 +4,7 @@ import { logSchedulingEvent } from '@/lib/scheduling'
 import { issueBookingToken } from '@/lib/scheduling/booking-links'
 import { getAppUrl } from '@/lib/google'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
+import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
 
 // Email scanners (Gmail link safety, Microsoft Defender Safe Links, Mimecast,
 // Proofpoint, etc.) frequently hit this endpoint within milliseconds of
@@ -33,6 +34,7 @@ export async function POST(request: NextRequest) {
   ])
 
   if (!config || !config.isActive) {
+    if (config) void notifyTenantOfBookingFailure(config.workspaceId, 'config_not_found')
     return NextResponse.json({
       error: 'config_not_found',
       message: bookingErrorMessage('config_not_found', { contactEmail: config?.workspace.senderEmail }),

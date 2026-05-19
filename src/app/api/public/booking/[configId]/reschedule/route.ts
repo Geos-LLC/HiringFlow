@@ -22,7 +22,7 @@ import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
 import { getAuthedClientForWorkspace, hasMeetScopes } from '@/lib/google'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
-import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
+import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
 
 export async function POST(request: NextRequest, { params }: { params: { configId: string } }) {
   const body = await request.json().catch(() => ({})) as {
@@ -57,6 +57,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     },
   })
   if (!config || !config.isActive || !config.useBuiltInScheduler) {
+    if (config) void notifyTenantOfBookingFailure(config.workspaceId, 'config_not_found')
     return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
   const contactEmail = config.workspace.senderEmail
@@ -67,9 +68,11 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     orderBy: { scheduledStart: 'asc' },
   })
   if (!meeting) {
+    void notifyTenantOfBookingFailure(config.workspaceId, 'no_meeting_to_reschedule')
     return NextResponse.json({ error: 'no_meeting_to_reschedule', message: bookingErrorMessage('no_meeting_to_reschedule', { contactEmail }) }, { status: 404 })
   }
   if (!meeting.googleCalendarEventId) {
+    void notifyTenantOfBookingFailure(config.workspaceId, 'no_calendar_event')
     return NextResponse.json({ error: 'no_calendar_event', message: bookingErrorMessage('no_calendar_event', { contactEmail }) }, { status: 409 })
   }
 
@@ -90,7 +93,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     })
   } catch (err) {
     console.error('[reschedule] freeBusy failed:', err)
-    void recordGoogleAuthError(config.workspaceId, err)
+    void notifyTenantOfBookingFailure(config.workspaceId, 'free_busy_failed', { err })
     return NextResponse.json({
       error: 'free_busy_failed',
       message: bookingErrorMessage('free_busy_failed', { contactEmail }),
@@ -114,8 +117,12 @@ export async function POST(request: NextRequest, { params }: { params: { configI
 
   // Patch the calendar event.
   const authed = await getAuthedClientForWorkspace(config.workspaceId)
-  if (!authed) return NextResponse.json({ error: 'google_not_connected', message: bookingErrorMessage('google_not_connected', { contactEmail }) }, { status: 502 })
+  if (!authed) {
+    void notifyTenantOfBookingFailure(config.workspaceId, 'google_not_connected')
+    return NextResponse.json({ error: 'google_not_connected', message: bookingErrorMessage('google_not_connected', { contactEmail }) }, { status: 502 })
+  }
   if (!hasMeetScopes(authed.integration.grantedScopes)) {
+    void notifyTenantOfBookingFailure(config.workspaceId, 'reconnect_required')
     return NextResponse.json({ error: 'reconnect_required', message: bookingErrorMessage('reconnect_required', { contactEmail }) }, { status: 502 })
   }
   const calendar = google.calendar({ version: 'v3', auth: authed.client })
@@ -131,7 +138,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     })
   } catch (err) {
     console.error('[reschedule] events.patch failed:', err)
-    void recordGoogleAuthError(config.workspaceId, err)
+    void notifyTenantOfBookingFailure(config.workspaceId, 'calendar_patch_failed', { err })
     return NextResponse.json({
       error: 'calendar_patch_failed',
       message: bookingErrorMessage('calendar_patch_failed', { contactEmail }),

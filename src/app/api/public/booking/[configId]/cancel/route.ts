@@ -13,7 +13,7 @@ import { verifyBookingToken } from '@/lib/scheduling/booking-links'
 import { deleteCalendarEvent } from '@/lib/google'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
-import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
+import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
 
 export async function POST(request: NextRequest, { params }: { params: { configId: string } }) {
   const body = await request.json().catch(() => ({})) as { t?: string; reason?: string }
@@ -43,8 +43,9 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     // message can include it.
     const cfg = await prisma.schedulingConfig.findUnique({
       where: { id: params.configId },
-      select: { workspace: { select: { senderEmail: true } } },
+      select: { workspaceId: true, workspace: { select: { senderEmail: true } } },
     })
+    if (cfg) void notifyTenantOfBookingFailure(cfg.workspaceId, 'no_meeting_to_cancel')
     return NextResponse.json({
       error: 'no_meeting_to_cancel',
       message: bookingErrorMessage('no_meeting_to_cancel', { contactEmail: cfg?.workspace.senderEmail }),
@@ -56,7 +57,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       await deleteCalendarEvent(meeting.workspaceId, meeting.googleCalendarEventId)
     } catch (err) {
       console.error('[cancel] deleteCalendarEvent failed:', err)
-      void recordGoogleAuthError(meeting.workspaceId, err)
+      void notifyTenantOfBookingFailure(meeting.workspaceId, 'calendar_patch_failed', { err })
       // Continue — log the cancel locally even if Google delete failed,
       // so the candidate's pipeline state moves.
     }

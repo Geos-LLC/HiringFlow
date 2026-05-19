@@ -23,7 +23,7 @@ import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
 import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots, type BusyInterval } from '@/lib/scheduling/slot-computer'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
-import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
+import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
 
 // Per-key rate limiter (in-memory). 30 req/min. Same shape used for both
 // the per-token (authoritative candidate flow) and per-IP (anonymous)
@@ -84,10 +84,14 @@ export async function GET(request: NextRequest, { params }: { params: { configId
     },
   })
   if (!config || !config.isActive) {
+    // We don't have a workspaceId here (config wasn't found), so we can't
+    // notify any tenant. A scanner hitting a deleted config is fine to
+    // ignore.
     return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
   const contactEmail = config.workspace.senderEmail
   if (!config.useBuiltInScheduler) {
+    void notifyTenantOfBookingFailure(config.workspaceId, 'built_in_disabled')
     return NextResponse.json({ error: 'built_in_disabled', message: bookingErrorMessage('built_in_disabled', { contactEmail }) }, { status: 409 })
   }
 
@@ -161,7 +165,7 @@ export async function GET(request: NextRequest, { params }: { params: { configId
     busyChunks.push(...results)
   } catch (err) {
     console.error('[availability] freeBusy fan-out failed:', err)
-    void recordGoogleAuthError(config.workspaceId, err)
+    void notifyTenantOfBookingFailure(config.workspaceId, 'free_busy_failed', { err })
     return NextResponse.json({
       error: 'free_busy_failed',
       message: bookingErrorMessage('free_busy_failed', { contactEmail }),
@@ -172,8 +176,9 @@ export async function GET(request: NextRequest, { params }: { params: { configId
   if (failedCalendars > 0 && failedCalendars === calendarIds.size) {
     // Every calendar threw. The integration is almost certainly broken at
     // the auth layer — notify the workspace owner so the picker doesn't
-    // sit half-broken indefinitely.
-    void recordGoogleAuthError(config.workspaceId, lastCalendarError)
+    // sit half-broken indefinitely. The notifier inspects lastCalendarError
+    // to pick the right subcategory (oauth_revoked vs integration_down).
+    void notifyTenantOfBookingFailure(config.workspaceId, 'free_busy_failed', { err: lastCalendarError })
     return NextResponse.json({
       error: 'free_busy_failed',
       message: bookingErrorMessage('free_busy_failed', { contactEmail }),

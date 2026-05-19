@@ -20,7 +20,7 @@ import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
 import { bookInterview, BookInterviewError } from '@/lib/scheduling/book-interview'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
-import { recordGoogleAuthError } from '@/lib/google-auth-notifier'
+import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
 
 export async function POST(request: NextRequest, { params }: { params: { configId: string } }) {
   const body = await request.json().catch(() => ({})) as {
@@ -85,6 +85,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     },
   })
   if (!config || !config.isActive || !config.useBuiltInScheduler) {
+    if (config) void notifyTenantOfBookingFailure(config.workspaceId, 'config_not_found')
     return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
   const contactEmail = config.workspace.senderEmail
@@ -99,6 +100,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       select: { id: true },
     })
     if (!flow) {
+      void notifyTenantOfBookingFailure(config.workspaceId, 'no_flow_available')
       return NextResponse.json({
         error: 'no_flow_available',
         message: bookingErrorMessage('no_flow_available', { contactEmail }),
@@ -189,14 +191,8 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       bustCache: true,
     })
   } catch (err) {
-    // Log the underlying Google error (e.g. `invalid_grant` when the
-    // workspace's OAuth refresh token has been revoked) so admins can
-    // diagnose, and fire the auth-notifier so the workspace owner gets
-    // emailed if the error is an OAuth one. Candidate sees a friendly
-    // message — the raw key `free_busy_failed` used to bubble up onto
-    // the booking form verbatim.
     console.error('[booking] freeBusy failed:', err)
-    void recordGoogleAuthError(config.workspaceId, err)
+    void notifyTenantOfBookingFailure(config.workspaceId, 'free_busy_failed', { err })
     return NextResponse.json({
       error: 'free_busy_failed',
       message: bookingErrorMessage('free_busy_failed', { contactEmail }),
@@ -274,8 +270,9 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   } catch (err) {
     if (err instanceof BookInterviewError) {
       // bookInterview throws when Google Meet space creation / Calendar
-      // insert fails — those can be auth errors too.
-      void recordGoogleAuthError(config.workspaceId, err)
+      // insert fails. The notifier inspects the underlying message to pick
+      // oauth_revoked vs integration_down.
+      void notifyTenantOfBookingFailure(config.workspaceId, err.code || 'free_busy_failed', { err })
       return NextResponse.json({
         error: err.code,
         message: bookingErrorMessage(err.code, { contactEmail }) || err.message,
@@ -283,7 +280,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       }, { status: err.status })
     }
     console.error('[booking] unexpected error:', err)
-    void recordGoogleAuthError(config.workspaceId, err)
+    void notifyTenantOfBookingFailure(config.workspaceId, 'internal', { err })
     return NextResponse.json({
       error: 'internal',
       message: bookingErrorMessage('internal', { contactEmail }),

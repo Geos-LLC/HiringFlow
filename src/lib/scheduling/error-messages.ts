@@ -42,53 +42,72 @@ interface MessageOpts {
   contactEmail?: string | null
 }
 
-function contactLine(contactEmail?: string | null, prefix = 'If this keeps happening, please email '): string {
+/**
+ * Append a contact line to a message. Two phrasings:
+ *  - `'persistent'` (default): "If this keeps happening, please email X." —
+ *    use for transient failures the candidate may want to retry.
+ *  - `'direct'`: "Please email X for help." — use for terminal failures the
+ *    candidate cannot self-recover from (expired link, missing meeting,
+ *    integration broken).
+ */
+function contactLine(contactEmail: string | null | undefined, kind: 'persistent' | 'direct' = 'persistent'): string {
   if (!contactEmail) return ''
-  return ` ${prefix}${contactEmail}.`
+  if (kind === 'direct') return ` Please email ${contactEmail} for help.`
+  return ` If this keeps happening, please email ${contactEmail}.`
 }
 
 export function bookingErrorMessage(code: BookingErrorCode | string, opts: MessageOpts = {}): string {
   const c = opts.contactEmail || null
   switch (code) {
+    // ── Terminal: nothing to retry, candidate must reach out ──
     case 'config_not_found':
     case 'built_in_disabled':
     case 'not_built_in':
-      return `This scheduling link is no longer available.${contactLine(c, 'Please email ')}`
+    case 'no_flow_available':
+      return `This scheduling link is no longer available.${contactLine(c, 'direct')}`
     case 'invalid_token':
     case 'wrong_purpose':
     case 'config_mismatch':
-      return `This scheduling link has expired or is invalid. Please request a new one${contactLine(c, 'by emailing ').trimEnd() || '.'}`
+      return c
+        ? `This scheduling link has expired. Please email ${c} to request a new one.`
+        : 'This scheduling link has expired. Please request a new one.'
+    case 'no_meeting_to_cancel':
+      return `We couldn't find a meeting to cancel.${contactLine(c, 'direct')}`
+    case 'no_meeting_to_reschedule':
+      return `We couldn't find a meeting to reschedule.${contactLine(c, 'direct')}`
+    case 'no_calendar_event':
+      return `We couldn't find the booking details for this meeting.${contactLine(c, 'direct')}`
+    case 'google_not_connected':
+    case 'reconnect_required':
+      return c
+        ? `Scheduling is temporarily unavailable. Please email ${c} to book directly.`
+        : 'Scheduling is temporarily unavailable. Please contact your hiring team.'
+
+    // ── Transient: candidate can retry; offer fallback contact ──
     case 'rate_limited':
       return 'Too many requests. Please wait a moment and try again.'
     case 'invalid_window':
-      return `Something went wrong loading availability. Please refresh the page.${contactLine(c)}`
-    case 'slot_unavailable':
-      return 'That time was just taken. Please pick another time.'
+      return `Something went wrong loading available times. Please refresh the page.${contactLine(c, 'persistent')}`
     case 'free_busy_failed':
-      return `We couldn't reach the scheduling calendar to confirm this time. Please try again in a few minutes.${contactLine(c)}`
+      return `We're having trouble confirming this time right now. Please try again in a few minutes.${contactLine(c, 'persistent')}`
+    case 'calendar_patch_failed':
+      return `We couldn't save your change. Please try again in a few minutes.${contactLine(c, 'persistent')}`
+    case 'internal':
+      return `Something went wrong on our end. Please try again.${contactLine(c, 'persistent')}`
+
+    // ── Self-fixable: don't pollute with contact info ──
+    case 'slot_unavailable':
+      return 'That time was just taken by someone else. Please pick another time.'
     case 'name_required':
       return 'Please enter your name.'
     case 'invalid_email':
       return 'Please enter a valid email address.'
-    case 'no_flow_available':
-      return `This scheduling link is not yet ready.${contactLine(c, 'Please email ')}`
     case 'slotStartUtc_required':
     case 'invalid_slot':
-      return 'Please pick a valid time slot and try again.'
-    case 'no_meeting_to_cancel':
-      return `No meeting was found to cancel.${contactLine(c)}`
-    case 'no_meeting_to_reschedule':
-      return `No meeting was found to reschedule.${contactLine(c)}`
-    case 'no_calendar_event':
-      return `We couldn't find the original calendar event to reschedule.${contactLine(c)}`
-    case 'google_not_connected':
-    case 'reconnect_required':
-      return `Scheduling is temporarily unavailable on our end.${contactLine(c)}`
-    case 'calendar_patch_failed':
-      return `We couldn't update the calendar event. Please try again in a few minutes.${contactLine(c)}`
-    case 'internal':
-      return `Something went wrong on our end. Please try again.${contactLine(c)}`
+      return 'Please pick a valid time and try again.'
+
+    // ── Catch-all ──
     default:
-      return `Something went wrong.${contactLine(c)}`
+      return `Something went wrong.${contactLine(c, 'persistent')}`
   }
 }
