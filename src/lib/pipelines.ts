@@ -137,11 +137,13 @@ export async function listWorkspacePipelinesWithCounts(workspaceId: string): Pro
 
   const pipelines = await prisma.pipeline.findMany({
     where: { workspaceId },
-    // Default first (pinned to top of the list since it receives the
-    // null-pipelineId fallback flows), then newest-created next. New
-    // pipelines surface immediately at the top instead of being buried
-    // under older ones the recruiter has already configured.
-    orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+    // Purely newest-first. The default pipeline is no longer pinned to the
+    // top because that buried freshly-created pipelines under it (a
+    // recruiter creating "test pipeline 4" expected it at position 1, not
+    // 2, behind the default Cleaner). The default pipeline is still
+    // visually marked with a "Default" badge on its card, so users can
+    // identify it regardless of position.
+    orderBy: { createdAt: 'desc' },
   })
   if (pipelines.length === 0) return []
 
