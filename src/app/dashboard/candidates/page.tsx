@@ -155,6 +155,11 @@ export default function CandidatesPage() {
   // first-time visitors (no localStorage value) so they don't get a momentary
   // "all candidates" flash before the default pipeline kicks in.
   const [pipelinesLoaded, setPipelinesLoaded] = useState(false)
+  // Cached count of PipelineTransitionRule rows for the selected pipeline.
+  // Drives the "rule-based movement is on but no movement rules" warning on
+  // the empty-state setup card. Null = not yet fetched (or no pipeline);
+  // -1 = fetch failed (treated as "unknown", warning suppressed).
+  const [selectedPipelineRuleCount, setSelectedPipelineRuleCount] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [flowFilter, setFlowFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
@@ -349,6 +354,22 @@ export default function CandidatesPage() {
   useEffect(() => {
     try { localStorage.setItem('hiringflow:status-tab', statusTab) } catch {}
   }, [statusTab])
+
+  // Movement-rule count for the selected pipeline. Only fetched when
+  // rule-based movement is on — under legacy mode the count is meaningless
+  // (V1 stage triggers live on the stage row, not in this table). Drives
+  // the "no movement rules" warning on the empty-state setup card.
+  useEffect(() => {
+    if (!selectedPipelineId) { setSelectedPipelineRuleCount(null); return }
+    const picked = pipelines.find((p) => p.id === selectedPipelineId)
+    if (!picked?.transitionsV2Enabled) { setSelectedPipelineRuleCount(null); return }
+    let cancelled = false
+    fetch(`/api/pipelines/${selectedPipelineId}/transition-rules`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: unknown[]) => { if (!cancelled) setSelectedPipelineRuleCount(Array.isArray(rows) ? rows.length : -1) })
+      .catch(() => { if (!cancelled) setSelectedPipelineRuleCount(-1) })
+    return () => { cancelled = true }
+  }, [selectedPipelineId, pipelines])
 
   // Whenever the pipeline selection changes, persist + swap the visible
   // stage list. Stages drive every kanban column header / drop target so
@@ -587,6 +608,17 @@ export default function CandidatesPage() {
                 )
               })}
             </div>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-[8px] text-[12px] text-grey-40 hover:text-ink hover:bg-surface-light"
+              title="Set up stages, movement rules, and actions for the selected pipeline"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              Set up
+            </button>
             <Link
               href="/dashboard/pipelines"
               className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-[8px] text-[12px] text-grey-40 hover:text-ink hover:bg-surface-light"
@@ -681,15 +713,60 @@ export default function CandidatesPage() {
         {loading ? (
           <div className="py-14 text-center font-mono text-[11px] uppercase text-grey-35" style={{ letterSpacing: '0.1em' }}>Loading…</div>
         ) : candidates.length === 0 ? (
-          <Card padding={48} className="text-center">
-            <div className="w-16 h-16 mx-auto mb-4 bg-brand-50 rounded-xl flex items-center justify-center">
-              <svg className="w-8 h-8" style={{ color: 'var(--brand-primary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </div>
-            <h2 className="text-[20px] font-semibold text-ink mb-2">No candidates yet</h2>
-            <p className="text-grey-35 text-[14px]">Candidates will appear here once they start a flow.</p>
-          </Card>
+          (() => {
+            // Empty board — surface the pipeline setup CTA so a brand-new
+            // pipeline (created from /dashboard/pipelines and not yet
+            // configured) has a clear next step instead of "empty board, now
+            // what?". The setup numbered list mirrors the Stages drawer's
+            // own setup guide so the recruiter sees the same model.
+            const selectedPipeline = pipelines.find((p) => p.id === selectedPipelineId)
+            const v2On = selectedPipeline?.transitionsV2Enabled === true
+            const v2NoRules = v2On && selectedPipelineRuleCount === 0
+            return (
+              <Card padding={40} className="text-center">
+                <div className="w-14 h-14 mx-auto mb-4 bg-brand-50 rounded-xl flex items-center justify-center">
+                  <svg className="w-7 h-7" style={{ color: 'var(--brand-primary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <h2 className="text-[20px] font-semibold text-ink mb-1">No candidates yet</h2>
+                <p className="text-grey-35 text-[14px] mb-5">
+                  Candidates will appear here once they start a flow{selectedPipeline ? ` assigned to ${selectedPipeline.name}` : ''}.
+                </p>
+                <div className="max-w-[420px] mx-auto text-left bg-surface-light border border-surface-divider rounded-[10px] px-4 py-3 mb-5">
+                  <div className="font-mono text-[10px] uppercase text-grey-50 mb-1.5" style={{ letterSpacing: '0.1em' }}>
+                    Pipeline setup
+                  </div>
+                  <ol className="text-[12px] text-grey-15 leading-snug space-y-0.5">
+                    <li><strong>1.</strong> Stages &middot; <span className="text-grey-40">columns candidates move through.</span></li>
+                    <li><strong>2.</strong> Movement rules &middot; <span className="text-grey-40">when candidates automatically move.</span></li>
+                    <li><strong>3.</strong> Actions &middot; <span className="text-grey-40">messages sent when candidates land.</span></li>
+                    <li><strong>4.</strong> Status rules &middot; <span className="text-grey-40">stalled / lost / hired tracking.</span></li>
+                  </ol>
+                </div>
+                {v2NoRules && (
+                  <div className="max-w-[420px] mx-auto mb-4 px-3 py-2 rounded-[10px] bg-amber-50 border border-amber-100 text-amber-900 text-[12px] leading-snug text-left">
+                    Rule-based movement is enabled, but this pipeline has no movement rules.
+                    Candidates will not move automatically until you add some.
+                  </div>
+                )}
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setSettingsOpen(true)}
+                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-[10px] bg-ink text-white text-[13px] font-medium hover:bg-ink/90 transition-colors"
+                  >
+                    Set up pipeline
+                  </button>
+                  <button
+                    onClick={() => setCreateOpen(true)}
+                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-[10px] border border-surface-border text-[13px] text-ink hover:bg-surface-light transition-colors"
+                  >
+                    Create candidate
+                  </button>
+                </div>
+              </Card>
+            )
+          })()
         ) : (
           <div
             ref={kanbanRef}

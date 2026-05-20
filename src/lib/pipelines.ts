@@ -137,7 +137,11 @@ export async function listWorkspacePipelinesWithCounts(workspaceId: string): Pro
 
   const pipelines = await prisma.pipeline.findMany({
     where: { workspaceId },
-    orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+    // Default first (pinned to top of the list since it receives the
+    // null-pipelineId fallback flows), then newest-created next. New
+    // pipelines surface immediately at the top instead of being buried
+    // under older ones the recruiter has already configured.
+    orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
   })
   if (pipelines.length === 0) return []
 

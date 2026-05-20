@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { PageHeader, Card, Button } from '@/components/design'
 import type { FunnelStage } from '@/lib/funnel-stages'
+import { StageSettingsDrawer } from '@/app/dashboard/candidates/_StageSettingsDrawer'
 
 interface PipelineRow {
   id: string
@@ -41,6 +42,18 @@ export default function PipelinesPage() {
   const [seedFromId, setSeedFromId] = useState<string>('')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
+  // Delete-confirmation modal state. The recruiter must type DELETE to enable
+  // the action button — this prevents accidental destruction even if the
+  // delete button gets misclicked. confirmInput is reset every time the
+  // modal opens.
+  const [deleteTarget, setDeleteTarget] = useState<PipelineRow | null>(null)
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState('')
+  // Stage Settings drawer mounted right on this page so the recruiter can
+  // configure a pipeline without first navigating to the kanban. Used both
+  // for the per-card "Set up" button AND auto-opened immediately after a
+  // successful create so the recruiter doesn't land on an unconfigured
+  // pipeline with no obvious next step.
+  const [setupTarget, setSetupTarget] = useState<PipelineRow | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -71,9 +84,15 @@ export default function PipelinesPage() {
         const d = await res.json().catch(() => ({}))
         throw new Error(d?.error || 'Failed to create')
       }
+      const created: PipelineRow = await res.json()
       setNewName('')
       setSeedFromId('')
       await load()
+      // Auto-open the setup drawer for the just-created pipeline so the
+      // recruiter has an immediate next step instead of staring at an
+      // unconfigured card. They can close without saving if they wanted
+      // to wait — closing doesn't undo the create.
+      setSetupTarget(created)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create')
     } finally {
@@ -124,18 +143,25 @@ export default function PipelinesPage() {
     }
   }
 
-  const remove = async (p: PipelineRow) => {
+  // Opens the typed-confirmation modal. Backend protection (default pipeline
+  // cannot be deleted) is enforced at the API; the UI inlines that check
+  // here too so the recruiter gets immediate feedback instead of a 409 round
+  // trip.
+  const requestDelete = (p: PipelineRow) => {
     if (p.isDefault) {
-      alert('Promote another pipeline to default before deleting this one.')
+      setError('Promote another pipeline to default before deleting this one.')
       return
     }
-    const fallback = pipelines.find((x) => x.isDefault)
-    const fallbackName = fallback?.name ?? 'default'
-    const flowsAssigned = flows.filter((f) => f.pipelineId === p.id).length
-    const message = flowsAssigned > 0
-      ? `Delete "${p.name}"? ${flowsAssigned} flow${flowsAssigned === 1 ? '' : 's'} currently assigned will fall back to the ${fallbackName} pipeline.`
-      : `Delete "${p.name}"?`
-    if (!confirm(message)) return
+    setError(null)
+    setDeleteConfirmInput('')
+    setDeleteTarget(p)
+  }
+
+  // Executes the delete after the recruiter has typed DELETE in the modal.
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    if (deleteConfirmInput !== 'DELETE') return
+    const p = deleteTarget
     setBusyId(p.id)
     try {
       const res = await fetch(`/api/pipelines/${p.id}`, { method: 'DELETE' })
@@ -143,6 +169,8 @@ export default function PipelinesPage() {
         const d = await res.json().catch(() => ({}))
         throw new Error(d?.error || 'Failed to delete')
       }
+      setDeleteTarget(null)
+      setDeleteConfirmInput('')
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed')
@@ -287,6 +315,13 @@ export default function PipelinesPage() {
                     ) : (
                       <>
                         <button
+                          onClick={() => setSetupTarget(p)}
+                          className="text-xs px-3 py-1 rounded-[8px] border border-surface-border text-grey-35 hover:border-grey-50 hover:text-ink"
+                          title="Edit stages, movement rules, and actions for this pipeline"
+                        >
+                          Set up
+                        </button>
+                        <button
                           onClick={() => setRenameTarget({ id: p.id, name: p.name })}
                           className="text-xs px-3 py-1 rounded-[8px] border border-surface-border text-grey-35 hover:border-grey-50 hover:text-ink"
                         >
@@ -304,7 +339,7 @@ export default function PipelinesPage() {
                         )}
                         {!p.isDefault && (
                           <button
-                            onClick={() => remove(p)}
+                            onClick={() => requestDelete(p)}
                             disabled={isBusy}
                             className="text-xs px-3 py-1 rounded-[8px] text-red-600 hover:bg-red-50"
                           >
@@ -327,12 +362,12 @@ export default function PipelinesPage() {
                 <div className="flex items-center justify-between gap-2 mb-3 px-3 py-2 rounded-[10px] bg-surface-light border border-surface-divider">
                   <div className="min-w-0">
                     <div className="text-[12px] font-medium text-ink">
-                      Rule-driven transitions (V2)
+                      Rule-based movement
                     </div>
                     <div className="text-[11px] text-grey-40 leading-snug mt-0.5">
-                      Replace V1 triggers with explicit PipelineTransitionRule rows.
-                      Edit rules per stage from the kanban &rarr; Stages drawer.
-                      {p.transitionsV2Enabled && ' Disable to fall back to V1.'}
+                      When enabled, candidates move automatically only when a movement rule matches.
+                      If no rule matches, candidates stay in their current stage.
+                      Edit movement rules per stage from the kanban &rarr; Stages.
                     </div>
                   </div>
                   <label className="shrink-0 inline-flex items-center gap-2 cursor-pointer">
@@ -432,8 +467,101 @@ export default function PipelinesPage() {
       )}
 
       <p className="mt-6 text-xs text-grey-40">
-        To edit a pipeline&apos;s stages, open the kanban with that pipeline selected and click <b>Stages</b>.
+        Stages, movement rules, and actions can also be edited from the kanban &rarr; <b>Stages</b> button while the pipeline is selected.
       </p>
+
+      {/* Stage Settings drawer — same component the kanban uses. Mounted
+          here so a pipeline can be configured immediately after create
+          (auto-opens via setSetupTarget in `create()`) and re-opened
+          per-card via the "Set up" button. candidateCounts is empty here
+          because we don't fetch per-stage counts on the pipelines page;
+          the drawer only uses it for the delete-stage reassignment UI. */}
+      <StageSettingsDrawer
+        open={setupTarget !== null}
+        onClose={() => setSetupTarget(null)}
+        pipelineId={setupTarget?.id ?? null}
+        pipelineName={setupTarget?.name}
+        transitionsV2Enabled={setupTarget?.transitionsV2Enabled ?? false}
+        stages={setupTarget?.stages ?? []}
+        candidateCounts={{}}
+        onSaved={(nextStages) => {
+          // Mirror the saved stages back onto the in-memory list so the
+          // stage chips update without a full /api/pipelines refetch. The
+          // drawer's own save flow doesn't close the drawer on success
+          // when there's a backfill preview, so we leave the close to it.
+          if (setupTarget) {
+            setPipelines((prev) => prev.map((row) =>
+              row.id === setupTarget.id ? { ...row, stages: nextStages } : row,
+            ))
+          }
+        }}
+      />
+
+
+      {/* Delete confirmation modal — typed-input guard so an accidental
+          click on Delete cannot destroy a pipeline. Default pipeline is
+          gated upstream in requestDelete + on the server. */}
+      {deleteTarget && (() => {
+        const target = deleteTarget
+        const flowCount = flows.filter((f) => f.pipelineId === target.id).length
+        const fallback = pipelines.find((x) => x.isDefault)
+        const fallbackName = fallback?.name ?? 'default'
+        const canDelete = deleteConfirmInput === 'DELETE' && busyId !== target.id
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-5 bg-black/40"
+            onMouseDown={() => setDeleteTarget(null)}
+          >
+            <div
+              className="bg-white rounded-[12px] shadow-xl w-full max-w-[440px] p-5"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <h3 className="font-semibold text-[15px] text-ink mb-1">Delete pipeline?</h3>
+              <p className="text-[13px] text-grey-35 mb-3">
+                Pipeline: <strong className="text-ink">{target.name}</strong>
+              </p>
+              <p className="text-[12px] text-grey-40 leading-snug mb-3">
+                This deletes the pipeline&apos;s stages, movement rules, and actions.
+                Existing candidates stay in place; flows pointing here fall back to the
+                <strong> {fallbackName}</strong> pipeline.
+              </p>
+              {flowCount > 0 && (
+                <div className="mb-3 px-3 py-2 rounded-[10px] bg-amber-50 border border-amber-100 text-amber-900 text-[12px] leading-snug">
+                  <strong>{flowCount}</strong> flow{flowCount === 1 ? '' : 's'} currently route candidates to this pipeline.
+                  Those candidates will start landing on the {fallbackName} pipeline instead.
+                </div>
+              )}
+              <label className="block text-[12px] text-grey-15 mb-1.5">
+                Type <code className="px-1 bg-surface-light rounded font-mono text-[11px]">DELETE</code> to confirm:
+              </label>
+              <input
+                type="text"
+                value={deleteConfirmInput}
+                onChange={(e) => setDeleteConfirmInput(e.target.value)}
+                placeholder="DELETE"
+                autoFocus
+                className="w-full px-3 py-2 mb-4 border border-surface-border rounded-[10px] text-[13px] text-ink font-mono focus:outline-none focus:ring-2 focus:ring-red-500/40"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setDeleteTarget(null)}
+                  disabled={busyId === target.id}
+                  className="text-xs px-3 py-2 rounded-[8px] text-grey-35 hover:text-ink hover:bg-surface-light"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  disabled={!canDelete}
+                  className="text-xs px-4 py-2 rounded-[8px] bg-red-600 text-white font-medium hover:bg-red-700 disabled:bg-grey-50/40 disabled:text-grey-40 disabled:cursor-not-allowed"
+                >
+                  {busyId === target.id ? 'Deleting…' : 'Delete pipeline'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

@@ -105,10 +105,10 @@ const TRIGGERS = [
   { value: 'background_check_failed', label: 'Background Check Failed' },
   { value: 'background_check_needs_review', label: 'Background Check — Needs Review' },
   { value: 'automation_completed', label: 'After Automation' },
-  // Pipeline Transitions v2 — fires after PipelineTransitionRule moves a
-  // candidate into the configured stage. Requires both pipelineId and
-  // stageId; the server rejects creates/updates without them.
-  { value: 'stage_entered', label: 'Stage Entered (V2)' },
+  // Stage-entered — fires after a movement rule lands the candidate in a
+  // specific stage. Requires both pipelineId and stageId; the server
+  // rejects creates/updates without them.
+  { value: 'stage_entered', label: 'Stage Entered' },
 ]
 
 const SESSION_WIDE_TRIGGERS = new Set([
@@ -146,7 +146,7 @@ const TRIGGER_LABELS: Record<string, string> = {
   background_check_failed: 'Background Check Failed',
   background_check_needs_review: 'Background Check — Needs Review',
   automation_completed: 'After Automation',
-  stage_entered: 'Stage Entered (V2)',
+  stage_entered: 'Stage Entered',
 }
 
 const DELAY_PRESETS: Array<{ value: number; label: string }> = [
@@ -1510,10 +1510,10 @@ export default function AutomationsPage() {
               {triggerType === 'stage_entered' && (
                 <div className="p-3 bg-brand-50 border border-brand-100 rounded-[8px]">
                   <div className="text-xs">
-                    <div className="font-medium text-brand-800">Pipeline Transitions v2 trigger</div>
+                    <div className="font-medium text-brand-800">Fires when a candidate enters a stage</div>
                     <div className="text-brand-700 mt-0.5 leading-snug">
-                      Fires after a <code className="px-1 bg-white/60 rounded">PipelineTransitionRule</code> moves a candidate into the stage you select below.
-                      <strong> Both pipeline and stage are required.</strong> Only fires on pipelines with V2 enabled — toggle on the pipeline first.
+                      Fires after a movement rule lands the candidate in the stage you select below.
+                      <strong> Both pipeline and stage are required.</strong> Only fires on pipelines with rule-based movement enabled — turn it on from the Pipelines page first.
                     </div>
                   </div>
                 </div>
