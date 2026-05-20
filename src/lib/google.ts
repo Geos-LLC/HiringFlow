@@ -5,10 +5,14 @@ import { encrypt, decrypt } from './crypto'
 
 // Legacy read-only scopes used by the pre-Meet-v2 Calendar sync path. Kept as
 // the minimum consent set so existing connected workspaces keep working.
+// `userinfo.profile` is required for `name` to come back from oauth2.userinfo —
+// without it personal-Gmail integrations end up with googleDisplayName=null,
+// which breaks the displayName tier of host detection in attendance posts.
 const BASE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/calendar.events.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
 ]
 
 // Scopes required by the Meet integration v2 flow. Additive to the base set —

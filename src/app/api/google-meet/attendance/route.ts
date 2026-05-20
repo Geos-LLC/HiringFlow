@@ -40,6 +40,7 @@ import { prisma } from '@/lib/prisma'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { fireMeetingLifecycleAutomations } from '@/lib/automation'
 import { bumpSessionActivity } from '@/lib/session-activity'
+import { ensureHostIdentity } from '@/lib/meet/sync-on-read'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -88,12 +89,18 @@ type StoredParticipant = {
 }
 
 const NO_SHOW_MIN_SECONDS = 30
-// Three-tier host detection. The extension synthesizes an isSelf row from
+// Four-tier host detection. The extension synthesizes an isSelf row from
 // chrome.identity, which is the most reliable signal — it doesn't depend
 // on either name strings matching across Google products. Email match
 // against the workspace's connected GoogleIntegration is next; display-name
-// match is the fallback for cases where the extension couldn't read either.
-// Returning false on all three lets the candidate-side logic fire
+// match is the third. The fourth tier covers the case Meet renders the
+// same host as a second participant tile with no email and no isSelf flag
+// (observed in xcr-paay-dfi on 2026-05-20: "Sayapingeorge" + "George Sayapin"
+// both belonged to the same recruiter). We compare the displayName tokens
+// against the email local-part — they share at least one token when it's
+// really the same person, and the comparison is symmetric so "George Sayapin"
+// matches "sayapingeorge@gmail.com" via the "george" / "sayapin" tokens.
+// Returning false on all four lets the candidate-side logic fire
 // `meeting_no_show` correctly.
 function isHostParticipant(p: StoredParticipant, hostEmail: string | null, hostName: string | null): boolean {
   if (p.isSelf) return true
@@ -101,6 +108,29 @@ function isHostParticipant(p: StoredParticipant, hostEmail: string | null, hostN
   if (hostEmail && email && email === hostEmail.toLowerCase()) return true
   const dn = (p.displayName || '').toLowerCase().trim()
   if (hostName && dn && dn === hostName.toLowerCase().trim()) return true
+  if (hostEmail && dn && displayNameMatchesEmailLocalPart(dn, hostEmail)) return true
+  return false
+}
+
+/**
+ * True when the displayName shares a meaningful (≥4 char) token with the
+ * email local-part. Splits both sides into alphabetic tokens and looks for
+ * substring containment in either direction so "george sayapin" matches
+ * "sayapingeorge@gmail.com" via "george" or "sayapin". Min-length floor
+ * avoids false positives on short tokens shared with candidate names ("a",
+ * "an", "the"). Pure ASCII fold — non-Latin display names won't match this
+ * way, but they're already covered by the email/isSelf tiers when present.
+ */
+function displayNameMatchesEmailLocalPart(displayName: string, email: string): boolean {
+  const local = email.toLowerCase().split('@')[0] || ''
+  if (local.length < 4) return false
+  const dnTokens = displayName.toLowerCase().split(/[^a-z]+/).filter((t) => t.length >= 4)
+  if (dnTokens.length === 0) return false
+  const localStripped = local.replace(/[^a-z]/g, '')
+  for (const tok of dnTokens) {
+    if (localStripped.includes(tok)) return true
+    if (tok.includes(localStripped)) return true
+  }
   return false
 }
 
@@ -173,7 +203,11 @@ export async function POST(request: NextRequest) {
   }
 
   // 4. Resolve host hints from the workspace's connected Google account so
-  //    we can exclude the recruiter from the no-show count.
+  //    we can exclude the recruiter from the no-show count. Backfill
+  //    googleDisplayName first if missing — legacy integrations connected
+  //    before that column was populated leave it null, which breaks the
+  //    displayName tier of host detection.
+  await ensureHostIdentity(meeting.workspaceId).catch(() => {})
   const integ = await prisma.googleIntegration.findUnique({
     where: { workspaceId: meeting.workspaceId },
     select: { googleEmail: true, googleDisplayName: true },
@@ -347,9 +381,32 @@ function participantKey(email: string | null | undefined, name: string | null | 
   const rawName = (name || '').trim()
   const embeddedEmail = rawName.match(/[\w.+-]+@[\w-]+\.[\w.-]+/)
   if (embeddedEmail) return `e:${unduplicateEmailGlue(embeddedEmail[0].toLowerCase())}`
+  if (!isPlausibleParticipantName(rawName)) return null
   const sanitized = sanitizeNameForKey(rawName)
   if (sanitized) return `n:${sanitized}`
   return null
+}
+
+/**
+ * Reject DOM-text leaks the extension's scraper sometimes mistakes for a
+ * participant. The xcr-paay-dfi meeting on 2026-05-20 captured a row whose
+ * displayName was `.ink-canvas-parent {` — a CSS rule from a Meet whiteboard
+ * tile — and counted it as a candidate for 394 seconds. Plausible names
+ * must contain at least one Unicode letter or digit and must not start with
+ * punctuation that signals markup ('.', '{', '<', '>', '#', '/', '*').
+ */
+// Built via RegExp constructor so the Unicode property escape is checked at
+// runtime (current TS target rejects /\p{...}/u as a literal).
+const NAME_HAS_LETTER_OR_DIGIT = new RegExp('[\\p{L}\\p{N}]', 'u')
+
+function isPlausibleParticipantName(name: string): boolean {
+  if (!name) return false
+  const trimmed = name.trim()
+  if (trimmed.length === 0) return false
+  if (/^[.{<>#/*]/.test(trimmed)) return false
+  // Letter or digit, including non-Latin (Cyrillic candidates etc.).
+  if (!NAME_HAS_LETTER_OR_DIGIT.test(trimmed)) return false
+  return true
 }
 
 /**
@@ -384,15 +441,20 @@ function sanitizeNameForKey(s: string): string {
   let out = s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, ' ')
   out = out.replace(/devices?/gi, ' ')
   out = out.replace(/\s+/g, ' ').trim()
-  if (out.length >= 6) {
-    for (let len = Math.floor(out.length / 2); len >= 3; len--) {
+  // Collapse exact-doubled patterns ("KatKat" → "Kat",
+  // "Елена КорольЕлена Король" → "Елена Король"). The previous floor of
+  // `left.length >= 6 || contains whitespace` let short doubled names like
+  // "KatKat" slip through and dedupe-fail against the clean "Kat" row.
+  // Floor of 2 still rejects accidental doubles like "AA" → "A" being
+  // meaningless, but catches every real-world Meet panel doubling we've
+  // observed (3+ char given names included).
+  if (out.length >= 4) {
+    for (let len = Math.floor(out.length / 2); len >= 2; len--) {
       const left = out.slice(0, len)
       const after = out.slice(len).trimStart()
       if (after.toLowerCase() !== left.toLowerCase()) continue
-      if (/\s/.test(left) || left.length >= 6) {
-        out = left.trim()
-        break
-      }
+      out = left.trim()
+      break
     }
   }
   return out.toLowerCase().trim()

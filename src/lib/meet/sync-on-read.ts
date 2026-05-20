@@ -773,7 +773,7 @@ async function emitLifecycleEventOnce(
  * if either is missing. One userinfo call, idempotent — both downstream
  * paths (no-show evaluation, Drive filename matching) need these.
  */
-async function ensureHostIdentity(workspaceId: string): Promise<void> {
+export async function ensureHostIdentity(workspaceId: string): Promise<void> {
   const integ = await prisma.googleIntegration.findUnique({
     where: { workspaceId },
     select: { googleUserId: true, googleDisplayName: true },

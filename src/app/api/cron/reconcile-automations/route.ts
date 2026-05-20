@@ -26,13 +26,21 @@ import { prisma } from '@/lib/prisma'
 import {
   fireAutomations,
   fireFlowRecordingReadyAutomations,
+  fireMeetingLifecycleAutomations,
 } from '@/lib/automation'
+import { logSchedulingEvent } from '@/lib/scheduling'
 
 interface SweepCounts {
-  scanned: { sessionsFinished: number; capturesProcessed: number }
-  fired: { flowCompleted: number; recordingReady: number }
+  scanned: { sessionsFinished: number; capturesProcessed: number; meetingsStuckOpen: number }
+  fired: { flowCompleted: number; recordingReady: number; meetingEnded: number }
   errors: number
 }
+
+// Give the Chrome extension this much time after scheduledEnd to flush an
+// `isFinal=true` snapshot before we declare it stuck and finalize server-side.
+// 30 min covers the long-tail of meetings that ran over their booked window
+// AND a heartbeat or two that may land just after scheduledEnd.
+const MEETING_ENDED_RECOVERY_GRACE_MS = 30 * 60 * 1000
 
 export async function GET(request: NextRequest) {
   const auth = request.headers.get('authorization')
@@ -42,8 +50,8 @@ export async function GET(request: NextRequest) {
 
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const counts: SweepCounts = {
-    scanned: { sessionsFinished: 0, capturesProcessed: 0 },
-    fired: { flowCompleted: 0, recordingReady: 0 },
+    scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0 },
+    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0 },
     errors: 0,
   }
 
@@ -131,6 +139,72 @@ export async function GET(request: NextRequest) {
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] fireFlowRecordingReadyAutomations failed', { captureId: cap.id, err })
+    }
+  }
+
+  // -- Rule 3: InterviewMeeting started but never ended --------------------
+  //
+  // The Chrome Meet Tracker extension is supposed to upload an `isFinal=true`
+  // snapshot when the host leaves the tracked Meet tab, which is what fires
+  // `meeting_ended`. In practice, the final beacon often fails to deliver —
+  // tab force-close, OS sleep, network drop. The result is a meeting that
+  // sat in actualStart-without-actualEnd limbo, and any post-meeting
+  // automations (next-step email, follow-up SMS) never fire.
+  //
+  // Recovery: find meetings whose scheduledEnd elapsed by the grace window,
+  // have an actualStart (so we know the candidate did attend), have no
+  // actualEnd yet, and have no meeting_ended SchedulingEvent. Stamp
+  // actualEnd, log meeting_ended with source='cron_heartbeat_timeout', and
+  // dispatch the same lifecycle automations the live path would have.
+  const meetingCutoff = new Date(Date.now() - MEETING_ENDED_RECOVERY_GRACE_MS)
+  const stuckMeetings = await prisma.interviewMeeting.findMany({
+    where: {
+      actualStart: { not: null },
+      actualEnd: null,
+      scheduledEnd: { lt: meetingCutoff },
+      // Bound the lookback so we never re-process meetings older than a week
+      // (avoids re-firing automations for legacy stuck rows that operators
+      // may have manually resolved without populating actualEnd).
+      scheduledStart: { gte: cutoff },
+    },
+    select: { id: true, sessionId: true, scheduledEnd: true, meetingCode: true },
+  })
+  counts.scanned.meetingsStuckOpen = stuckMeetings.length
+
+  for (const m of stuckMeetings) {
+    try {
+      const alreadyEnded = await prisma.schedulingEvent.findFirst({
+        where: {
+          sessionId: m.sessionId,
+          eventType: 'meeting_ended',
+          metadata: { path: ['interviewMeetingId'], equals: m.id },
+        },
+        select: { id: true },
+      })
+      if (alreadyEnded) continue
+
+      // Best-effort actualEnd: scheduledEnd is a reasonable proxy when the
+      // extension didn't tell us when the candidate left.
+      const endAt = m.scheduledEnd
+      await prisma.interviewMeeting.update({
+        where: { id: m.id },
+        data: { actualEnd: endAt },
+      })
+      await logSchedulingEvent({
+        sessionId: m.sessionId,
+        eventType: 'meeting_ended',
+        metadata: {
+          interviewMeetingId: m.id,
+          meetingCode: m.meetingCode,
+          source: 'cron_heartbeat_timeout',
+          at: endAt.toISOString(),
+        },
+      })
+      await fireMeetingLifecycleAutomations(m.sessionId, 'meeting_ended')
+      counts.fired.meetingEnded++
+    } catch (err) {
+      counts.errors++
+      console.error('[reconcile-automations] meeting_ended recovery failed', { meetingId: m.id, err })
     }
   }
 
