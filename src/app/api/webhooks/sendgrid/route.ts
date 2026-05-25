@@ -27,19 +27,15 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
 import {
   SIGNATURE_HEADER,
   TIMESTAMP_HEADER,
   verifySendgridSignature,
   mapEventToStatus,
-  readDeliveryError,
   readExecutionId,
-  readWorkspaceId,
-  shouldUpdateStatus,
   type SendgridEvent,
-  type DeliveryStatus,
 } from '@/lib/sendgrid-events'
+import { applyEventToExecution } from '@/lib/sendgrid-apply-event'
 
 // SendGrid uses gzip compression when bulk events are large; Next.js
 // already decompresses by default. Force this route to dynamic so the
@@ -107,83 +103,4 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ ok: true, processed, skipped, errors })
-}
-
-type ApplyResult = 'updated' | 'no_execution' | 'cross_workspace' | 'duplicate' | 'no_status_change'
-
-export async function applyEventToExecution(
-  executionId: string,
-  next: DeliveryStatus,
-  ev: SendgridEvent,
-): Promise<ApplyResult> {
-  const execution = await prisma.automationExecution.findUnique({
-    where: { id: executionId },
-    select: {
-      id: true,
-      sessionId: true,
-      deliveryStatus: true,
-      sendgridEventId: true,
-      automationRule: { select: { workspaceId: true } },
-    },
-  })
-  if (!execution) return 'no_execution'
-
-  // Cross-workspace defense — if the event echoes a workspaceId, ensure
-  // it matches the execution's rule. Forged customArgs can't redirect
-  // an event to a row that isn't actually theirs.
-  const ruleWsId = execution.automationRule?.workspaceId ?? null
-  const eventWsId = readWorkspaceId(ev)
-  if (eventWsId && ruleWsId && eventWsId !== ruleWsId) {
-    console.warn('[SendGridWebhook] workspace mismatch — dropping', { executionId, eventWsId, ruleWsId })
-    return 'cross_workspace'
-  }
-
-  // Idempotent retry: same sg_event_id arrived twice. SendGrid retries
-  // every event in its queue if a webhook attempt fails, so this is
-  // expected on transient errors.
-  if (ev.sg_event_id && execution.sendgridEventId === ev.sg_event_id) {
-    return 'duplicate'
-  }
-
-  const willUpdate = shouldUpdateStatus(execution.deliveryStatus as DeliveryStatus | null, next)
-  if (!willUpdate) {
-    // Still record the event id so a later same-priority replay doesn't
-    // try to "update" again, but don't move the status backwards.
-    if (ev.sg_event_id) {
-      await prisma.automationExecution.update({
-        where: { id: executionId },
-        data: { sendgridEventId: ev.sg_event_id },
-      })
-    }
-    return 'no_status_change'
-  }
-
-  const error = next === 'delivered' || next === 'processed' ? null : readDeliveryError(ev)
-  const evTimestamp = typeof ev.timestamp === 'number' && Number.isFinite(ev.timestamp)
-    ? new Date(ev.timestamp * 1000)
-    : new Date()
-
-  await prisma.automationExecution.update({
-    where: { id: executionId },
-    data: {
-      deliveryStatus: next,
-      deliveryStatusAt: evTimestamp,
-      deliveryErrorMessage: error,
-      sendgridMessageId: ev.sg_message_id ?? undefined,
-      sendgridEventId: ev.sg_event_id ?? undefined,
-      // Stash a trimmed copy of the raw event for admin debugging.
-      // Don't keep the whole array — only what we read from it plus the
-      // event type. Avoids accidentally storing PII like the full SMTP
-      // response or candidate's IP.
-      deliveryRaw: {
-        event: ev.event ?? null,
-        type: ev.type ?? null,
-        reason: ev.reason ?? null,
-        response: ev.response ?? null,
-        status: ev.status ?? null,
-        timestamp: ev.timestamp ?? null,
-      } as any,
-    },
-  })
-  return 'updated'
 }

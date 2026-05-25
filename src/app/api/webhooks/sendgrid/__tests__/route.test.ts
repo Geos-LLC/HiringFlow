@@ -43,7 +43,7 @@ const { rows, prismaMock } = vi.hoisted(() => {
 vi.mock('@/lib/prisma', () => ({ prisma: prismaMock }))
 
 // Import AFTER mocks are registered.
-import { applyEventToExecution } from '../route'
+import { applyEventToExecution } from '@/lib/sendgrid-apply-event'
 
 function seedExecution(id: string, workspaceId: string, prev: Partial<ExecRow> = {}) {
   rows.set(id, {
