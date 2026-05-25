@@ -52,6 +52,10 @@ interface Candidate {
   isRebook?: boolean
   nextMeetingAt?: string | null
   interestingAt?: string | null
+  // Most recent past timeline event (training/scheduling/automation), summarized
+  // server-side so the card can show "where this candidate is right now"
+  // without each row pulling its own timeline.
+  latestStep?: { label: string; at: string } | null
 }
 
 // Status tabs above the kanban. The "Active" tab — the default view —
@@ -119,6 +123,23 @@ function daysSince(iso: string | null | undefined): number | null {
   const ms = Date.now() - new Date(iso).getTime()
   if (!isFinite(ms) || ms < 0) return null
   return Math.floor(ms / (24 * 60 * 60 * 1000))
+}
+
+// Compact "X ago" for the per-card latest-step line. Coarsens up the unit so
+// the card stays narrow ("3h", "2d", "5w") instead of wrapping.
+function shortAgo(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const ms = Date.now() - new Date(iso).getTime()
+  if (!isFinite(ms) || ms < 0) return null
+  const m = Math.floor(ms / 60_000)
+  if (m < 1) return 'now'
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24)
+  if (d < 7) return `${d}d ago`
+  const w = Math.floor(d / 7)
+  return `${w}w ago`
 }
 
 interface Flow { id: string; name: string; pipelineId?: string | null }
@@ -1009,6 +1030,31 @@ export default function CandidatesPage() {
                                   hour: 'numeric', minute: '2-digit',
                                 })}
                               </span>
+                            </div>
+                          )}
+                          {/* Latest timeline step — mirrors the most recent
+                              past event from the candidate detail page's
+                              timeline (training / scheduling / automation
+                              sends). Gives recruiters a glance at "what
+                              just happened with this candidate" without
+                              opening the profile. Tooltip shows the full
+                              timestamp; visible body is truncated and
+                              tagged with a compact "Xh ago" suffix. */}
+                          {c.latestStep && (
+                            <div
+                              className="mb-2 text-[11px] text-grey-15 flex items-center gap-1.5 min-w-0"
+                              title={`${c.latestStep.label} · ${new Date(c.latestStep.at).toLocaleString()}`}
+                            >
+                              <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-grey-50" aria-hidden="true" />
+                              <span className="truncate">{c.latestStep.label}</span>
+                              {(() => {
+                                const ago = shortAgo(c.latestStep.at)
+                                return ago ? (
+                                  <span className="shrink-0 font-mono text-[10px] text-grey-50" style={{ letterSpacing: '0.02em' }}>
+                                    {ago}
+                                  </span>
+                                ) : null
+                              })()}
                             </div>
                           )}
                           <div className="flex items-center justify-between text-[10px] font-mono text-grey-50" style={{ letterSpacing: '0.04em' }}>

@@ -107,7 +107,12 @@ export async function GET(request: NextRequest) {
       ad: { select: { id: true, name: true, source: true } },
       answers: { select: { id: true } },
       submissions: { select: { id: true } },
-      trainingEnrollments: { select: { id: true, status: true, completedAt: true } },
+      trainingEnrollments: {
+        select: {
+          id: true, status: true, startedAt: true, completedAt: true,
+          training: { select: { title: true } },
+        },
+      },
       schedulingEvents: { select: { id: true, eventType: true, eventAt: true, metadata: true } },
       // Next upcoming InterviewMeeting (Meet v2 path)
       interviewMeetings: {
@@ -118,6 +123,53 @@ export async function GET(request: NextRequest) {
       },
     },
   })
+
+  // Most recent past automation executions per session — fed into the per-card
+  // "latest step" hint below. Loaded as a separate query because the Session
+  // ↔ AutomationExecution relation only carries the FK (no back-reference on
+  // Session), so we can't include it in the session query above. Capped per
+  // session in JS to keep the merge cheap.
+  type AEForCard = {
+    sessionId: string | null
+    status: string
+    channel: string
+    sentAt: Date | null
+    createdAt: Date
+    skipReason: string | null
+    automationRule: { name: string }
+  }
+  const sessionIds = sessions.map((s) => s.id)
+  const automationExecRows: AEForCard[] = sessionIds.length === 0
+    ? []
+    : await prisma.automationExecution.findMany({
+        where: {
+          sessionId: { in: sessionIds },
+          // Past-only — the card hint shows what just happened, not what's
+          // queued. Future-dated rows (status='queued' with scheduledFor) are
+          // intentionally excluded.
+          status: { in: ['sent', 'failed', 'cancelled', 'skipped_wrong_status', 'skipped_wrong_stage', 'skipped_missing_prerequisite', 'skipped_duplicate', 'skipped_cancelled', 'skipped_ineligible'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          sessionId: true,
+          status: true,
+          channel: true,
+          sentAt: true,
+          createdAt: true,
+          skipReason: true,
+          automationRule: { select: { name: true } },
+        },
+      })
+  const automationExecsBySession = new Map<string, AEForCard[]>()
+  for (const ae of automationExecRows) {
+    if (!ae.sessionId) continue
+    const list = automationExecsBySession.get(ae.sessionId)
+    if (list) {
+      if (list.length < 10) list.push(ae)
+    } else {
+      automationExecsBySession.set(ae.sessionId, [ae])
+    }
+  }
 
   // Build email → earliest meeting_no_show timestamp map. A later session for
   // the same email is a "rebook" — i.e. the candidate took the no-show
@@ -153,6 +205,59 @@ export async function GET(request: NextRequest) {
     seenEmails.add(key)
     return true
   })
+
+  // Latest *past* timeline event for the card hint — mirrors the detail-page
+  // timeline (training + scheduling + automation rows) but server-side picks
+  // only the single most-recent entry per candidate. Future-dated rows
+  // (queued automations, upcoming meetings) are intentionally excluded so
+  // the line reflects "what just happened", not "what's pending".
+  const SCHED_LABELS: Record<string, string> = {
+    invite_sent: 'Scheduling invite sent',
+    link_clicked: 'Scheduling link clicked',
+    marked_scheduled: 'Marked as scheduled',
+    meeting_scheduled: 'Meeting scheduled',
+    meeting_rescheduled: 'Meeting rescheduled',
+    meeting_cancelled: 'Meeting cancelled',
+    meeting_confirmed: 'Candidate confirmed',
+    meeting_no_show: 'Candidate no-show',
+    nudge_sent: 'Manual nudge sent',
+    rejection_email_sent: 'Rejection email sent',
+  }
+  const computeLatestStep = (s: typeof sessions[number]): { label: string; at: string } | null => {
+    const items: { label: string; at: Date }[] = []
+    items.push({ label: 'Applied', at: s.startedAt })
+    if (s.finishedAt) items.push({ label: `Flow ${s.outcome || 'completed'}`, at: s.finishedAt })
+    for (const te of s.trainingEnrollments) {
+      const title = te.training?.title || 'training'
+      items.push({ label: `Training started: ${title}`, at: te.startedAt })
+      if (te.completedAt) items.push({ label: `Training completed: ${title}`, at: te.completedAt })
+    }
+    for (const ev of s.schedulingEvents) {
+      items.push({ label: SCHED_LABELS[ev.eventType] || ev.eventType, at: ev.eventAt })
+    }
+    for (const ae of automationExecsBySession.get(s.id) || []) {
+      const name = ae.automationRule.name
+      const chan = ae.channel === 'sms' ? 'SMS' : 'Email'
+      if (ae.status === 'sent' && ae.sentAt) {
+        items.push({ label: `${chan} sent: ${name}`, at: ae.sentAt })
+      } else if (ae.status === 'failed') {
+        items.push({ label: `Automation failed: ${name}`, at: ae.createdAt })
+      } else if (ae.status === 'cancelled') {
+        items.push({ label: `Automation cancelled: ${name}`, at: ae.createdAt })
+      } else if (ae.status.startsWith('skipped_')) {
+        const reason = (ae.skipReason || ae.status).replace(/^skipped_/, '').replace(/_/g, ' ')
+        items.push({ label: `Automation skipped: ${name} (${reason})`, at: ae.createdAt })
+      }
+    }
+    const nowMs = now.getTime()
+    let best: { label: string; at: Date } | null = null
+    for (const it of items) {
+      if (it.at.getTime() > nowMs) continue
+      if (!best || it.at.getTime() > best.at.getTime()) best = it
+    }
+    if (!best) return null
+    return { label: best.label, at: best.at.toISOString() }
+  }
 
   // Next upcoming meeting time. Prefer the InterviewMeeting (Meet v2 row) when
   // present; fall back to the latest meeting_scheduled / meeting_rescheduled
@@ -204,6 +309,7 @@ export async function GET(request: NextRequest) {
     schedulingEvents: s.schedulingEvents.length,
     lastSchedulingEvent: s.schedulingEvents[0]?.eventType || null,
     nextMeetingAt: computeNextMeetingAt(s),
+    latestStep: computeLatestStep(s),
   })))
 }
 
