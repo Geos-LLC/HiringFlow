@@ -36,6 +36,7 @@ import type {
 import { selectRecorder } from '../meet/meeting-recorder'
 import { logSchedulingEvent, updatePipelineStatus } from '../scheduling'
 import { fireMeetingScheduledAutomations } from '../automation'
+import { scheduleBot, RecallApiError } from '../recall/client'
 
 export type BookingSource = 'operator' | 'public'
 
@@ -269,6 +270,45 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
       workspaceEventsSubExpiresAt: subExpires,
     },
   })
+
+  // 9b. Recall.ai bot (best-effort) — when the workspace has opted into
+  // bot-based attendance + recording, schedule a bot to join the call. On
+  // success we flip attendanceSource='recall' so the legacy chrome-ext /
+  // Meet auto-record paths defer to the bot. On any failure, the row stays
+  // on the 'meet' source so the booking itself never breaks.
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { recallBotEnabled: true },
+  })
+  if (workspace?.recallBotEnabled && process.env.RECALL_API_KEY) {
+    try {
+      const bot = await scheduleBot({
+        meetingUrl: space.meetingUri,
+        joinAt: start,
+        metadata: {
+          interviewMeetingId: meeting.id,
+          workspaceId,
+          sessionId: session.id,
+        },
+      })
+      await prisma.interviewMeeting.update({
+        where: { id: meeting.id },
+        data: {
+          recallBotId: bot.id,
+          attendanceSource: 'recall',
+          // Recall is now the authoritative recording source for this meeting.
+          recordingProvider: 'recall',
+          recordingState: 'requested',
+        },
+      })
+    } catch (err) {
+      const msg = err instanceof RecallApiError
+        ? `Recall ${err.status}: ${err.message}`
+        : (err as Error).message
+      console.error('[bookInterview] recall scheduleBot failed:', msg)
+      warnings.push('Recording bot could not be scheduled — meeting will use Google Meet recording as a fallback.')
+    }
+  }
 
   await logSchedulingEvent({
     sessionId: session.id,

@@ -209,7 +209,7 @@ async function adoptExternalMeet(
     console.error('[AdoptMeet] subscribeSpace failed:', (err as Error).message)
   }
 
-  await prisma.interviewMeeting.create({
+  const created = await prisma.interviewMeeting.create({
     data: {
       workspaceId,
       sessionId,
@@ -228,7 +228,38 @@ async function adoptExternalMeet(
     },
   }).catch((err) => {
     console.log('[AdoptMeet] insert skipped (likely race):', (err as Error).message)
+    return null as { id: string; meetingUri: string; scheduledStart: Date } | null
   })
+
+  // Recall.ai bot for adopted (Calendly-flavored) meetings — same gating as
+  // bookInterview. Skips silently if the create above lost a race.
+  if (created && created.id) {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { recallBotEnabled: true },
+    })
+    if (workspace?.recallBotEnabled && process.env.RECALL_API_KEY) {
+      try {
+        const { scheduleBot } = await import('./recall/client')
+        const bot = await scheduleBot({
+          meetingUrl: created.meetingUri,
+          joinAt: created.scheduledStart,
+          metadata: { interviewMeetingId: created.id, workspaceId, sessionId },
+        })
+        await prisma.interviewMeeting.update({
+          where: { id: created.id },
+          data: {
+            recallBotId: bot.id,
+            attendanceSource: 'recall',
+            recordingProvider: 'recall',
+            recordingState: 'requested',
+          },
+        })
+      } catch (err) {
+        console.error('[AdoptMeet] recall scheduleBot failed:', (err as Error).message)
+      }
+    }
+  }
 }
 
 async function matchSession(

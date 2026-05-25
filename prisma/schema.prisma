@@ -66,6 +66,13 @@ model Workspace {
   // (e.g. Dispatcher pipelines with zero stage triggers) keep their current
   // behavior until the recruiter opts in.
   pipelineTransitionsV2Enabled Boolean   @default(false) @map("pipeline_transitions_v2_enabled")
+  // Recall.ai bot integration — when on, every booked InterviewMeeting gets a
+  // recording bot scheduled at scheduledStart-1m. The bot replaces both the
+  // chrome-extension attendance signal and the Meet native auto-record path
+  // (which silently auto-stops when the host is alone — see
+  // project_meet_premature_noshow). Off by default; enabled per workspace via
+  // /api/integrations/recall/connect once RECALL_API_KEY is set in env.
+  recallBotEnabled             Boolean   @default(false) @map("recall_bot_enabled")
   createdAt                    DateTime  @default(now()) @map("created_at")
   updatedAt                    DateTime  @updatedAt @map("updated_at")
 
@@ -360,6 +367,28 @@ model InterviewMeeting {
   // reminder (or any future channel that lands on this row). Null until
   // confirmation. Surfaced on the candidate detail page as a green pill.
   confirmedAt                 DateTime?                  @map("confirmed_at")
+  // Recall.ai bot id when this meeting is being recorded/tracked by a Recall
+  // bot. Null when the workspace is on the legacy Meet auto-record + chrome-
+  // extension attendance path. Populated by bookInterview /
+  // adoptExternalMeet when Workspace.recallBotEnabled is true. Webhook events
+  // arriving with this bot id are routed back to this meeting row.
+  recallBotId                 String?                    @unique @map("recall_bot_id")
+  // Recall.ai recording id for this meeting. Populated when the bot finishes
+  // and reports `bot.done`. The playback URL is presigned (15 min TTL) so we
+  // don't cache it — `/api/interview-meetings/[id]/recording` re-fetches it
+  // from the Recall API on every play request. A v2 step (out of scope for
+  // pilot) will mirror the file to R2 so playback survives a Recall account
+  // change or vendor sunset.
+  recallRecordingId           String?                    @map("recall_recording_id")
+  // Which signal currently owns attendance + recording for this meeting:
+  //   'meet'      — Meet REST API (Workspace tenants) + chrome extension
+  //                 (personal Gmail). Default for back-compat.
+  //   'recall'    — Recall.ai bot. Lifecycle events (meeting_started/ended/
+  //                 no_show), participants[], recording artifact all come
+  //                 from Recall webhooks. The legacy paths ignore this row.
+  //   'extension' — Reserved for future per-meeting forcing of the chrome-
+  //                 extension path even on a Recall-enabled workspace.
+  attendanceSource            String                     @default("meet") @map("attendance_source")
   createdAt                   DateTime                   @default(now()) @map("created_at")
   updatedAt                   DateTime                   @updatedAt @map("updated_at")
 
