@@ -8,9 +8,12 @@
  * request is considered valid if ANY one matches.
  *
  * Header contract (lowercase, set by Svix):
- *   - svix-id        — unique message id
- *   - svix-timestamp — unix seconds; reject if drift > tolerance
- *   - svix-signature — "v1,<sig1> v1,<sig2> ..." (space-separated)
+ *   - svix-id        / webhook-id        — unique message id
+ *   - svix-timestamp / webhook-timestamp — unix seconds; reject if drift > tolerance
+ *   - svix-signature / webhook-signature — "v1,<sig1> v1,<sig2> ..." (space-separated)
+ *
+ * Svix consumers can choose either header prefix. Recall.ai uses `webhook-*`;
+ * older Svix integrations use `svix-*`. We accept either.
  *
  * Endpoint secret format: "whsec_<base64-encoded random>". The base64 part
  * is the actual HMAC key. We strip the prefix before decoding.
@@ -27,9 +30,11 @@ export interface SvixHeaders {
 }
 
 export function readSvixHeaders(headers: Headers): SvixHeaders | null {
-  const id = headers.get('svix-id')
-  const timestamp = headers.get('svix-timestamp')
-  const signature = headers.get('svix-signature')
+  // Accept both header variants. Svix consumers can use either prefix; Recall
+  // delivers as `webhook-*` while older integrations use `svix-*`.
+  const id = headers.get('webhook-id') ?? headers.get('svix-id')
+  const timestamp = headers.get('webhook-timestamp') ?? headers.get('svix-timestamp')
+  const signature = headers.get('webhook-signature') ?? headers.get('svix-signature')
   if (!id || !timestamp || !signature) return null
   return { id, timestamp, signature }
 }
