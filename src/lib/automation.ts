@@ -1665,7 +1665,17 @@ export async function executeStep(
       replyTo = { email: session.candidateEmail, name: session.candidateName || undefined }
     }
 
-    result = await sendEmail({ to: recipient, subject, html, text, from, replyTo })
+    result = await sendEmail({
+      to: recipient,
+      subject,
+      html,
+      text,
+      from,
+      replyTo,
+      executionId: execution.id,
+      workspaceId: session.workspaceId,
+      candidateId: sessionId,
+    })
   }
 
   await prisma.automationExecution.update({

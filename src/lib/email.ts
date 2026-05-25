@@ -15,6 +15,19 @@ export interface EmailPayload {
   text?: string
   from?: { email: string; name?: string } | null
   replyTo?: { email: string; name?: string } | null
+  // Correlate this send with a row in our DB so the SendGrid Event Webhook
+  // can update delivery status async. The webhook handler reads
+  // custom_args.executionId off every event payload (delivered, bounce,
+  // dropped…) and finds the matching AutomationExecution row.
+  //
+  // workspaceId / candidateId travel alongside for cross-workspace safety
+  // checks in the webhook handler and for future per-workspace delivery
+  // dashboards. All three are optional — non-automation sends (transcoder
+  // notifications, password reset, etc.) can omit them; the email still
+  // goes out, it just won't get a delivery row updated.
+  executionId?: string | null
+  workspaceId?: string | null
+  candidateId?: string | null
 }
 
 export async function sendEmail(payload: EmailPayload): Promise<{ success: boolean; messageId?: string; error?: string }> {
@@ -31,6 +44,14 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
     ? { email: payload.replyTo.email, name: payload.replyTo.name || undefined }
     : undefined
 
+  // SendGrid echoes customArgs back on every webhook event for this send.
+  // Keep keys short — SendGrid caps the total customArgs payload at 10 KB
+  // across all events for this message.
+  const customArgs: Record<string, string> = {}
+  if (payload.executionId) customArgs.executionId = payload.executionId
+  if (payload.workspaceId) customArgs.workspaceId = payload.workspaceId
+  if (payload.candidateId) customArgs.candidateId = payload.candidateId
+
   try {
     const [response] = await sgMail.send({
       to: payload.to,
@@ -43,6 +64,7 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
         clickTracking: { enable: false, enableText: false },
         openTracking: { enable: false },
       },
+      ...(Object.keys(customArgs).length > 0 ? { customArgs } : {}),
     })
 
     const messageId = response.headers['x-message-id'] as string || undefined

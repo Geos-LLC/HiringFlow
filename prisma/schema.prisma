@@ -1234,10 +1234,31 @@ model AutomationExecution {
   // candidate looping back into a stage triggers the automation again.
   stageEntryId      String?         @map("stage_entry_id")
   stageEntry        StageEntry?     @relation(fields: [stageEntryId], references: [id], onDelete: SetNull)
+  // ─── SendGrid delivery telemetry (src/app/api/webhooks/sendgrid) ───────
+  // Reflects the most-progressed SendGrid Event Webhook event for this
+  // execution's email send. Updated async after the row reaches status='sent'.
+  // Values (priority low → high):
+  //   processed < deferred < delivered < blocked < bounce < dropped
+  // Webhook handler never downgrades a terminal failure back to processed.
+  // SMS executions never populate this — it's email-only.
+  deliveryStatus     String?  @map("delivery_status")
+  deliveryStatusAt   DateTime? @map("delivery_status_at")
+  deliveryErrorMessage String? @map("delivery_error_message")
+  // sg_message_id is SendGrid's canonical id format (different from the
+  // x-message-id header we capture at send time on providerMessageId — the
+  // webhook events surface the longer "<msgid>.filter…" form). Kept separate
+  // so both can be used for SendGrid Activity API lookups.
+  sendgridMessageId  String?  @map("sendgrid_message_id")
+  // sg_event_id is SendGrid's per-event id, used for de-dup on webhook
+  // retries (the same delivered event may arrive multiple times).
+  sendgridEventId    String?  @map("sendgrid_event_id")
+  // Raw event payload from SendGrid, for admin debugging. Trimmed on write.
+  deliveryRaw        Json?    @map("delivery_raw")
 
   @@unique([stepId, sessionId, channel, stageEntryId])
   @@index([sessionId, status])
   @@index([stageEntryId])
+  @@index([sendgridMessageId])
   @@map("automation_executions")
 }
 

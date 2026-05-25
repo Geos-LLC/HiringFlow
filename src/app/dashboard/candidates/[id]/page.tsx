@@ -78,6 +78,9 @@ interface SchedulingEvent { id: string; eventType: string; eventAt: string; meta
 interface AutomationExec {
   id: string; status: string; errorMessage: string | null; skipReason: string | null; sentAt: string | null; scheduledFor: string | null; createdAt: string
   channel: string
+  deliveryStatus: string | null
+  deliveryStatusAt: string | null
+  deliveryErrorMessage: string | null
   automationRule: {
     id: string; name: string; triggerType: string
     chainedBy: { id: string; name: string; steps: { delayMinutes: number }[] }[]
@@ -811,7 +814,12 @@ export default function CandidateDetailPage() {
   const latestMeetingAt = latestMeeting ? String((latestMeeting.metadata as Record<string, any>).scheduledAt || latestMeeting.eventAt) : null
 
   // Build timeline events
-  const timeline: { label: string; time: string; type: string; detail?: string }[] = []
+  type DeliveryBadge = {
+    status: 'processed' | 'delivered' | 'deferred' | 'bounce' | 'dropped' | 'blocked' | 'pending'
+    at: string | null
+    error: string | null
+  }
+  const timeline: { label: string; time: string; type: string; detail?: string; delivery?: DeliveryBadge }[] = []
   timeline.push({ label: 'Applied / Flow started', time: candidate.startedAt, type: 'start' })
   if (candidate.finishedAt) timeline.push({ label: `Flow ${candidate.outcome || 'completed'}`, time: candidate.finishedAt, type: candidate.outcome === 'passed' ? 'success' : candidate.outcome === 'failed' ? 'error' : 'info' })
   candidate.trainingEnrollments.forEach(e => {
@@ -894,8 +902,17 @@ export default function CandidateDetailPage() {
     ].filter(Boolean).join(' · ')
     const base = `Automation: ${r.name}`
     const sendVerb = sentChannel === 'sms' ? 'SMS sent' : 'email sent'
+    // Delivery badge applies only to email rows — SMS goes through Sigcore
+    // and has its own delivery telemetry path (or none, currently).
+    const deliveryBadge: DeliveryBadge | undefined = sentChannel === 'email' && e.status === 'sent'
+      ? {
+          status: (e.deliveryStatus as DeliveryBadge['status']) || 'pending',
+          at: e.deliveryStatusAt,
+          error: e.deliveryErrorMessage,
+        }
+      : undefined
     if (e.status === 'sent') {
-      timeline.push({ label: `${base} — ${sendVerb}`, detail: bits, time: e.sentAt || e.createdAt, type: 'success' })
+      timeline.push({ label: `${base} — ${sendVerb}`, detail: bits, time: e.sentAt || e.createdAt, type: 'success', delivery: deliveryBadge })
     } else if (e.status === 'failed') {
       timeline.push({ label: `${base} — failed${e.errorMessage ? `: ${e.errorMessage}` : ''}`, detail: bits, time: e.createdAt, type: 'error' })
     } else if (e.status === 'queued' && e.scheduledFor) {
@@ -1867,8 +1884,11 @@ export default function CandidateDetailPage() {
                   }`} />
                   {i < timeline.length - 1 && <div className="w-px flex-1 bg-gray-200 mt-1" />}
                 </div>
-                <div className="pb-2">
-                  <div className="text-sm text-grey-15 font-medium">{event.label}</div>
+                <div className="pb-2 min-w-0 flex-1">
+                  <div className="text-sm text-grey-15 font-medium flex items-center gap-2 flex-wrap">
+                    <span>{event.label}</span>
+                    {event.delivery && <DeliveryBadgePill delivery={event.delivery} />}
+                  </div>
                   {event.detail && <div className="text-xs text-grey-35 mt-0.5">{event.detail}</div>}
                   <div className="text-xs text-grey-40 mt-0.5">{new Date(event.time).toLocaleString()}</div>
                 </div>
@@ -2057,5 +2077,49 @@ function DispositionReasonPicker(props: {
         </div>
       </div>
     </div>
+  )
+}
+
+// Visual indicator of SendGrid delivery state for a sent automation email.
+// Renders inline next to the timeline label; tooltip carries the raw
+// reason/error when SendGrid surfaced one.
+//
+//   pending   — webhook hasn't reported yet (gray, neutral)
+//   processed — accepted into SendGrid queue (gray, neutral)
+//   delivered — handed off to recipient MTA (green)
+//   deferred  — recipient asking SendGrid to retry (amber warning)
+//   bounce/dropped/blocked — terminal failure (red warning)
+function DeliveryBadgePill({
+  delivery,
+}: {
+  delivery: {
+    status: 'processed' | 'delivered' | 'deferred' | 'bounce' | 'dropped' | 'blocked' | 'pending'
+    at: string | null
+    error: string | null
+  }
+}) {
+  const meta = (() => {
+    switch (delivery.status) {
+      case 'delivered': return { label: 'Delivered', cls: 'bg-green-100 text-green-700' }
+      case 'processed': return { label: 'Processed', cls: 'bg-gray-100 text-grey-35' }
+      case 'deferred': return { label: 'Deferred — retrying', cls: 'bg-amber-100 text-amber-700' }
+      case 'bounce': return { label: 'Not delivered: Bounced', cls: 'bg-red-100 text-red-700' }
+      case 'dropped': return { label: 'Not delivered: Dropped', cls: 'bg-red-100 text-red-700' }
+      case 'blocked': return { label: 'Not delivered: Blocked', cls: 'bg-red-100 text-red-700' }
+      case 'pending':
+      default: return { label: 'Pending delivery confirmation', cls: 'bg-gray-100 text-grey-40' }
+    }
+  })()
+  const tooltipBits = [
+    delivery.at ? new Date(delivery.at).toLocaleString() : null,
+    delivery.error || null,
+  ].filter(Boolean)
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${meta.cls}`}
+      title={tooltipBits.join(' — ') || undefined}
+    >
+      {meta.label}
+    </span>
   )
 }

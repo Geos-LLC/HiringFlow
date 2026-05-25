@@ -35,6 +35,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       createdAt: true,
       errorMessage: true,
       sessionId: true,
+      deliveryStatus: true,
+      deliveryStatusAt: true,
+      deliveryErrorMessage: true,
       step: { select: { id: true, order: true } },
     },
   })

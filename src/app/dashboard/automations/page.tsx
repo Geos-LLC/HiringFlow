@@ -82,6 +82,9 @@ interface ExecutionRow {
   createdAt: string
   errorMessage: string | null
   sessionId: string | null
+  deliveryStatus: string | null
+  deliveryStatusAt: string | null
+  deliveryErrorMessage: string | null
   session: { id: string; candidateName: string | null; candidateEmail: string | null; candidatePhone: string | null } | null
   step: { id: string; order: number } | null
 }
@@ -2020,6 +2023,7 @@ export default function AutomationsPage() {
                       <th className="px-4 py-2 text-left font-medium">Candidate</th>
                       <th className="px-4 py-2 text-left font-medium">Status</th>
                       <th className="px-4 py-2 text-left font-medium">Channel</th>
+                      <th className="px-4 py-2 text-left font-medium">Delivery</th>
                       <th className="px-4 py-2 text-left font-medium">Sent / scheduled</th>
                       <th className="px-4 py-2 text-right font-medium">Step</th>
                     </tr>
@@ -2060,6 +2064,17 @@ export default function AutomationsPage() {
                             </span>
                           </td>
                           <td className="px-4 py-2.5 text-xs text-grey-35 uppercase">{e.channel}</td>
+                          <td className="px-4 py-2.5">
+                            {e.channel === 'email' && e.status === 'sent' ? (
+                              <DeliveryStatusPill
+                                status={e.deliveryStatus}
+                                at={e.deliveryStatusAt}
+                                error={e.deliveryErrorMessage}
+                              />
+                            ) : (
+                              <span className="text-xs text-grey-40">—</span>
+                            )}
+                          </td>
                           <td className="px-4 py-2.5 text-xs text-grey-40">
                             {stamp ? new Date(stamp).toLocaleString() : '—'}
                           </td>
@@ -2922,5 +2937,39 @@ function AutomationPipeline({
       {row('applicant', 'Applicant journey', 'Messages sent to the candidate as they move through the pipeline')}
       {row('company', 'Company notifications', 'Notifications sent to your team or a specific inbox')}
     </div>
+  )
+}
+
+// SendGrid delivery-state pill for the executions modal. Mirrors
+// DeliveryBadgePill on the candidate page, but tighter visual variant
+// since it lives in a table cell.
+function DeliveryStatusPill({
+  status,
+  at,
+  error,
+}: {
+  status: string | null
+  at: string | null
+  error: string | null
+}) {
+  const meta = (() => {
+    switch (status) {
+      case 'delivered': return { label: 'Delivered', cls: 'bg-green-100 text-green-700' }
+      case 'processed': return { label: 'Processed', cls: 'bg-gray-100 text-grey-35' }
+      case 'deferred': return { label: 'Deferred', cls: 'bg-amber-100 text-amber-700' }
+      case 'bounce': return { label: 'Bounced', cls: 'bg-red-100 text-red-700' }
+      case 'dropped': return { label: 'Dropped', cls: 'bg-red-100 text-red-700' }
+      case 'blocked': return { label: 'Blocked', cls: 'bg-red-100 text-red-700' }
+      default: return { label: 'Pending', cls: 'bg-gray-100 text-grey-40' }
+    }
+  })()
+  const tooltip = [at ? new Date(at).toLocaleString() : null, error].filter(Boolean).join(' — ')
+  return (
+    <span
+      className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${meta.cls}`}
+      title={tooltip || undefined}
+    >
+      {meta.label}
+    </span>
   )
 }
