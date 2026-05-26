@@ -27,12 +27,13 @@ import {
   fireAutomations,
   fireFlowRecordingReadyAutomations,
   fireMeetingLifecycleAutomations,
+  fireTrainingCompletedAutomations,
 } from '@/lib/automation'
 import { logSchedulingEvent } from '@/lib/scheduling'
 
 interface SweepCounts {
-  scanned: { sessionsFinished: number; capturesProcessed: number; meetingsStuckOpen: number }
-  fired: { flowCompleted: number; recordingReady: number; meetingEnded: number }
+  scanned: { sessionsFinished: number; capturesProcessed: number; meetingsStuckOpen: number; trainingsCompleted: number }
+  fired: { flowCompleted: number; recordingReady: number; meetingEnded: number; trainingCompleted: number }
   errors: number
 }
 
@@ -50,8 +51,8 @@ export async function GET(request: NextRequest) {
 
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const counts: SweepCounts = {
-    scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0 },
-    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0 },
+    scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0, trainingsCompleted: 0 },
+    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0, trainingCompleted: 0 },
     errors: 0,
   }
 
@@ -142,7 +143,73 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // -- Rule 3: InterviewMeeting started but never ended --------------------
+  // -- Rule 3: TrainingEnrollment.completedAt set but no training_completed --
+  //
+  // completeEnrollment() writes completedAt; the lifecycle middleware then
+  // fires fireTrainingCompletedAutomations as fire-and-forget. On Vercel the
+  // function process can be terminated as soon as the HTTP response returns,
+  // killing dispatchRulesForTrigger mid-flight before any AutomationExecution
+  // row lands. Observable symptom: the candidate's pipelineStatus stays at
+  // training_in_progress (applyStageTrigger never ran either) and the recruiter
+  // has to manually click "Run automations" on the candidate page.
+  //
+  // Same shape as Rule 2: the existence of an AutomationExecution row for a
+  // training_completed rule on this session proves dispatchRulesForTrigger
+  // was reached. Absence + an eligible active rule = dropped firing.
+  const recentCompletions = await prisma.trainingEnrollment.findMany({
+    where: {
+      completedAt: { gte: cutoff, not: null },
+      sessionId: { not: null },
+    },
+    select: {
+      id: true,
+      sessionId: true,
+      trainingId: true,
+      session: { select: { workspaceId: true, automationsHaltedAt: true } },
+    },
+  })
+  counts.scanned.trainingsCompleted = recentCompletions.length
+
+  for (const e of recentCompletions) {
+    // sessionId is nullable on the model; the WHERE above filters to non-null.
+    const sessionId = e.sessionId
+    if (!sessionId || !e.session) continue
+    try {
+      // Halted sessions would skip at the guard anyway; don't waste a fire.
+      if (e.session.automationsHaltedAt) continue
+
+      const existing = await prisma.automationExecution.findFirst({
+        where: {
+          sessionId,
+          automationRule: { triggerType: 'training_completed' },
+        },
+        select: { id: true },
+      })
+      if (existing) continue
+
+      // Don't re-fire for workspaces with no eligible rule — `trainingId: null`
+      // catches workspace-wide rules, `trainingId: e.trainingId` catches
+      // training-specific ones.
+      const eligible = await prisma.automationRule.findFirst({
+        where: {
+          workspaceId: e.session.workspaceId,
+          isActive: true,
+          triggerType: 'training_completed',
+          OR: [{ trainingId: e.trainingId }, { trainingId: null }],
+        },
+        select: { id: true },
+      })
+      if (!eligible) continue
+
+      await fireTrainingCompletedAutomations(sessionId, e.trainingId, { executionMode: 'cron' })
+      counts.fired.trainingCompleted++
+    } catch (err) {
+      counts.errors++
+      console.error('[reconcile-automations] fireTrainingCompletedAutomations failed', { enrollmentId: e.id, err })
+    }
+  }
+
+  // -- Rule 4: InterviewMeeting started but never ended --------------------
   //
   // The Chrome Meet Tracker extension is supposed to upload an `isFinal=true`
   // snapshot when the host leaves the tracked Meet tab, which is what fires
