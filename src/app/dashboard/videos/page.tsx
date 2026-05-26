@@ -4,44 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { SubNav } from '../_components/SubNav'
 import { Card, Eyebrow, PageHeader } from '@/components/design'
 import { useUploads } from '../_components/UploadProvider'
-
-// Dashboard preview player. Prefers HLS via hls.js (Chrome/Firefox/Edge) so
-// the recruiter can actually watch the H.264-encoded ladder we generate;
-// falls back to the original source MP4/MOV otherwise (Safari plays HLS
-// natively + can play HEVC .MOV, so it doesn't need hls.js at all).
-function DashboardVideoPreview({ src, hlsUrl, poster }: { src: string; hlsUrl?: string | null; poster?: string }) {
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  useEffect(() => {
-    const v = videoRef.current
-    if (!v || !hlsUrl) return
-    if (v.canPlayType('application/vnd.apple.mpegurl')) {
-      v.src = hlsUrl
-      return
-    }
-    let hls: { destroy: () => void } | null = null
-    let cancelled = false
-    import('hls.js').then((mod) => {
-      const Hls = mod.default
-      if (cancelled || !Hls.isSupported()) return
-      const instance = new Hls({ startLevel: 1, maxBufferLength: 60 })
-      instance.loadSource(hlsUrl)
-      instance.attachMedia(v)
-      hls = instance
-    }).catch(() => {})
-    return () => { cancelled = true; if (hls) hls.destroy() }
-  }, [hlsUrl])
-  return (
-    <video
-      ref={videoRef}
-      {...(hlsUrl ? {} : { src })}
-      poster={poster}
-      className="w-full h-full object-contain"
-      controls
-      autoPlay
-      playsInline
-    />
-  )
-}
+import { DashboardVideoPreview } from '../_components/DashboardVideoPreview'
 
 const ASSETS_NAV = [
   { href: '/dashboard/content', label: 'Templates' },
@@ -408,7 +371,7 @@ export default function MediaPage() {
                       onClick={() => { if (!isTranscoding && !isFailed) setPlaying(isPlaying ? null : v.id) }}
                     >
                       {isPlaying ? (
-                        <DashboardVideoPreview src={v.url} hlsUrl={v.hlsManifestUrl} poster={v.posterUrl || undefined} />
+                        <DashboardVideoPreview src={v.url} hlsUrl={v.hlsManifestUrl} poster={v.posterUrl || undefined} autoPlay />
                       ) : (
                         <>
                           {isTranscoding ? (

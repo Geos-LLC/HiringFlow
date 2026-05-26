@@ -26,11 +26,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { useUploads } from '../../_components/UploadProvider'
+import { DashboardVideoPreview } from '../../_components/DashboardVideoPreview'
 import { Badge, Button, Eyebrow, type BadgeTone } from '@/components/design'
 
 // ───────────────────────── Types (mirrors existing API shape) ─────────────────────────
 
-interface Video { id: string; filename: string; url: string; displayName?: string | null; durationSeconds?: number | null }
+interface Video { id: string; filename: string; url: string; displayName?: string | null; durationSeconds?: number | null; hlsManifestUrl?: string | null; posterUrl?: string | null; status?: string | null }
 interface Content { id: string; type: string; sortOrder: number; videoId: string | null; video: Video | null; requiredWatch: boolean; autoplayNext: boolean; textContent: string | null }
 // `options` shape varies by questionType — see api/public/trainings/[slug]/route.ts.
 // We hold it as `unknown` here and narrow per-type at the editor boundary so we
@@ -256,6 +257,9 @@ export default function TrainingEditorPage() {
         url: (vid.url as string) || (vid.storageKey as string),
         displayName: (vid.displayName as string | null) ?? null,
         durationSeconds: (vid.durationSeconds as number | null) ?? null,
+        hlsManifestUrl: (vid.hlsManifestUrl as string | null) ?? null,
+        posterUrl: (vid.posterUrl as string | null) ?? null,
+        status: (vid.status as string | null) ?? null,
       })),
     )
     if (!activeSectionId && t.sections?.length > 0) setActiveSectionId(t.sections[0].id)
@@ -932,13 +936,22 @@ function SectionEditorPane({
       <div className="mb-6">
         {vc?.video ? (
           <div className="relative rounded-[14px] overflow-hidden border border-surface-border bg-[#1a1815] aspect-video">
-            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-            <video
-              src={vc.video.url}
-              controls
-              className="w-full h-full object-contain bg-black"
-              preload="metadata"
-            />
+            {vc.video.status === 'transcoding' || vc.video.status === 'uploading' ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
+                <div className="w-8 h-8 mb-2 border-2 border-white/70 border-t-transparent rounded-full animate-spin" />
+                <p className="text-xs font-mono uppercase" style={{ letterSpacing: '0.08em' }}>Transcoding…</p>
+              </div>
+            ) : (
+              // Same player the candidate viewer uses: HLS via hls.js when a
+              // manifest exists, raw source URL otherwise.
+              /* eslint-disable-next-line jsx-a11y/media-has-caption */
+              <DashboardVideoPreview
+                src={vc.video.url}
+                hlsUrl={vc.video.hlsManifestUrl}
+                poster={vc.video.posterUrl || undefined}
+                className="w-full h-full object-contain bg-black"
+              />
+            )}
           </div>
         ) : (
           <div
