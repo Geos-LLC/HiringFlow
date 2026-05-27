@@ -127,6 +127,18 @@ export async function handleBotInCallRecording(
  *
  * Recording-ready is handled separately in handleBotDone since some
  * `call_ended` deliveries arrive before the recording artifact finalizes.
+ *
+ * No-show defense in depth (Shedrack Amadi 2026-05-27 incident): Recall's
+ * participant list is sometimes empty or mislabels everyone as host when
+ * polled milliseconds after bot.call_ended. We refuse to fire meeting_no_show
+ * if ANY of these prove the candidate actually attended:
+ *   1. occurredAt < scheduledEnd (port of the c47d752 chrome-ext gate;
+ *      bot.call_ended can fire when the host leaves first, mid-interview).
+ *   2. InterviewMeeting.participants[] already has a non-host with a
+ *      joinTime (chrome-ext snapshot or earlier Meet API sync saw them).
+ *   3. An attendance_uploaded SchedulingEvent with participantCount > 1
+ *      exists (chrome ext saw multiple humans in the room at some point).
+ * In any of those cases we emit meeting_ended instead.
  */
 export async function handleBotCallEnded(
   meetingId: string,
@@ -135,7 +147,11 @@ export async function handleBotCallEnded(
 ): Promise<void> {
   const meeting = await prisma.interviewMeeting.findUnique({
     where: { id: meetingId },
-    select: { id: true, sessionId: true, workspaceId: true, actualEnd: true, participants: true },
+    select: {
+      id: true, sessionId: true, workspaceId: true,
+      actualEnd: true, participants: true,
+      scheduledStart: true, scheduledEnd: true,
+    },
   })
   if (!meeting) {
     console.warn('[recall] call_ended for unknown meeting', meetingId)
@@ -152,28 +168,78 @@ export async function handleBotCallEnded(
   // "anyone besides host present?" check is honest.
   const realParticipants = participants.filter((p) => !/^Interview Notes$|^Meeting Notetaker$/i.test(p.name || ''))
   const rows = realParticipants.map(participantToRow)
-  const nonHostPresent = rows.some((r) => !r.isHost && (r.joinTime || r.leaveTime))
+  const nonHostPresentFromRecall = rows.some((r) => !r.isHost && (r.joinTime || r.leaveTime))
 
+  // Merge Recall's snapshot into the stored participants[] WITHOUT clobbering
+  // a richer snapshot that the chrome ext / Meet API sync may have already
+  // written. If Recall returned nothing, keep what we have.
+  const updateData: { actualEnd: Date; participants?: object } = {
+    actualEnd: meeting.actualEnd ?? occurredAt,
+  }
+  if (rows.length > 0) {
+    updateData.participants = rows as unknown as object
+  }
   await prisma.interviewMeeting.update({
     where: { id: meeting.id },
-    data: {
-      actualEnd: meeting.actualEnd ?? occurredAt,
-      participants: rows as unknown as object,
-    },
+    data: updateData,
   })
+
+  // Defense-in-depth: even if Recall says no non-host, trust earlier signals.
+  let nonHostPresent = nonHostPresentFromRecall
+  let attendedSource: string | null = nonHostPresentFromRecall ? 'recall' : null
+
+  if (!nonHostPresent) {
+    const stored = Array.isArray(meeting.participants) ? (meeting.participants as unknown as StoredParticipantRow[]) : []
+    const storedNonHost = stored.some((r) => r && !r.isHost && (r.joinTime || r.leaveTime))
+    if (storedNonHost) {
+      nonHostPresent = true
+      attendedSource = 'stored_participants'
+    }
+  }
+
+  if (!nonHostPresent) {
+    const attendanceEvent = await prisma.schedulingEvent.findFirst({
+      where: {
+        sessionId: meeting.sessionId,
+        eventType: 'attendance_uploaded',
+        metadata: { path: ['interviewMeetingId'], equals: meeting.id },
+      },
+      orderBy: { eventAt: 'desc' },
+      select: { metadata: true },
+    })
+    const pc = (attendanceEvent?.metadata as { participantCount?: number } | null)?.participantCount
+    if (typeof pc === 'number' && pc > 1) {
+      nonHostPresent = true
+      attendedSource = 'attendance_uploaded_event'
+    }
+  }
 
   if (nonHostPresent) {
     const fired = await emitLifecycleOnce(
       meeting.id, meeting.sessionId, 'meeting_ended', occurredAt,
-      { event: 'bot.call_ended' },
+      { event: 'bot.call_ended', attendedSource },
     )
     if (fired) await bumpSessionActivity(meeting.sessionId).catch(() => {})
-  } else {
-    await emitLifecycleOnce(
-      meeting.id, meeting.sessionId, 'meeting_no_show', occurredAt,
-      { event: 'bot.call_ended', nonHostCount: 0 },
-    )
+    return
   }
+
+  // Premature gate: Recall's bot.call_ended can fire BEFORE scheduledEnd if
+  // the host leaves first or wraps up the bot early. The chrome-ext path
+  // hardened this in c47d752; mirror it here. Drop the verdict silently —
+  // the cron stalled-detector will still catch true no-shows after the
+  // scheduledEnd + grace window.
+  if (meeting.scheduledEnd && occurredAt < meeting.scheduledEnd) {
+    console.warn(
+      `[recall] suppressed premature meeting_no_show for ${meeting.id}: ` +
+      `occurredAt=${occurredAt.toISOString()} < scheduledEnd=${meeting.scheduledEnd.toISOString()}`,
+    )
+    return
+  }
+
+  await emitLifecycleOnce(
+    meeting.id, meeting.sessionId, 'meeting_no_show', occurredAt,
+    { event: 'bot.call_ended', nonHostCount: 0 },
+  )
 }
 
 /**
