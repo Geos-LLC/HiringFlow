@@ -78,6 +78,24 @@ function resultId(result: unknown): string | null {
 }
 
 /**
+ * Throwaway sessions created by /api/automations/[id]/test set source='test'
+ * and synthesise lifecycle state (finishedAt, actualStart, …) to position the
+ * session at the rule's trigger stage. The test endpoint dispatches its rule
+ * explicitly via executeRule — letting this middleware also fire produces a
+ * duplicate send (the executeStep guard only blocks on status='sent', so two
+ * near-simultaneous paths both reach the actual send).
+ */
+async function isTestSession(sessionId: string): Promise<boolean> {
+  try {
+    const { prisma } = await import('./prisma')
+    const row = await prisma.session.findUnique({ where: { id: sessionId }, select: { source: true } })
+    return row?.source === 'test'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Attach the lifecycle middleware to a Prisma client. Call once at module
  * init from `src/lib/prisma.ts`. Idempotent — calling twice on the same
  * client is harmless (Prisma allows multiple $use registrations but our
@@ -121,6 +139,13 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
       if (isSet((data as Record<string, unknown>).finishedAt)) {
         const sessionId = id ?? resultId(result)
         if (!sessionId) return
+        // Test sessions (source='test', created by /api/automations/[id]/test)
+        // synthesise finishedAt + outcome to position the session at the
+        // trigger's pipeline stage. They are dispatched explicitly by the
+        // test endpoint via executeRule — letting the middleware also fire
+        // would race the explicit call through executeStep (whose guard only
+        // blocks on status='sent', not 'pending'), producing a duplicate send.
+        if (await isTestSession(sessionId)) return
         const outcomeInData = (data as Record<string, unknown>).outcome
         const outcome =
           typeof outcomeInData === 'string'
@@ -148,6 +173,7 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
           sessionId = row?.sessionId
         }
         if (!sessionId) return
+        if (await isTestSession(sessionId)) return
         await auto.fireFlowRecordingReadyAutomations(sessionId, { executionMode: 'public_trigger' })
       }
       break
@@ -172,6 +198,7 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
           trainingId = trainingId ?? row?.trainingId ?? undefined
         }
         if (!sessionId) return
+        if (await isTestSession(sessionId)) return
         await auto.fireTrainingCompletedAutomations(sessionId, trainingId ?? undefined, { executionMode: 'public_trigger' })
       }
       break
@@ -191,6 +218,7 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
         sessionId = row?.sessionId
       }
       if (!sessionId) return
+      if (await isTestSession(sessionId)) return
       if (isSet((data as Record<string, unknown>).actualEnd)) {
         await auto.fireMeetingLifecycleAutomations(sessionId, 'meeting_ended')
       } else if (isSet((data as Record<string, unknown>).actualStart)) {
