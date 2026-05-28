@@ -51,6 +51,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       recordingEnabled: true,
       recordingState: true,
       recordingProvider: true,
+      recallRecordingId: true,
       transcriptState: true,
       driveRecordingFileId: true,
       driveTranscriptFileId: true,

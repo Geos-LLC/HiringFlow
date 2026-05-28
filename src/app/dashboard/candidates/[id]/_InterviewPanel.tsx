@@ -37,6 +37,7 @@ interface InterviewMeeting {
   recordingEnabled: boolean
   recordingState: string
   recordingProvider: string | null
+  recallRecordingId: string | null
   transcriptState: string
   driveRecordingFileId: string | null
   driveTranscriptFileId: string | null
@@ -277,7 +278,7 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                   )}
                 </div>
 
-                {m.recordingState === 'ready' && m.driveRecordingFileId && (
+                {m.recordingState === 'ready' && (m.driveRecordingFileId || m.recallRecordingId) && (
                   <div className="mt-2">
                     <video
                       controls
@@ -288,15 +289,19 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                       <a href={`/api/interview-meetings/${m.id}/recording`} className="text-xs text-primary hover:underline">
                         Download recording
                       </a>
-                      <span className="text-grey-40 text-xs">·</span>
-                      <a
-                        href={`https://drive.google.com/file/d/${m.driveRecordingFileId}/view`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-primary hover:underline"
-                      >
-                        Open in Drive
-                      </a>
+                      {m.driveRecordingFileId && (
+                        <>
+                          <span className="text-grey-40 text-xs">·</span>
+                          <a
+                            href={`https://drive.google.com/file/d/${m.driveRecordingFileId}/view`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-primary hover:underline"
+                          >
+                            Open in Drive
+                          </a>
+                        </>
+                      )}
                       <span className="text-grey-40 text-xs">·</span>
                       <button
                         onClick={() => removeRecording(m.id)}
@@ -312,23 +317,36 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                   // Additional recordings: every artifact of kind 'recording'
                   // that isn't the primary. Surfaces both reschedule-orphans
                   // (old Meet link recordings) and reopen-orphans (host opened
-                  // the same link again later).
-                  const extras = (m.artifacts || []).filter((a) => a.kind === 'recording' && a.driveFileId !== m.driveRecordingFileId)
+                  // the same link again later). Recall-hosted artifacts have
+                  // a synthetic `recall:<recordingId>` driveFileId; skip the
+                  // one that matches the meeting's primary recallRecordingId
+                  // (it's already the inline player above) and never link
+                  // those to Drive — they don't live there.
+                  const primaryRecallTag = m.recallRecordingId ? `recall:${m.recallRecordingId}` : null
+                  const extras = (m.artifacts || []).filter((a) =>
+                    a.kind === 'recording'
+                    && a.driveFileId !== m.driveRecordingFileId
+                    && a.driveFileId !== primaryRecallTag
+                  )
                   if (extras.length === 0) return null
                   return (
                     <div className="mt-3 rounded-[6px] border border-surface-border bg-grey-95/40 p-2 text-xs space-y-1">
-                      <div className="text-grey-40 font-medium">Other recordings on Drive ({extras.length})</div>
+                      <div className="text-grey-40 font-medium">Other recordings ({extras.length})</div>
                       {extras.map((a) => {
                         const fromOldSpace = m.meetSpaceName && a.meetSpaceName && a.meetSpaceName !== m.meetSpaceName
+                        const isRecall = a.driveFileId.startsWith('recall:')
+                        const href = isRecall
+                          ? `/api/interview-meetings/${m.id}/recording`
+                          : `https://drive.google.com/file/d/${a.driveFileId}/view`
                         return (
                           <div key={a.id} className="flex items-center gap-2 flex-wrap">
                             <a
-                              href={`https://drive.google.com/file/d/${a.driveFileId}/view`}
+                              href={href}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-primary hover:underline"
                             >
-                              {a.fileName || a.driveFileId.slice(0, 8)}
+                              {a.fileName || (isRecall ? 'Recall recording' : a.driveFileId.slice(0, 8))}
                             </a>
                             <span className="text-grey-40">
                               {new Date(a.driveCreatedTime).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
