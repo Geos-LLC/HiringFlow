@@ -520,8 +520,11 @@ export default function FlowSchemaView({
         if (p.y + NODE_H > blockMaxBot) blockMaxBot = p.y + NODE_H
       }
       if (blockMinTop === Infinity) return undefined
-      const aboveLane = blockMinTop - 36
-      const belowLane = blockMaxBot + 36
+      // Wider clearance — the bezier still has Y momentum coming out of
+      // the lane, so leave plenty of room so the rise/dip doesn't clip
+      // the blocker as the curve transitions back to its endpoint.
+      const aboveLane = blockMinTop - 70
+      const belowLane = blockMaxBot + 70
       const avg = (fromY + toY) / 2
       return Math.abs(avg - aboveLane) <= Math.abs(avg - belowLane) ? aboveLane : belowLane
     },
@@ -2485,7 +2488,12 @@ function bezierCps(
   laneY?: number
 ): readonly [number, number, number, number] {
   if (laneY !== undefined) {
-    return [fromX + 60, laneY, toX - 60, laneY] as const
+    // Wide control-point offset for lane-routed bezier so the
+    // transition into / out of the lane is gentle enough not to clip
+    // intermediate cards that sit close to the endpoints.
+    const span = Math.abs(toX - fromX)
+    const cpOffset = Math.max(120, span * 0.3)
+    return [fromX + cpOffset, laneY, toX - cpOffset, laneY] as const
   }
   const isBackward = toX < fromX
   if (isBackward) {
