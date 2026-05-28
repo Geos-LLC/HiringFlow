@@ -500,31 +500,80 @@ export default function FlowSchemaView({
   }, [])
   const laneYByConn = useMemo(() => {
     const m = new Map<string, number>()
+    if (allConnections.length === 0) return m
+
+    // --- 1) Backward edges: route below all cards in lanes by span. ---
     const backward = allConnections.filter((c) => {
       const sp = positions[c.sourceId]
       const tp = positions[c.targetId]
       if (!sp || !tp) return false
       return tp.x < sp.x
     })
-    if (backward.length === 0) return m
     let maxBottom = 0
     for (const id of Object.keys(positions)) {
       const p = positions[id]
       const h = id === START_ID || id === END_ID ? SPECIAL_H : NODE_H
       maxBottom = Math.max(maxBottom, p.y + h)
     }
-    backward.sort((a, b) => {
-      const aSpan = Math.abs(positions[a.sourceId].x - positions[a.targetId].x)
-      const bSpan = Math.abs(positions[b.sourceId].x - positions[b.targetId].x)
-      return bSpan - aSpan
-    })
-    const laneBase = maxBottom + 80
-    const laneSpacing = 60
-    backward.forEach((c, idx) => {
-      m.set(connKey(c), laneBase + idx * laneSpacing)
-    })
+    if (backward.length > 0) {
+      backward.sort((a, b) => {
+        const aSpan = Math.abs(positions[a.sourceId].x - positions[a.targetId].x)
+        const bSpan = Math.abs(positions[b.sourceId].x - positions[b.targetId].x)
+        return bSpan - aSpan
+      })
+      const laneBase = maxBottom + 80
+      const laneSpacing = 60
+      backward.forEach((c, idx) => {
+        m.set(connKey(c), laneBase + idx * laneSpacing)
+      })
+    }
+
+    // --- 2) Forward edges that would clip through intermediate cards. ---
+    // For each forward connection, find any other card whose rect sits
+    // inside the source→target horizontal corridor and whose Y range
+    // overlaps the straight bezier band. If any such "blocking" card
+    // exists, assign a lane Y above or below the blockers (whichever is
+    // closer to the endpoint-average Y), so the curve detours around it.
+    for (const c of allConnections) {
+      if (m.has(connKey(c))) continue // already routed (backward)
+      const sp = positions[c.sourceId]
+      const tp = positions[c.targetId]
+      if (!sp || !tp) continue
+      if (tp.x <= sp.x) continue // not a forward edge
+      const outX = sp.x + NODE_W
+      const outY = sp.y + NODE_H / 2
+      const inpX = tp.x
+      const inpY = tp.y + NODE_H / 2
+
+      const minPathY = Math.min(outY, inpY) - 16
+      const maxPathY = Math.max(outY, inpY) + 16
+
+      let blockMinTop = Infinity
+      let blockMaxBot = -Infinity
+      for (const s of steps) {
+        if (s.id === c.sourceId || s.id === c.targetId) continue
+        const p = positions[s.id]
+        if (!p) continue
+        // Card must be horizontally inside the corridor and Y-overlap
+        // the band the bezier would naturally sweep through.
+        if (p.x + NODE_W <= outX + 4 || p.x >= inpX - 4) continue
+        if (p.y + NODE_H < minPathY || p.y > maxPathY) continue
+        if (p.y < blockMinTop) blockMinTop = p.y
+        if (p.y + NODE_H > blockMaxBot) blockMaxBot = p.y + NODE_H
+      }
+      if (blockMinTop === Infinity) continue
+
+      const aboveLane = blockMinTop - 36
+      const belowLane = blockMaxBot + 36
+      const avg = (outY + inpY) / 2
+      const lane = Math.abs(avg - aboveLane) <= Math.abs(avg - belowLane)
+        ? aboveLane
+        : belowLane
+      m.set(connKey(c), lane)
+    }
+
     return m
-  }, [allConnections, positions, connKey])
+  }, [allConnections, positions, steps, connKey])
 
   // Diagnostic log: dump every drawn connection with source/target titles
   // and coordinates whenever the toggle is on or the data changes.
