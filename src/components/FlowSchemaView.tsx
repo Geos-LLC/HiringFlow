@@ -450,6 +450,45 @@ export default function FlowSchemaView({
     return result
   }, [steps])
 
+  // Stage numbers for the badge/title prefix. Computed by BFS from the
+  // first step so that branches at the same depth share a number — a fork
+  // counts as one step, not two. Combined partners share their primary's
+  // depth (they're conceptually one step). Unreachable steps fall through
+  // to sequential numbering at the end.
+  const stageNumberByStep = useMemo<Map<string, number>>(() => {
+    const result = new Map<string, number>()
+    if (steps.length === 0) return result
+    const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
+    const queue: Array<{ id: string; depth: number }> = [
+      { id: sorted[0].id, depth: 1 },
+    ]
+    while (queue.length > 0) {
+      const { id, depth } = queue.shift()!
+      if (result.has(id)) continue
+      result.set(id, depth)
+      const step = steps.find((s) => s.id === id)
+      if (!step) continue
+      if (step.combinedWithId && !result.has(step.combinedWithId)) {
+        queue.push({ id: step.combinedWithId, depth })
+      }
+      const children = new Set<string>()
+      for (const o of step.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__') children.add(o.nextStepId)
+      }
+      const btn = step.buttonConfig?.nextStepId
+      if (btn && btn !== '__end__') children.add(btn)
+      children.forEach((childId) => {
+        if (!result.has(childId)) queue.push({ id: childId, depth: depth + 1 })
+      })
+    }
+    let nextDepth = 1
+    result.forEach((d) => { if (d >= nextDepth) nextDepth = d + 1 })
+    for (const s of sorted) {
+      if (!result.has(s.id)) result.set(s.id, nextDepth++)
+    }
+    return result
+  }, [steps])
+
   // Lane assignment for backward edges. Each backward edge gets its own
   // horizontal Y "lane" below the cards so loopbacks don't share a channel.
   // Sort by horizontal span (longest first → lowest lane) so long routes
@@ -1183,7 +1222,8 @@ export default function FlowSchemaView({
       const step = steps[si]
       const pos = positions[step.id]
       if (!pos) continue
-      drawNode(ctx, step, pos, step.id === selectedStepId, thumbnails[step.id], sorted.indexOf(step), videoAspects[step.id], screenImages[step.id])
+      const stageNum = stageNumberByStep.get(step.id) ?? (sorted.indexOf(step) + 1)
+      drawNode(ctx, step, pos, step.id === selectedStepId, thumbnails[step.id], stageNum - 1, videoAspects[step.id], screenImages[step.id])
 
       // Draw single OUTPUT port (right side)
       const out = getOutputPort(pos)
@@ -1244,7 +1284,7 @@ export default function FlowSchemaView({
     }
 
     ctx.restore()
-  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections])
+  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections, stageNumberByStep])
 
   // Animation frame for smooth rendering
   useEffect(() => {
@@ -2782,7 +2822,9 @@ function drawNode(
     }
   }
 
-  // Order badge
+  // Order badge — uses the same BFS-depth-based stage number as the
+  // title prefix (passed via stepIndex), so forked branches at the same
+  // depth share a number rather than each grabbing its own sequence slot.
   ctx.beginPath()
   ctx.arc(pos.x + NODE_W - 16, pos.y + 16, 11, 0, Math.PI * 2)
   ctx.fillStyle = isSelected ? '#FF9500' : '#FFEDD5'
@@ -2794,7 +2836,8 @@ function drawNode(
   ctx.fillStyle = isSelected ? '#fff' : '#FF9500'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(String(step.stepOrder + 1), pos.x + NODE_W - 16, pos.y + 16)
+  const badgeNum = stepIndex !== undefined ? stepIndex + 1 : step.stepOrder + 1
+  ctx.fillText(String(badgeNum), pos.x + NODE_W - 16, pos.y + 16)
 
   // Delete button (only when selected)
   if (isSelected) {
