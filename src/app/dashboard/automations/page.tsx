@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, Suspense } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { DEFAULT_EMAIL_TEMPLATES } from '@/lib/email-templates-seed'
 import { DEFAULT_SMS_TEMPLATES } from '@/lib/sms-templates-seed'
 import { Button, PageHeader } from '@/components/design'
@@ -272,6 +273,14 @@ function formatDelay(m: number): string {
 }
 
 export default function AutomationsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AutomationsPageInner />
+    </Suspense>
+  )
+}
+
+function AutomationsPageInner() {
   const [rules, setRules] = useState<Rule[]>([])
   const [flows, setFlows] = useState<Flow[]>([])
   const [templates, setTemplates] = useState<Template[]>([])
@@ -448,6 +457,24 @@ export default function AutomationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pipelineFilter])
 
+  // Deep-link from the Stages drawer "+ Add action" CTA — when the URL
+  // carries (triggerType, pipelineId, stageId) AND we've finished initial
+  // load, auto-open the new-rule modal with those fields pre-filled. The
+  // ref guarantees it fires at most once per mount so re-renders don't
+  // pop the modal back open after the recruiter closes it.
+  const searchParams = useSearchParams()
+  const deepLinkOpenedRef = useRef(false)
+  useEffect(() => {
+    if (loading || deepLinkOpenedRef.current) return
+    const t = searchParams?.get('triggerType') || ''
+    const p = searchParams?.get('pipelineId') || ''
+    const s = searchParams?.get('stageId') || ''
+    if (!t || !p || !s) return
+    deepLinkOpenedRef.current = true
+    openCreate({ triggerType: t, pipelineId: p, stageId: s })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, searchParams])
+
   // Inject a {{xxx_link}} CTA into a workspace template's bodyHtml so the
   // recruiter doesn't have to hand-edit the template. Idempotent — does
   // nothing if the token is already present. The CTA uses the configured
@@ -613,18 +640,22 @@ export default function AutomationsPage() {
     }
   }
 
-  const openCreate = async () => {
+  const openCreate = async (overrides?: { triggerType?: string; pipelineId?: string; stageId?: string }) => {
     setEditing(null)
-    const trigger = 'flow_completed'
+    const trigger = overrides?.triggerType || 'flow_completed'
     setTriggerType(trigger)
-    setName(`${TRIGGER_LABELS[trigger]} follow-up`)
+    setName(`${TRIGGER_LABELS[trigger] ?? trigger} follow-up`)
     setFlowId('')
     setTriggerTrainingId('')
-    setStageIdField('')
+    setStageIdField(overrides?.stageId || '')
     // Default new rules to the active pipeline filter when one is selected,
     // so a recruiter creating from the Dispatcher view gets a Dispatcher
-    // rule by default. 'workspace' (any-pipeline) keeps as ''.
-    setPipelineIdField(pipelineFilter && pipelineFilter !== 'workspace' ? pipelineFilter : '')
+    // rule by default. 'workspace' (any-pipeline) keeps as ''. Overrides
+    // (used by query-param deep links from the Stages drawer "+ Add action"
+    // CTA) take precedence so the rule lands on the right pipeline+stage
+    // without the recruiter having to re-pick it.
+    setPipelineIdField(overrides?.pipelineId
+      ?? (pipelineFilter && pipelineFilter !== 'workspace' ? pipelineFilter : ''))
     setMinutesBefore(60); setWaitForRecording(false)
 
     // Always run seed — it's idempotent on the server (inserts only the
@@ -1157,7 +1188,7 @@ export default function AutomationsPage() {
             <Link href="/dashboard/content" className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-[10px] text-[13px] font-medium text-ink bg-transparent border border-surface-border hover:bg-surface-light transition-colors">
               Templates
             </Link>
-            <Button size="sm" onClick={openCreate}>+ New rule</Button>
+            <Button size="sm" onClick={() => openCreate()}>+ New rule</Button>
           </>
         }
       />
@@ -1278,7 +1309,7 @@ export default function AutomationsPage() {
           <p className="text-grey-35 mb-4">Create email templates first, then set up automations</p>
           <div className="flex gap-3 justify-center">
             <Link href="/dashboard/content" className="btn-secondary">Create Template</Link>
-            <button onClick={openCreate} className="btn-primary">+ Create Automation</button>
+            <button onClick={() => openCreate()} className="btn-primary">+ Create Automation</button>
           </div>
         </div>
       ) : (
