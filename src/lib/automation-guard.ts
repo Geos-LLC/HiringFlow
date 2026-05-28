@@ -218,11 +218,39 @@ const requireMeetingActualEnd: PrerequisitePredicate = async ({ session }) => {
 }
 
 const requireRecordingReady: PrerequisitePredicate = async ({ session }) => {
+  // Two distinct producers emit `recording_ready`:
+  //   1. Meet / Recall interview meeting recording (handleBotDone or Meet
+  //      Workspace Events recording-finalized) → InterviewMeeting.recordingState
+  //   2. Flow submission recording — candidate uploads an audio/video answer
+  //      to a CaptureResponse step → status='processed', or a legacy
+  //      CandidateSubmission with a videoStorageKey set.
+  // Either signal satisfies the prereq. Without the flow-recording branches,
+  // rules wired to recording_ready for flows that don't include a Meet
+  // interview (e.g. Spotless Dispatcher Flow's audio speaking test) always
+  // skipped with missing_prerequisite even though dispatchRulesForTrigger
+  // was correctly invoked from the captures/finalize path.
   const m = await prisma.interviewMeeting.findFirst({
     where: { sessionId: session.id, recordingState: 'ready' },
     select: { id: true },
   })
   if (m) return { satisfied: true }
+
+  const cap = await prisma.captureResponse.findFirst({
+    where: {
+      sessionId: session.id,
+      status: 'processed',
+      mode: { in: ['audio', 'video', 'audio_video'] },
+    },
+    select: { id: true },
+  })
+  if (cap) return { satisfied: true }
+
+  const sub = await prisma.candidateSubmission.findFirst({
+    where: { sessionId: session.id, videoStorageKey: { not: null } },
+    select: { id: true },
+  })
+  if (sub) return { satisfied: true }
+
   return {
     satisfied: false,
     currentState: { recordingState: 'not ready' },
