@@ -430,6 +430,43 @@ async function reconcileExternalMeetReschedule(
     console.warn('[ReconcileReschedule] archivePrimaryArtifacts failed (non-fatal):', (err as Error).message)
   })
 
+  // Rebind the Recall.ai bot to the new Meet URL. The original bot was
+  // configured against the OLD meeting_id and would otherwise wait out the
+  // 20-min lobby timer in the dead space (see project_recall_reschedule_orphan).
+  // We delete the old bot best-effort and schedule a fresh one; on any
+  // failure we fall the row back to the 'meet' attendance source so the
+  // chrome-ext / Meet-native paths still produce a recording.
+  let nextRecallBotId: string | null = null
+  let nextAttendanceSource: 'meet' | 'recall' = 'meet'
+  let nextRecordingProvider: 'google_meet' | 'recall' | null = recordingTurnedOn ? 'google_meet' : null
+  if (existing.recallBotId) {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { recallBotEnabled: true },
+    })
+    if (workspace?.recallBotEnabled && process.env.RECALL_API_KEY) {
+      const { deleteBot, scheduleBot } = await import('./recall/client')
+      try { await deleteBot(existing.recallBotId) }
+      catch (err) { console.warn('[ReconcileReschedule] deleteBot (old) failed:', (err as Error).message) }
+      try {
+        const bot = await scheduleBot({
+          meetingUrl: newSpace.meetingUri || meetingUrl || '',
+          joinAt: newScheduledStart,
+          metadata: {
+            interviewMeetingId: existing.id,
+            workspaceId,
+            sessionId: existing.sessionId,
+          },
+        })
+        nextRecallBotId = bot.id
+        nextAttendanceSource = 'recall'
+        nextRecordingProvider = 'recall'
+      } catch (err) {
+        console.error('[ReconcileReschedule] scheduleBot (new) failed:', (err as Error).message)
+      }
+    }
+  }
+
   await prisma.interviewMeeting.update({
     where: { id: existing.id },
     data: {
@@ -438,18 +475,21 @@ async function reconcileExternalMeetReschedule(
       meetingUri: newSpace.meetingUri || meetingUrl || '',
       scheduledStart: newScheduledStart,
       scheduledEnd: newScheduledEnd,
-      recordingEnabled: recordingTurnedOn,
-      recordingProvider: recordingTurnedOn ? 'google_meet' : null,
-      recordingState: recordingTurnedOn ? 'requested' : 'disabled',
-      transcriptState: transcriptionTurnedOn ? 'processing' : 'disabled',
+      recordingEnabled: recordingTurnedOn || nextRecordingProvider === 'recall',
+      recordingProvider: nextRecordingProvider,
+      recordingState: nextRecordingProvider ? 'requested' : 'disabled',
+      transcriptState: transcriptionTurnedOn || nextRecordingProvider === 'recall' ? 'processing' : 'disabled',
       workspaceEventsSubName: subName,
       workspaceEventsSubExpiresAt: subExpires,
       spaceAdoptedFromReschedule: true,
-      // Clear cached artifacts; they belonged to the old space.
+      recallBotId: nextRecallBotId,
+      attendanceSource: nextAttendanceSource,
+      // Clear cached artifacts; they belonged to the old space / old bot.
       driveRecordingFileId: null,
       driveTranscriptFileId: null,
       driveGeminiNotesFileId: null,
       attendanceSheetFileId: null,
+      recallRecordingId: null,
       meetApiSyncedAt: null,
       actualStart: null,
       actualEnd: null,
