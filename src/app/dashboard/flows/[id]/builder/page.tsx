@@ -1293,15 +1293,21 @@ export default function FlowBuilderPage() {
               if (stepId === '__start__' && flow.startMessage === '') return
               if (stepId === '__end__' && flow.endMessage === '') return
 
-              // Single click just activates the card so it can be dragged.
-              // The edit popup is opened on double-click (onStepPreview).
-              setSelectedStepId(stepId)
-              setCombineEnabled(false)
+              if (selectedStepId === stepId) {
+                // Clicking the already-active card opens the editor.
+                setPopupStepId(stepId)
+                setModalPos({ x: 0, y: 0 })
+                setCombineEnabled(false)
+              } else {
+                // First click activates the card so it can be dragged.
+                setSelectedStepId(stepId)
+                setCombineEnabled(false)
+              }
             }}
             onStepPreview={(stepId) => {
               if (stepId === '__start__' && flow.startMessage === '') return
               if (stepId === '__end__' && flow.endMessage === '') return
-              // Double-click opens the edit popup directly.
+              // Double-click also opens the editor.
               setSelectedStepId(stepId)
               setPopupStepId(stepId)
               setModalPos({ x: 0, y: 0 })
