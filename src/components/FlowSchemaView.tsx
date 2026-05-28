@@ -498,6 +498,36 @@ export default function FlowSchemaView({
       ? `btn:${c.sourceId}:${c.targetId}`
       : `opt:${c.sourceId}:${c.optionId ?? c.targetId}`
   }, [])
+  // Shared helper: for a forward connection from (fromX, fromY) to
+  // (toX, toY), return a lane Y that routes the bezier around any cards
+  // sitting inside the source→target corridor — or undefined if there's
+  // nothing in the way. excludeIds covers the connection's own
+  // endpoints so they don't count as obstacles.
+  const computeDetourLane = useCallback(
+    (fromX: number, fromY: number, toX: number, toY: number, excludeIds: Set<string>) => {
+      if (toX <= fromX) return undefined
+      const minPathY = Math.min(fromY, toY) - 16
+      const maxPathY = Math.max(fromY, toY) + 16
+      let blockMinTop = Infinity
+      let blockMaxBot = -Infinity
+      for (const s of steps) {
+        if (excludeIds.has(s.id)) continue
+        const p = positions[s.id]
+        if (!p) continue
+        if (p.x + NODE_W <= fromX + 4 || p.x >= toX - 4) continue
+        if (p.y + NODE_H < minPathY || p.y > maxPathY) continue
+        if (p.y < blockMinTop) blockMinTop = p.y
+        if (p.y + NODE_H > blockMaxBot) blockMaxBot = p.y + NODE_H
+      }
+      if (blockMinTop === Infinity) return undefined
+      const aboveLane = blockMinTop - 36
+      const belowLane = blockMaxBot + 36
+      const avg = (fromY + toY) / 2
+      return Math.abs(avg - aboveLane) <= Math.abs(avg - belowLane) ? aboveLane : belowLane
+    },
+    [steps, positions]
+  )
+
   const laneYByConn = useMemo(() => {
     const m = new Map<string, number>()
     if (allConnections.length === 0) return m
@@ -529,51 +559,20 @@ export default function FlowSchemaView({
     }
 
     // --- 2) Forward edges that would clip through intermediate cards. ---
-    // For each forward connection, find any other card whose rect sits
-    // inside the source→target horizontal corridor and whose Y range
-    // overlaps the straight bezier band. If any such "blocking" card
-    // exists, assign a lane Y above or below the blockers (whichever is
-    // closer to the endpoint-average Y), so the curve detours around it.
     for (const c of allConnections) {
       if (m.has(connKey(c))) continue // already routed (backward)
       const sp = positions[c.sourceId]
       const tp = positions[c.targetId]
       if (!sp || !tp) continue
-      if (tp.x <= sp.x) continue // not a forward edge
-      const outX = sp.x + NODE_W
-      const outY = sp.y + NODE_H / 2
-      const inpX = tp.x
-      const inpY = tp.y + NODE_H / 2
-
-      const minPathY = Math.min(outY, inpY) - 16
-      const maxPathY = Math.max(outY, inpY) + 16
-
-      let blockMinTop = Infinity
-      let blockMaxBot = -Infinity
-      for (const s of steps) {
-        if (s.id === c.sourceId || s.id === c.targetId) continue
-        const p = positions[s.id]
-        if (!p) continue
-        // Card must be horizontally inside the corridor and Y-overlap
-        // the band the bezier would naturally sweep through.
-        if (p.x + NODE_W <= outX + 4 || p.x >= inpX - 4) continue
-        if (p.y + NODE_H < minPathY || p.y > maxPathY) continue
-        if (p.y < blockMinTop) blockMinTop = p.y
-        if (p.y + NODE_H > blockMaxBot) blockMaxBot = p.y + NODE_H
-      }
-      if (blockMinTop === Infinity) continue
-
-      const aboveLane = blockMinTop - 36
-      const belowLane = blockMaxBot + 36
-      const avg = (outY + inpY) / 2
-      const lane = Math.abs(avg - aboveLane) <= Math.abs(avg - belowLane)
-        ? aboveLane
-        : belowLane
-      m.set(connKey(c), lane)
+      if (tp.x <= sp.x) continue
+      const out = getOutputPort(sp)
+      const inp = getInputPort(tp)
+      const lane = computeDetourLane(out.x, out.y, inp.x, inp.y, new Set([c.sourceId, c.targetId]))
+      if (lane !== undefined) m.set(connKey(c), lane)
     }
 
     return m
-  }, [allConnections, positions, steps, connKey])
+  }, [allConnections, positions, connKey, computeDetourLane])
 
   // Diagnostic log: dump every drawn connection with source/target titles
   // and coordinates whenever the toggle is on or the data changes.
@@ -1081,9 +1080,10 @@ export default function FlowSchemaView({
         const fromY = startPos.y + SPECIAL_H / 2
         const toX = firstPos.x
         const toY = firstPos.y + NODE_H / 2
-        drawConnection(ctx, fromX, fromY, toX, toY, '', false, isStartArrowSelected ? '#FF9500' : '#FF9500')
+        const startLane = computeDetourLane(fromX, fromY, toX, toY, new Set([sorted[0].id]))
+        drawConnection(ctx, fromX, fromY, toX, toY, '', false, isStartArrowSelected ? '#FF9500' : '#FF9500', startLane)
 
-        const [sMidX, sMidY] = bezierMid(fromX, fromY, toX, toY)
+        const [sMidX, sMidY] = bezierMid(fromX, fromY, toX, toY, startLane)
 
         if (isStartArrowSelected) {
           drawDragHandle(ctx, toX, toY)
@@ -1176,14 +1176,17 @@ export default function FlowSchemaView({
         if (!eStepPos) return
         const fromX = eStepPos.x + NODE_W
         const fromY = eStepPos.y + NODE_H / 2
-        drawConnection(ctx, fromX, fromY, toX, toY, '', false, '#FF9500')
+        // Detour around any cards sitting between this source and the End
+        // node, same way option/button arrows do.
+        const endLane = computeDetourLane(fromX, fromY, toX, toY, new Set([stepId]))
+        drawConnection(ctx, fromX, fromY, toX, toY, '', false, '#FF9500', endLane)
 
         // Implicit-End arrows (terminal reachable steps) get the +/delete UI;
         // buttonConfig=__end__ arrows are handled via button-arrow logic.
         if (!implicitEndIds.has(stepId)) return
         const isThisEndSelected =
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
-        const [eMidX, eMidY] = bezierMid(fromX, fromY, toX, toY)
+        const [eMidX, eMidY] = bezierMid(fromX, fromY, toX, toY, endLane)
 
         if (isThisEndSelected) {
           drawDragHandle(ctx, fromX, fromY)
@@ -1333,7 +1336,7 @@ export default function FlowSchemaView({
     }
 
     ctx.restore()
-  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections, stageNumberByStep])
+  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections, stageNumberByStep, computeDetourLane])
 
   // Animation frame for smooth rendering
   useEffect(() => {
