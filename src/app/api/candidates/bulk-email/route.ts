@@ -5,10 +5,15 @@ import { sendEmail, renderTemplate } from '@/lib/email'
 
 // Bulk email to a manually-picked set of candidates from the candidates
 // page. Distinct from the automation engine — this is a one-shot recruiter
-// send, no AutomationExecution rows, no lifecycle hooks. Optional
-// `saveAsTemplate.name` persists the composed subject/body as a reusable
-// EmailTemplate so the recruiter can reuse it (and pick it up in any of
-// the automation step editors that read EmailTemplate).
+// send. Still uses AutomationExecution rows so the existing SendGrid
+// Event Webhook stamps delivery status (delivered / bounced / dropped)
+// onto each send, and the candidate timeline renders each row as a
+// normal automation event with a delivery badge.
+//
+// We funnel every bulk send through one synthetic AutomationRule per
+// workspace (triggerType='manual_bulk', isActive=false) so the automations
+// page doesn't fill up with one-off rules. The /api/automations list
+// route filters out this trigger type.
 export async function POST(request: NextRequest) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
@@ -35,9 +40,8 @@ export async function POST(request: NextRequest) {
   if (!subject) return NextResponse.json({ error: 'subject required' }, { status: 400 })
   if (!bodyHtml.trim()) return NextResponse.json({ error: 'bodyHtml required' }, { status: 400 })
 
-  // Optionally persist the composed message as a reusable EmailTemplate
-  // before the sends fan out. The new template id is returned to the
-  // client so it can prepend it to the template picker without refetching.
+  // Optional: persist the composed message as a reusable EmailTemplate
+  // before the sends fan out.
   let savedTemplateId: string | null = null
   if (saveTemplateName) {
     const template = await prisma.emailTemplate.create({
@@ -51,6 +55,29 @@ export async function POST(request: NextRequest) {
       },
     })
     savedTemplateId = template.id
+  }
+
+  // Synthetic AutomationRule that owns every bulk-email execution for
+  // this workspace. Find-or-create. We name it so the candidate timeline
+  // reads "Automation: Recruiter bulk email — email sent" with a delivery
+  // badge.
+  let bulkRule = await prisma.automationRule.findFirst({
+    where: { workspaceId: ws.workspaceId, triggerType: 'manual_bulk' },
+    select: { id: true },
+  })
+  if (!bulkRule) {
+    bulkRule = await prisma.automationRule.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        createdById: ws.userId,
+        name: 'Recruiter bulk email',
+        triggerType: 'manual_bulk',
+        actionType: 'send_email',
+        channel: 'email',
+        isActive: false,
+      },
+      select: { id: true },
+    })
   }
 
   const sessions = await prisma.session.findMany({
@@ -74,8 +101,39 @@ export async function POST(request: NextRequest) {
     if (!s.candidateEmail) {
       failed += 1
       failures.push({ id: s.id, reason: 'no email on file' })
+      // Still log a failed execution so the candidate timeline shows the
+      // attempt and why it didn't go out.
+      await prisma.automationExecution.create({
+        data: {
+          automationRuleId: bulkRule.id,
+          sessionId: s.id,
+          status: 'failed',
+          channel: 'email',
+          provider: 'sendgrid',
+          errorMessage: 'No email on file',
+          executionMode: 'manual_rerun',
+          triggeredByUserId: ws.userId,
+        },
+      })
       continue
     }
+
+    // Create the row in 'pending' first so we have an id to pass to
+    // SendGrid as a customArg — that's how the Event Webhook joins the
+    // delivered/bounced event back to this execution.
+    const execution = await prisma.automationExecution.create({
+      data: {
+        automationRuleId: bulkRule.id,
+        sessionId: s.id,
+        status: 'pending',
+        channel: 'email',
+        provider: 'sendgrid',
+        executionMode: 'manual_rerun',
+        triggeredByUserId: ws.userId,
+      },
+      select: { id: true },
+    })
+
     const variables: Record<string, string> = {
       candidate_name: s.candidateName || 'Candidate',
       candidate_email: s.candidateEmail,
@@ -87,21 +145,38 @@ export async function POST(request: NextRequest) {
     const renderedSubject = renderTemplate(subject, variables)
     const renderedHtml = renderTemplate(bodyHtml, variables)
     const renderedText = bodyText ? renderTemplate(bodyText, variables) : undefined
+
     const res = await sendEmail({
       to: s.candidateEmail,
       subject: renderedSubject,
       html: renderedHtml,
       text: renderedText,
+      executionId: execution.id,
       workspaceId: ws.workspaceId,
       candidateId: s.id,
     })
-    if (res.success) sent += 1
-    else { failed += 1; failures.push({ id: s.id, reason: res.error || 'unknown' }) }
+
+    if (res.success) {
+      sent += 1
+      await prisma.automationExecution.update({
+        where: { id: execution.id },
+        data: {
+          status: 'sent',
+          sentAt: new Date(),
+          providerMessageId: res.messageId ?? null,
+        },
+      })
+    } else {
+      failed += 1
+      failures.push({ id: s.id, reason: res.error || 'unknown' })
+      await prisma.automationExecution.update({
+        where: { id: execution.id },
+        data: { status: 'failed', errorMessage: res.error ?? 'unknown' },
+      })
+    }
   }
 
-  // Surface ids that were requested but didn't resolve to a Session row
-  // (cross-workspace id, deleted candidate, etc.) — counted as failures
-  // so the client total matches the requested count.
+  // Requested ids that didn't resolve to a Session row in this workspace.
   const found = new Set(sessions.map((s) => s.id))
   for (const id of ids) {
     if (!found.has(id)) { failed += 1; failures.push({ id, reason: 'not found' }) }

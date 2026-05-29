@@ -2035,7 +2035,8 @@ function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalPro
 
           {result && (
             <div className={`text-[12px] px-3 py-2 rounded-[8px] ${result.failed === 0 ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-800'}`}>
-              Sent {result.sent}{result.failed > 0 ? ` · ${result.failed} failed` : ''}
+              Sent {result.sent}{result.failed > 0 ? ` · ${result.failed} failed` : ''}.
+              {' '}Delivery status (delivered / bounced) lands on each candidate's timeline within a minute.
             </div>
           )}
 

@@ -70,7 +70,14 @@ export async function GET(request: NextRequest) {
   // string / unset = "all pipelines"; explicit "null" = "workspace-wide
   // rules only" (pipelineId IS NULL).
   const pipelineId = request.nextUrl.searchParams.get('pipelineId')
-  const where: Record<string, unknown> = { workspaceId: ws.workspaceId }
+  const where: Record<string, unknown> = {
+    workspaceId: ws.workspaceId,
+    // Exclude the synthetic per-workspace rule that owns Recruiter bulk
+    // email executions (src/app/api/candidates/bulk-email). It's not a
+    // user-managed automation — only its child executions matter, and
+    // those still surface on candidate timelines.
+    triggerType: { not: 'manual_bulk' },
+  }
   if (pipelineId === 'null') {
     where.pipelineId = null
   } else if (pipelineId) {
