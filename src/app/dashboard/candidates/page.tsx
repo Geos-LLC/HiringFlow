@@ -170,7 +170,13 @@ export default function CandidatesPage() {
   // which looked like a 10s glitch on slow networks.
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null
-    try { return window.localStorage.getItem('hiringflow:pipeline') } catch { return null }
+    try {
+      const saved = window.localStorage.getItem('hiringflow:pipeline')
+      // 'all' is a sentinel for "no pipeline filter" — store it as null so
+      // the request goes out without a pipelineId param.
+      if (!saved || saved === 'all') return null
+      return saved
+    } catch { return null }
   })
   // Gate the first candidates fetch until the pipelines list resolves — covers
   // first-time visitors (no localStorage value) so they don't get a momentary
@@ -339,14 +345,22 @@ export default function CandidatesPage() {
       .then((rows: PipelineSummary[]) => {
         setPipelines(rows)
         let initialId: string | null = null
+        let useAll = false
         try {
           const saved = localStorage.getItem('hiringflow:pipeline')
-          if (saved && rows.find((p) => p.id === saved)) initialId = saved
+          if (saved === 'all') useAll = true
+          else if (saved && rows.find((p) => p.id === saved)) initialId = saved
         } catch {}
-        if (!initialId) initialId = rows.find((p) => p.isDefault)?.id ?? rows[0]?.id ?? null
-        setSelectedPipelineId(initialId)
-        const picked = rows.find((p) => p.id === initialId)
-        if (picked) setStages(picked.stages)
+        if (useAll) {
+          setSelectedPipelineId(null)
+          const def = rows.find((p) => p.isDefault) ?? rows[0]
+          if (def) setStages(def.stages)
+        } else {
+          if (!initialId) initialId = rows.find((p) => p.isDefault)?.id ?? rows[0]?.id ?? null
+          setSelectedPipelineId(initialId)
+          const picked = rows.find((p) => p.id === initialId)
+          if (picked) setStages(picked.stages)
+        }
         setPipelinesLoaded(true)
       })
       .catch(() => { setPipelinesLoaded(true) })
@@ -376,6 +390,18 @@ export default function CandidatesPage() {
     try { localStorage.setItem('hiringflow:status-tab', statusTab) } catch {}
   }, [statusTab])
 
+  // Debounce the search input → search state so results refresh as the
+  // recruiter types instead of requiring Enter / blur. 250ms is fast enough
+  // to feel live, slow enough to dedupe per-keystroke fetches. We trim so a
+  // stray leading/trailing space (e.g. paste from clipboard) doesn't blank
+  // the result list — DB names occasionally have trailing whitespace too.
+  useEffect(() => {
+    const trimmed = searchInput.trim()
+    if (trimmed === search) return
+    const t = window.setTimeout(() => setSearch(trimmed), 250)
+    return () => window.clearTimeout(t)
+  }, [searchInput, search])
+
   // Movement-rule count for the selected pipeline. Only fetched when
   // rule-based movement is on — under legacy mode the count is meaningless
   // (V1 stage triggers live on the stage row, not in this table). Drives
@@ -396,8 +422,14 @@ export default function CandidatesPage() {
   // stage list. Stages drive every kanban column header / drop target so
   // this is the chokepoint — no other code path should setStages.
   useEffect(() => {
-    if (!selectedPipelineId) return
-    try { localStorage.setItem('hiringflow:pipeline', selectedPipelineId) } catch {}
+    try { localStorage.setItem('hiringflow:pipeline', selectedPipelineId ?? 'all') } catch {}
+    if (selectedPipelineId === null) {
+      // "All" pipelines — keep showing the default pipeline's columns so
+      // cards from any pipeline still have somewhere to land.
+      const def = pipelines.find((p) => p.isDefault) ?? pipelines[0]
+      if (def) setStages(def.stages)
+      return
+    }
     const picked = pipelines.find((p) => p.id === selectedPipelineId)
     if (picked) setStages(picked.stages)
   }, [selectedPipelineId, pipelines])
@@ -628,6 +660,22 @@ export default function CandidatesPage() {
                   </button>
                 )
               })}
+              {/* "All" pseudo-pipeline — drops the per-pipeline filter so a
+                  recruiter can search a candidate across every flow without
+                  hopping pipelines. Stage columns fall back to the default
+                  pipeline; cards on stages from other pipelines land in the
+                  first column via resolveStage. */}
+              <button
+                onClick={() => setSelectedPipelineId(null)}
+                className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] border text-[12px] font-medium transition-colors ${
+                  selectedPipelineId === null
+                    ? 'bg-ink text-white border-ink'
+                    : 'bg-white text-grey-35 border-surface-border hover:border-grey-50 hover:text-ink'
+                }`}
+                title="Search every pipeline at once"
+              >
+                All
+              </button>
             </div>
             <button
               onClick={() => setSettingsOpen(true)}
@@ -689,15 +737,28 @@ export default function CandidatesPage() {
 
         {/* Filters */}
         <div className="shrink-0 flex gap-2.5 mb-5">
-          <input
-            type="text"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && setSearch(searchInput)}
-            onBlur={() => setSearch(searchInput)}
-            placeholder="Search by name, email, phone…"
-            className="flex-1 max-w-xs px-3 py-2 border border-surface-border rounded-[10px] text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white"
-          />
+          <div className="relative flex-1 max-w-xs">
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') setSearch(searchInput.trim()) }}
+              placeholder="Search by name, email, phone…"
+              className="w-full pl-3 pr-8 py-2 border border-surface-border rounded-[10px] text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white"
+            />
+            {searchInput && (
+              <button
+                type="button"
+                onClick={() => { setSearchInput(''); setSearch('') }}
+                aria-label="Clear search"
+                className="absolute top-1/2 right-2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-full text-grey-50 hover:text-ink hover:bg-surface-light"
+              >
+                <svg viewBox="0 0 20 20" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l8 8M14 6l-8 8" />
+                </svg>
+              </button>
+            )}
+          </div>
           <select
             value={flowFilter}
             onChange={(e) => setFlowFilter(e.target.value)}
