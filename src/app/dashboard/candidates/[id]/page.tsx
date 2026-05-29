@@ -677,6 +677,45 @@ export default function CandidateDetailPage() {
   const [meetingUrl, setMeetingUrl] = useState('')
   const [meetingNotes, setMeetingNotes] = useState('')
   const [savingMeeting, setSavingMeeting] = useState(false)
+  const [copiedMeeting, setCopiedMeeting] = useState(false)
+  const [startingInstantFromCard, setStartingInstantFromCard] = useState(false)
+
+  const copyMeetingLink = useCallback(async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopiedMeeting(true)
+      setTimeout(() => setCopiedMeeting(false), 1500)
+    } catch {
+      window.prompt('Copy this link:', url)
+    }
+  }, [])
+
+  const startInstantInterviewFromCard = useCallback(async () => {
+    if (!confirm('Start an instant interview now? This creates a fresh Meet link and sends the recording bot to join immediately. The link will appear in this Meeting card so you can copy and send it.')) return
+    setStartingInstantFromCard(true)
+    try {
+      const res = await fetch(`/api/candidates/${id}/start-instant-interview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ durationMinutes: 30 }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        alert(body?.message || body?.error || 'Could not start instant interview.')
+        return
+      }
+      const uri = typeof body?.meetingUri === 'string' ? body.meetingUri : null
+      if (uri) {
+        try { await navigator.clipboard.writeText(uri) } catch { /* ignore */ }
+        window.open(uri, '_blank', 'noopener')
+        setCopiedMeeting(true)
+        setTimeout(() => setCopiedMeeting(false), 2500)
+      }
+      await loadCandidate()
+    } finally {
+      setStartingInstantFromCard(false)
+    }
+  }, [id, loadCandidate])
 
   const sendMeetingReminder = async () => {
     if (sendingReminder) return
@@ -1691,23 +1730,65 @@ export default function CandidateDetailPage() {
             {candidate.outcome ? candidate.outcome.charAt(0).toUpperCase() + candidate.outcome.slice(1) : 'In progress'}
           </div>
         </div>
-        {latestMeetingUrl && (
-          <div className="bg-white rounded-[8px] border border-surface-border p-4">
-            <div className="text-xs text-grey-40 mb-1">Meeting</div>
-            <a
-              href={latestMeetingUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm font-medium text-brand-600 hover:underline truncate block"
-              title={latestMeetingUrl}
-            >
-              Open meeting link
-            </a>
-            {latestMeetingAt && (
-              <div className="text-xs text-grey-40 mt-0.5">{new Date(latestMeetingAt).toLocaleString()}</div>
-            )}
-          </div>
-        )}
+        {latestMeetingUrl && (() => {
+          const isPast = latestMeetingAt ? new Date(latestMeetingAt).getTime() < Date.now() : false
+          return (
+            <div className="bg-white rounded-[8px] border border-surface-border p-4">
+              <div className="text-xs text-grey-40 mb-1 flex items-center gap-1.5">
+                <span>Meeting</span>
+                {isPast && (
+                  <span
+                    title="The scheduled time for this meeting has passed. Start an instant meeting to get a fresh link."
+                    className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium"
+                  >
+                    Past
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={latestMeetingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-medium text-brand-600 hover:underline truncate"
+                  title={latestMeetingUrl}
+                >
+                  Open meeting link
+                </a>
+                <button
+                  onClick={() => copyMeetingLink(latestMeetingUrl)}
+                  title="Copy link to clipboard"
+                  className="text-grey-40 hover:text-brand-600 flex-shrink-0"
+                  aria-label="Copy link"
+                >
+                  {copiedMeeting ? (
+                    <svg className="w-3.5 h-3.5 text-green-600" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <rect x="9" y="9" width="11" height="11" rx="2" />
+                      <path d="M5 15V5a2 2 0 012-2h10" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              {latestMeetingAt && (
+                <div className="text-xs text-grey-40 mt-0.5">{new Date(latestMeetingAt).toLocaleString()}</div>
+              )}
+              {isPast && (
+                <button
+                  onClick={startInstantInterviewFromCard}
+                  disabled={startingInstantFromCard}
+                  className="mt-2 text-xs text-brand-600 hover:underline disabled:opacity-50"
+                  title="Spin up a fresh Meet link + recording bot and replace the link above"
+                >
+                  {startingInstantFromCard ? 'Starting…' : '+ Start instant meeting'}
+                </button>
+              )}
+            </div>
+          )
+        })()}
         <div className="bg-white rounded-[8px] border border-surface-border p-4">
           <div className="text-xs text-grey-40 mb-1">Answers</div>
           <div className="text-sm font-medium text-grey-15">{candidate.answers.length}</div>
