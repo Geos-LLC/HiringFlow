@@ -190,6 +190,11 @@ export default function CandidatesPage() {
   const [loading, setLoading] = useState(true)
   const [flowFilter, setFlowFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
+  // Stage filter — narrows the list to a single funnel stage (kanban column).
+  // Stage ids are pipeline-scoped, so this resets whenever the pipeline
+  // selection changes. Most useful in table view; in kanban it just empties
+  // the other columns, which is fine.
+  const [stageFilter, setStageFilter] = useState('')
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   // Toggle: when true, only show recruiter-starred candidates (interestingAt
@@ -238,6 +243,9 @@ export default function CandidatesPage() {
   // activates. Until then the card is treated as part of the board so the
   // mousedown initiates a horizontal pan instead of an HTML5 drag.
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
+  // Bulk email modal — opened from the table view's bulk action footer.
+  // Recipients are whatever ids are in selectedIds at open time.
+  const [bulkEmailOpen, setBulkEmailOpen] = useState(false)
 
   // Click-and-drag horizontal pan on the kanban background. Skips when the
   // mousedown originates on a *selected* card (data-card is set conditionally)
@@ -416,7 +424,13 @@ export default function CandidatesPage() {
   // to rows that may no longer be in the visible list.
   useEffect(() => {
     setSelectedIds(new Set())
-  }, [view, statusTab, flowFilter, sourceFilter, search, interestingOnly, selectedPipelineId])
+  }, [view, statusTab, flowFilter, sourceFilter, stageFilter, search, interestingOnly, selectedPipelineId])
+
+  // Stage ids are scoped to a pipeline; switching pipelines invalidates
+  // whatever stage was selected.
+  useEffect(() => {
+    setStageFilter('')
+  }, [selectedPipelineId])
 
   // Debounce the search input → search state so results refresh as the
   // recruiter types instead of requiring Enter / blur. 250ms is fast enough
@@ -478,6 +492,7 @@ export default function CandidatesPage() {
     if (flowFilter) params.set('flowId', flowFilter)
     else if (selectedPipelineId) params.set('pipelineId', selectedPipelineId)
     if (sourceFilter) params.set('source', sourceFilter)
+    if (stageFilter) params.set('status', stageFilter)
     if (search) params.set('search', search)
     if (interestingOnly) params.set('interesting', '1')
     const tab = statusTabs.find((t) => t.key === statusTab)
@@ -509,7 +524,7 @@ export default function CandidatesPage() {
         setStatusCounts(buckets)
       })
       .catch(() => {})
-  }, [flowFilter, sourceFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId])
+  }, [flowFilter, sourceFilter, stageFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId])
 
   useEffect(() => {
     // Don't fire the first candidates fetch until the pipeline picker is
@@ -868,6 +883,15 @@ export default function CandidatesPage() {
           >
             <option value="">All flows</option>
             {flows.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <select
+            value={stageFilter}
+            onChange={(e) => setStageFilter(e.target.value)}
+            className="px-3 py-2 border border-surface-border rounded-[10px] text-[13px] text-ink bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            title="Filter by funnel stage (kanban column)"
+          >
+            <option value="">All stages</option>
+            {stages.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
           </select>
           <select
             value={sourceFilter}
@@ -1442,6 +1466,17 @@ export default function CandidatesPage() {
                   </select>
                 </div>
                 <button
+                  onClick={() => setBulkEmailOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] border border-surface-border text-[12px] text-ink hover:bg-surface-light transition-colors"
+                  title="Compose a one-off email to all selected candidates"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3.5" width="12" height="9" rx="1.2" />
+                    <path d="M2.5 4.5l5.5 4 5.5-4" />
+                  </svg>
+                  Email
+                </button>
+                <button
                   onClick={bulkDelete}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] border border-red-200 text-[12px] text-[color:var(--danger-fg)] hover:bg-[color:var(--danger-bg)] transition-colors"
                 >
@@ -1489,6 +1524,13 @@ export default function CandidatesPage() {
           setCustomStatuses(next.customStatuses)
           load()
         }}
+      />
+
+      <BulkEmailModal
+        open={bulkEmailOpen}
+        onClose={() => setBulkEmailOpen(false)}
+        recipients={candidates.filter((c) => selectedIds.has(c.id))}
+        onSent={() => { setBulkEmailOpen(false); setSelectedIds(new Set()) }}
       />
 
       <NewCandidateModal
@@ -1785,6 +1827,229 @@ function NewCandidateModal({ open, onClose, flows, stages, defaultFlowId, custom
           <Button type="button" variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
           <Button type="submit" size="sm" disabled={!canSubmit || submitting || flows.length === 0}>
             {submitting ? 'Adding…' : 'Add candidate'}
+          </Button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+interface EmailTemplateLite {
+  id: string
+  name: string
+  subject: string
+  bodyHtml: string
+  bodyText: string | null
+}
+
+interface BulkEmailModalProps {
+  open: boolean
+  onClose: () => void
+  recipients: Candidate[]
+  onSent: () => void
+}
+
+// One-shot recruiter email to N hand-picked candidates from the table view.
+// Distinct from the automation engine: no AutomationExecution rows, no
+// stage gating — straight SendGrid send through /api/candidates/bulk-email.
+// Optional "Save as template" persists the composed subject + body to
+// EmailTemplate so it shows up in future automation step pickers AND in
+// the template dropdown on this modal.
+function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalProps) {
+  const [templates, setTemplates] = useState<EmailTemplateLite[]>([])
+  const [templateId, setTemplateId] = useState('')
+  const [subject, setSubject] = useState('')
+  const [bodyHtml, setBodyHtml] = useState('')
+  const [saveAsTemplate, setSaveAsTemplate] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<{ sent: number; failed: number } | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setTemplateId('')
+    setSubject('')
+    setBodyHtml('')
+    setSaveAsTemplate(false)
+    setTemplateName('')
+    setError(null)
+    setResult(null)
+    fetch('/api/email-templates')
+      .then((r) => r.ok ? r.json() : [])
+      .then((rows: EmailTemplateLite[]) => setTemplates(Array.isArray(rows) ? rows : []))
+      .catch(() => setTemplates([]))
+  }, [open])
+
+  // When the recruiter picks a saved template, prefill subject + body.
+  // Re-selecting the empty option doesn't wipe the fields — they keep
+  // whatever the recruiter typed, which is the expected "undo" behavior
+  // for accidental selections.
+  const pickTemplate = (id: string) => {
+    setTemplateId(id)
+    if (!id) return
+    const t = templates.find((x) => x.id === id)
+    if (!t) return
+    setSubject(t.subject)
+    setBodyHtml(t.bodyHtml)
+  }
+
+  if (!open) return null
+
+  const withEmail = recipients.filter((c) => !!c.candidateEmail)
+  const withoutEmail = recipients.length - withEmail.length
+  const canSubmit = subject.trim().length > 0
+    && bodyHtml.trim().length > 0
+    && withEmail.length > 0
+    && (!saveAsTemplate || templateName.trim().length > 0)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!canSubmit || sending) return
+    setSending(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/candidates/bulk-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ids: recipients.map((c) => c.id),
+          subject: subject.trim(),
+          bodyHtml,
+          saveAsTemplate: saveAsTemplate ? { name: templateName.trim() } : null,
+        }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j?.error || 'Failed to send')
+      }
+      const j = await res.json() as { sent: number; failed: number; savedTemplateId: string | null }
+      setResult({ sent: j.sent, failed: j.failed })
+      // Auto-close on full success after a brief pause; if any failed, leave
+      // the modal open so the recruiter sees the count and can act on it.
+      if (j.failed === 0) {
+        setTimeout(() => { onSent() }, 900)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <form
+        onSubmit={submit}
+        className="w-full max-w-2xl rounded-[14px] bg-white shadow-xl border border-surface-border flex flex-col max-h-[90vh]"
+      >
+        <div className="px-5 py-4 border-b border-surface-divider flex items-center justify-between">
+          <div>
+            <h2 className="text-[15px] font-semibold text-ink">Email candidates</h2>
+            <p className="mt-0.5 text-[12px] text-grey-35">
+              Sending to <strong className="text-ink">{withEmail.length}</strong> of {recipients.length} selected
+              {withoutEmail > 0 && <span className="text-amber-600"> · {withoutEmail} missing email</span>}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-7 h-7 flex items-center justify-center rounded-md text-grey-50 hover:text-ink hover:bg-surface-light"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3.5">
+          <div>
+            <label className="block text-[12px] font-medium text-ink mb-1">Start from template</label>
+            <select
+              value={templateId}
+              onChange={(e) => pickTemplate(e.target.value)}
+              className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            >
+              <option value="">— Blank email —</option>
+              {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+            <p className="mt-1 text-[11px] text-grey-35">
+              Picking a template prefills subject and body. Edits stay local until you Send.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-[12px] font-medium text-ink mb-1">Subject</label>
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Update from {{flow_name}}"
+              className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-[12px] font-medium text-ink mb-1">Body (HTML allowed)</label>
+            <textarea
+              value={bodyHtml}
+              onChange={(e) => setBodyHtml(e.target.value)}
+              rows={10}
+              placeholder={'Hi {{candidate_name}},\n\nThanks for applying…'}
+              className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
+              required
+            />
+            <p className="mt-1 text-[11px] text-grey-35">
+              Merge tokens: <code className="px-1 py-0.5 bg-surface-light rounded">{'{{candidate_name}}'}</code>{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{candidate_email}}'}</code>{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{candidate_phone}}'}</code>{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{flow_name}}'}</code>{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{source}}'}</code>
+            </p>
+          </div>
+
+          <div className="border-t border-surface-divider pt-3">
+            <label className="inline-flex items-center gap-2 text-[13px] text-ink cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveAsTemplate}
+                onChange={(e) => setSaveAsTemplate(e.target.checked)}
+                className="cursor-pointer"
+              />
+              Save as email template for reuse
+            </label>
+            {saveAsTemplate && (
+              <input
+                type="text"
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                placeholder="Template name (e.g. Follow-up after no-show)"
+                className="mt-2 w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                required
+              />
+            )}
+          </div>
+
+          {result && (
+            <div className={`text-[12px] px-3 py-2 rounded-[8px] ${result.failed === 0 ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-800'}`}>
+              Sent {result.sent}{result.failed > 0 ? ` · ${result.failed} failed` : ''}
+            </div>
+          )}
+
+          {error && (
+            <div className="text-[12px] px-3 py-2 rounded-[8px] bg-[color:var(--danger-bg)] text-[color:var(--danger-fg)]">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-end gap-2">
+          <Button type="button" variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
+          <Button type="submit" size="sm" disabled={!canSubmit || sending}>
+            {sending ? 'Sending…' : `Send to ${withEmail.length}`}
           </Button>
         </div>
       </form>
