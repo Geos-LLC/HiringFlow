@@ -517,26 +517,22 @@ export default function FlowSchemaView({
       for (const s of steps) {
         const p = positions[s.id]
         if (!p) continue
-        const inX = !(p.x + NODE_W <= fromX + 4 || p.x >= toX - 4)
-        if (!inX) continue
         const cardBot = p.y + NODE_H
         const isExcluded = excludeIds.has(s.id)
+        const inX = !(p.x + NODE_W <= fromX + 4 || p.x >= toX - 4)
         const inY = !(p.y + NODE_H < minPathY || p.y > maxPathY)
-        if (debugLabel) {
-          dbg.push({
-            title: s.title || s.id.slice(0, 6),
-            role: isExcluded ? (s.id === Array.from(excludeIds)[0] ? 'SRC' : 'TGT') : (inY ? 'BLOCKER' : 'corridor'),
-            x: Math.round(p.x),
-            y: Math.round(p.y),
-            bot: Math.round(cardBot),
-            inX,
-            inY,
-          })
-        }
         if (isExcluded) {
+          // Source/target endpoints sit AT the corridor edges (right port of
+          // source = fromX, left port of target = toX), so the strict
+          // corridor X check excludes them. But their bottoms MUST still
+          // contribute to laneY — otherwise the lane lands inside the
+          // target card when the target is below the blocker.
           if (cardBot > maxBot) maxBot = cardBot
+          if (debugLabel) dbg.push({ title: s.title || s.id.slice(0, 6), role: 'ENDPOINT', x: Math.round(p.x), y: Math.round(p.y), bot: Math.round(cardBot), inX, inY })
           continue
         }
+        if (!inX) continue
+        if (debugLabel) dbg.push({ title: s.title || s.id.slice(0, 6), role: inY ? 'BLOCKER' : 'corridor', x: Math.round(p.x), y: Math.round(p.y), bot: Math.round(cardBot), inX, inY })
         if (!inY) continue
         hasBlocker = true
         if (cardBot > maxBot) maxBot = cardBot
@@ -611,7 +607,7 @@ export default function FlowSchemaView({
       const [c1x, c1y, c2x, c2y] = (() => {
         if (laneY !== undefined) {
           const span = Math.abs(inp.x - out.x)
-          const cpOff = Math.max(NODE_W + 40, span * 0.45)
+          const cpOff = Math.max(40, span * 0.4)
           return [out.x + cpOff, laneY, inp.x - cpOff, laneY]
         }
         const dx = Math.abs(inp.x - out.x)
@@ -2555,12 +2551,11 @@ function bezierCps(
   laneY?: number
 ): readonly [number, number, number, number] {
   if (laneY !== undefined) {
-    // Very wide control-point offset for lane-routed bezier so the
-    // transition into / out of the lane clears the card directly below
-    // the source (or above the target) before the curve has time to
-    // enter that card's Y range.
+    // cpOffset MUST stay < span/2 — otherwise c1.x > c2.x and the
+    // bezier curls into a weird shape. Use 40 % of span (always under
+    // half) with a 40 px minimum so very-short spans still curve.
     const span = Math.abs(toX - fromX)
-    const cpOffset = Math.max(NODE_W + 40, span * 0.45)
+    const cpOffset = Math.max(40, span * 0.4)
     return [fromX + cpOffset, laneY, toX - cpOffset, laneY] as const
   }
   const isBackward = toX < fromX
