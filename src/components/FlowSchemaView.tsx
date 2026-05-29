@@ -512,7 +512,12 @@ export default function FlowSchemaView({
       const minPathY = Math.min(fromY, toY) - 16
       const maxPathY = Math.max(fromY, toY) + 16
       let hasBlocker = false
-      let maxBot = -Infinity
+      let blockerMaxBot = -Infinity
+      // Track each endpoint card's Y rect separately so we only override
+      // the lane when the blocker-lane would actually land INSIDE the
+      // endpoint's rect (i.e. the curve would clip it). Including endpoint
+      // bottoms unconditionally makes long-span lanes overshoot.
+      const endpointRects: Array<{top: number; bot: number}> = []
       const dbg: Array<{title: string; role: string; x: number; y: number; bot: number; inX: boolean; inY: boolean}> = []
       for (const s of steps) {
         const p = positions[s.id]
@@ -522,12 +527,7 @@ export default function FlowSchemaView({
         const inX = !(p.x + NODE_W <= fromX + 4 || p.x >= toX - 4)
         const inY = !(p.y + NODE_H < minPathY || p.y > maxPathY)
         if (isExcluded) {
-          // Source/target endpoints sit AT the corridor edges (right port of
-          // source = fromX, left port of target = toX), so the strict
-          // corridor X check excludes them. But their bottoms MUST still
-          // contribute to laneY — otherwise the lane lands inside the
-          // target card when the target is below the blocker.
-          if (cardBot > maxBot) maxBot = cardBot
+          endpointRects.push({ top: p.y, bot: cardBot })
           if (debugLabel) dbg.push({ title: s.title || s.id.slice(0, 6), role: 'ENDPOINT', x: Math.round(p.x), y: Math.round(p.y), bot: Math.round(cardBot), inX, inY })
           continue
         }
@@ -535,16 +535,27 @@ export default function FlowSchemaView({
         if (debugLabel) dbg.push({ title: s.title || s.id.slice(0, 6), role: inY ? 'BLOCKER' : 'corridor', x: Math.round(p.x), y: Math.round(p.y), bot: Math.round(cardBot), inX, inY })
         if (!inY) continue
         hasBlocker = true
-        if (cardBot > maxBot) maxBot = cardBot
+        if (cardBot > blockerMaxBot) blockerMaxBot = cardBot
+      }
+      if (!hasBlocker) {
+        if (debugLabel) console.log(`[lane] ${debugLabel} no blocker → none`)
+        return undefined
+      }
+      let laneY = blockerMaxBot + 90
+      // If the lane would land INSIDE an endpoint rect, push it just
+      // below that endpoint instead. This handles target-below-blocker
+      // without over-deepening every long-span lane.
+      for (const r of endpointRects) {
+        if (laneY > r.top - 10 && laneY < r.bot + 10) {
+          laneY = r.bot + 90
+        }
       }
       if (debugLabel) {
-        const laneY = hasBlocker ? maxBot + 90 : undefined
         // eslint-disable-next-line no-console
-        console.log(`[lane] ${debugLabel} from=(${Math.round(fromX)},${Math.round(fromY)}) to=(${Math.round(toX)},${Math.round(toY)}) corridorY=[${Math.round(minPathY)},${Math.round(maxPathY)}] hasBlocker=${hasBlocker} maxBot=${maxBot === -Infinity ? '-' : Math.round(maxBot)} → laneY=${laneY ?? 'none'}`)
+        console.log(`[lane] ${debugLabel} from=(${Math.round(fromX)},${Math.round(fromY)}) to=(${Math.round(toX)},${Math.round(toY)}) blockerBot=${Math.round(blockerMaxBot)} → laneY=${Math.round(laneY)}`)
         if (dbg.length) console.table(dbg)
       }
-      if (!hasBlocker) return undefined
-      return maxBot + 90
+      return laneY
     },
     [steps, positions]
   )
