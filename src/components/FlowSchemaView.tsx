@@ -507,29 +507,45 @@ export default function FlowSchemaView({
   // padding as the band, so a card sitting anywhere between the source
   // and target row counts as a blocker.
   const computeDetourLane = useCallback(
-    (fromX: number, fromY: number, toX: number, toY: number, excludeIds: Set<string>) => {
+    (fromX: number, fromY: number, toX: number, toY: number, excludeIds: Set<string>, debugLabel?: string) => {
       if (toX <= fromX) return undefined
       const minPathY = Math.min(fromY, toY) - 16
       const maxPathY = Math.max(fromY, toY) + 16
       let hasBlocker = false
-      // Track max bottom of every card in the horizontal corridor —
-      // including source and target — so the lane sits beneath ALL of
-      // them. Otherwise, when the target sits below the blocker (e.g.
-      // forked options stacked vertically), the lane ends up cutting
-      // through the target card on its way to its left port.
       let maxBot = -Infinity
+      const dbg: Array<{title: string; role: string; x: number; y: number; bot: number; inX: boolean; inY: boolean}> = []
       for (const s of steps) {
         const p = positions[s.id]
         if (!p) continue
-        if (p.x + NODE_W <= fromX + 4 || p.x >= toX - 4) continue
+        const inX = !(p.x + NODE_W <= fromX + 4 || p.x >= toX - 4)
+        if (!inX) continue
         const cardBot = p.y + NODE_H
-        if (excludeIds.has(s.id)) {
+        const isExcluded = excludeIds.has(s.id)
+        const inY = !(p.y + NODE_H < minPathY || p.y > maxPathY)
+        if (debugLabel) {
+          dbg.push({
+            title: s.title || s.id.slice(0, 6),
+            role: isExcluded ? (s.id === [...excludeIds][0] ? 'SRC' : 'TGT') : (inY ? 'BLOCKER' : 'corridor'),
+            x: Math.round(p.x),
+            y: Math.round(p.y),
+            bot: Math.round(cardBot),
+            inX,
+            inY,
+          })
+        }
+        if (isExcluded) {
           if (cardBot > maxBot) maxBot = cardBot
           continue
         }
-        if (p.y + NODE_H < minPathY || p.y > maxPathY) continue
+        if (!inY) continue
         hasBlocker = true
         if (cardBot > maxBot) maxBot = cardBot
+      }
+      if (debugLabel) {
+        const laneY = hasBlocker ? maxBot + 90 : undefined
+        // eslint-disable-next-line no-console
+        console.log(`[lane] ${debugLabel} from=(${Math.round(fromX)},${Math.round(fromY)}) to=(${Math.round(toX)},${Math.round(toY)}) corridorY=[${Math.round(minPathY)},${Math.round(maxPathY)}] hasBlocker=${hasBlocker} maxBot=${maxBot === -Infinity ? '-' : Math.round(maxBot)} → laneY=${laneY ?? 'none'}`)
+        if (dbg.length) console.table(dbg)
       }
       if (!hasBlocker) return undefined
       return maxBot + 90
@@ -568,6 +584,7 @@ export default function FlowSchemaView({
     }
 
     // --- 2) Forward edges that would clip through intermediate cards. ---
+    const titleFor = (id: string) => steps.find((s) => s.id === id)?.title ?? id.slice(0, 6)
     for (const c of allConnections) {
       if (m.has(connKey(c))) continue // already routed (backward)
       const sp = positions[c.sourceId]
@@ -576,12 +593,56 @@ export default function FlowSchemaView({
       if (tp.x <= sp.x) continue
       const out = getOutputPort(sp)
       const inp = getInputPort(tp)
-      const lane = computeDetourLane(out.x, out.y, inp.x, inp.y, new Set([c.sourceId, c.targetId]))
+      const label = `"${titleFor(c.sourceId)}" → "${titleFor(c.targetId)}"`
+      const lane = computeDetourLane(out.x, out.y, inp.x, inp.y, new Set([c.sourceId, c.targetId]), label)
       if (lane !== undefined) m.set(connKey(c), lane)
     }
 
+    // --- 3) Curve-clipping audit: sample every forward bezier at 60 points
+    //         and warn if any sample falls inside a non-endpoint card.
+    for (const c of allConnections) {
+      const sp = positions[c.sourceId]
+      const tp = positions[c.targetId]
+      if (!sp || !tp) continue
+      if (tp.x <= sp.x) continue
+      const out = getOutputPort(sp)
+      const inp = getInputPort(tp)
+      const laneY = m.get(connKey(c))
+      const [c1x, c1y, c2x, c2y] = (() => {
+        if (laneY !== undefined) {
+          const span = Math.abs(inp.x - out.x)
+          const cpOff = Math.max(NODE_W + 40, span * 0.45)
+          return [out.x + cpOff, laneY, inp.x - cpOff, laneY]
+        }
+        const dx = Math.abs(inp.x - out.x)
+        const cpOff = Math.max(dx * 0.4, 40)
+        return [out.x + cpOff, out.y, inp.x - cpOff, inp.y]
+      })()
+      const clips: Array<{step: string; x: number; y: number; t: number}> = []
+      for (let i = 1; i < 60; i++) {
+        const t = i / 60
+        const omt = 1 - t
+        const bx = omt*omt*omt*out.x + 3*omt*omt*t*c1x + 3*omt*t*t*c2x + t*t*t*inp.x
+        const by = omt*omt*omt*out.y + 3*omt*omt*t*c1y + 3*omt*t*t*c2y + t*t*t*inp.y
+        for (const s of steps) {
+          if (s.id === c.sourceId || s.id === c.targetId) continue
+          const p = positions[s.id]
+          if (!p) continue
+          if (bx >= p.x && bx <= p.x + NODE_W && by >= p.y && by <= p.y + NODE_H) {
+            clips.push({ step: s.title || s.id.slice(0, 6), x: Math.round(bx), y: Math.round(by), t: Math.round(t * 100) / 100 })
+            break
+          }
+        }
+      }
+      if (clips.length > 0) {
+        // eslint-disable-next-line no-console
+        console.warn(`[clip] "${titleFor(c.sourceId)}" → "${titleFor(c.targetId)}" CURVE CLIPS ${clips.length}/60 samples. laneY=${laneY ?? 'none'} cps=[(${Math.round(c1x)},${Math.round(c1y)}),(${Math.round(c2x)},${Math.round(c2y)})]`)
+        console.table(clips.slice(0, 6))
+      }
+    }
+
     return m
-  }, [allConnections, positions, connKey, computeDetourLane])
+  }, [allConnections, positions, connKey, computeDetourLane, steps])
 
   // Diagnostic log: dump every drawn connection with source/target titles
   // and coordinates whenever the toggle is on or the data changes.
