@@ -24,7 +24,7 @@
 import type { InterviewMeeting, Prisma } from '@prisma/client'
 import type { OAuth2Client } from 'google-auth-library'
 import { prisma } from '../prisma'
-import { fetchUserInfo, getAuthedClientForWorkspace, hasSheetsScope } from '../google'
+import { fetchUserInfo, getAuthedClientForWorkspace } from '../google'
 import { withWorkspaceMeetClient, listConferenceRecords, listParticipants, listRecordings, listTranscripts, type Participant } from './google-meet'
 import { findMeetRecordingsFolderId, searchMeetRecordings, searchMeetTranscripts } from './google-drive'
 import { findAttendanceForMeeting, type AttendanceSignal } from './attendance-fallback'
@@ -42,17 +42,11 @@ const GRACE_AFTER_SCHEDULED_END_MS = 15 * 60 * 1000
 // outbound API calls when many meetings are still pending recording artifacts.
 const MIN_RESYNC_INTERVAL_MS = 5 * 60 * 1000
 
-// How long after scheduledEnd we keep polling Drive for the attendance sheet
-// even if other artifacts already populated actualEnd. Six hours covers
-// extensions that batch-upload when the host's browser closes well after the
-// meeting itself ended.
-const ATTENDANCE_SHEET_WAIT_MS = 6 * 60 * 60 * 1000
-
 type SyncableMeeting = Pick<InterviewMeeting,
   'id' | 'workspaceId' | 'sessionId' | 'meetSpaceName' |
   'scheduledStart' | 'scheduledEnd' | 'actualStart' | 'actualEnd' |
   'recordingState' | 'transcriptState' |
-  'meetApiSyncedAt' | 'attendanceSheetFileId' |
+  'meetApiSyncedAt' |
   'driveRecordingFileId' | 'driveGeminiNotesFileId' | 'driveTranscriptFileId'
 >
 
@@ -63,7 +57,7 @@ type SyncableMeeting = Pick<InterviewMeeting,
 // show every recording, not just the first one we found).
 const ARTIFACT_RESCAN_WINDOW_MS = 24 * 60 * 60 * 1000
 
-function shouldSync(m: SyncableMeeting, extensionEnabled = false): boolean {
+function shouldSync(m: SyncableMeeting): boolean {
   if (m.actualEnd) {
     const recordingTerminal =
       m.recordingState === 'ready' || m.recordingState === 'failed' ||
@@ -78,16 +72,6 @@ function shouldSync(m: SyncableMeeting, extensionEnabled = false): boolean {
     if (!recordingTerminal || !transcriptTerminal) {
       if (m.meetApiSyncedAt && Date.now() - m.meetApiSyncedAt.getTime() < MIN_RESYNC_INTERVAL_MS) return false
       return true
-    }
-    // Extension is on but the attendance sheet hasn't landed yet — keep
-    // polling Drive so we eventually catch it. Without this, a recording
-    // artifact that arrives before the sheet permanently locks the meeting
-    // out of attendance evaluation.
-    if (extensionEnabled && !m.attendanceSheetFileId && m.scheduledEnd) {
-      if (Date.now() < m.scheduledEnd.getTime() + ATTENDANCE_SHEET_WAIT_MS) {
-        if (m.meetApiSyncedAt && Date.now() - m.meetApiSyncedAt.getTime() < MIN_RESYNC_INTERVAL_MS) return false
-        return true
-      }
     }
     // Even after the recording is "ready", keep rescanning Drive for late
     // artifacts (the host reopening the Meet link an hour later produces a
@@ -108,28 +92,12 @@ function shouldSync(m: SyncableMeeting, extensionEnabled = false): boolean {
   return true
 }
 
-async function fetchExtensionEnabled(workspaceId: string): Promise<boolean> {
-  const integ = await prisma.googleIntegration.findUnique({
-    where: { workspaceId },
-    select: { attendanceExtensionEnabled: true },
-  })
-  return !!integ?.attendanceExtensionEnabled
-}
-
 /**
  * Sync a single meeting from Meet API. Safe to call on any meeting — it'll
  * no-op when shouldSync returns false. Returns true if any state was updated.
- *
- * `extensionEnabled` can be passed by batch callers that have already loaded
- * the workspace's GoogleIntegration row, to avoid one DB hit per meeting.
- * Otherwise we fetch it inline.
  */
-export async function syncMeetingFromMeetApi(
-  meeting: SyncableMeeting,
-  opts: { extensionEnabled?: boolean } = {},
-): Promise<boolean> {
-  const extensionEnabled = opts.extensionEnabled ?? await fetchExtensionEnabled(meeting.workspaceId)
-  if (!shouldSync(meeting, extensionEnabled)) return false
+export async function syncMeetingFromMeetApi(meeting: SyncableMeeting): Promise<boolean> {
+  if (!shouldSync(meeting)) return false
 
   // Stamp the sync attempt timestamp upfront so concurrent loaders don't both
   // hit Meet API for the same meeting in parallel.
@@ -161,27 +129,23 @@ export async function syncMeetingFromMeetApi(
         // gated.
         const integ = await prisma.googleIntegration.findUnique({
           where: { workspaceId: meeting.workspaceId },
-          select: {
-            hostedDomain: true, meetRecordingsFolderId: true,
-            attendanceExtensionEnabled: true, grantedScopes: true,
-          },
+          select: { hostedDomain: true, meetRecordingsFolderId: true },
         })
         if (integ?.hostedDomain) {
           // Workspace tenant — empty really means no conference happened.
           await maybeFlagNoShow(meeting, [], { reason: 'no_conference_started' })
           return false
         }
-        // Personal Gmail / Workspace Individual fallback path. Two signals:
-        //   1. Attendance-extension spreadsheet (true present/absent answer)
-        //   2. Drive Recording / Gemini Notes (proves the meeting happened,
-        //      can't disambiguate attendees → meeting_started/ended only)
+        // Personal Gmail / Workspace Individual fallback. Drive Recording +
+        // Gemini Notes prove the meeting happened but can't disambiguate
+        // attendees → emit meeting_started/ended only; recruiter manually
+        // marks no-show if the candidate didn't show.
         const session = await prisma.session.findUnique({
           where: { id: meeting.sessionId },
-          select: { candidateName: true, candidateEmail: true },
+          select: { candidateName: true },
         })
-        const extensionEnabled = !!integ?.attendanceExtensionEnabled
         const folderId = await ensureFolderId(client, meeting.workspaceId, integ?.meetRecordingsFolderId ?? null)
-        const driveOutcome = await syncFromDriveRecording(client, meeting, folderId, { extensionEnabled })
+        const driveOutcome = await syncFromDriveRecording(client, meeting, folderId)
         if (driveOutcome.updated) updated = true
 
         const transcriptUpdated = await syncFromDriveTranscript(client, meeting, folderId)
@@ -192,15 +156,12 @@ export async function syncMeetingFromMeetApi(
           windowEnd: meeting.scheduledEnd,
           folderId,
           candidateName: session?.candidateName ?? null,
-          candidateEmail: session?.candidateEmail ?? null,
-          extensionEnabled,
-          sheetsScopeGranted: hasSheetsScope(integ?.grantedScopes),
         }).catch((err) => {
           console.warn('[meet-sync] attendance fallback failed:', (err as Error).message)
           return null
         })
 
-        const lifecycleFired = await applyAttendanceSignal(meeting, attendance, driveOutcome, { extensionEnabled })
+        const lifecycleFired = await applyAttendanceSignal(meeting, attendance, driveOutcome)
         if (lifecycleFired) updated = true
         return updated
       }
@@ -301,25 +262,24 @@ export async function syncMeetingFromMeetApi(
  * single page load.
  */
 export async function syncWorkspaceMeetings(workspaceId: string): Promise<number> {
-  const extensionEnabled = await fetchExtensionEnabled(workspaceId)
   const candidates = await prisma.interviewMeeting.findMany({
     where: { workspaceId },
     select: {
       id: true, workspaceId: true, sessionId: true, meetSpaceName: true,
       scheduledStart: true, scheduledEnd: true, actualStart: true, actualEnd: true,
       recordingState: true, transcriptState: true,
-      meetApiSyncedAt: true, attendanceSheetFileId: true,
+      meetApiSyncedAt: true,
       driveRecordingFileId: true, driveGeminiNotesFileId: true, driveTranscriptFileId: true,
     },
   })
-  const stale = candidates.filter((m) => shouldSync(m, extensionEnabled))
+  const stale = candidates.filter((m) => shouldSync(m))
   if (stale.length === 0) return 0
 
   const CONCURRENCY = 4
   let synced = 0
   for (let i = 0; i < stale.length; i += CONCURRENCY) {
     const batch = stale.slice(i, i + CONCURRENCY)
-    const results = await Promise.all(batch.map((m) => syncMeetingFromMeetApi(m, { extensionEnabled })))
+    const results = await Promise.all(batch.map((m) => syncMeetingFromMeetApi(m)))
     synced += results.filter(Boolean).length
   }
   return synced
@@ -349,7 +309,6 @@ async function syncFromDriveRecording(
   client: OAuth2Client,
   meeting: SyncableMeeting,
   folderId: string | null,
-  opts: { extensionEnabled?: boolean } = {},
 ): Promise<{ updated: boolean; recordingFileId: string | null; createdAt: Date | null }> {
   // Honor explicit removal by the recruiter. recordingState='unavailable'
   // means "remove recording" was clicked — re-finding the file in Drive and
@@ -360,20 +319,20 @@ async function syncFromDriveRecording(
   if (!folderId) return { updated: false, recordingFileId: null, createdAt: null }
 
   // Search window: 15 min before scheduledStart through actualEnd (or
-  // scheduledEnd) + 30 min. Drive search no longer filters by candidate name —
+  // scheduledEnd) + 2 hours. Drive search no longer filters by candidate name —
   // Meet's filename is derived from the calendar event title and won't always
   // contain the stored `session.candidateName` (e.g. Cyrillic-displayed
-  // candidate, Latin-stored session name). To keep the wider scan from
-  // picking up the prior back-to-back meeting's recording, the window is tied
-  // tightly to this meeting's bounds; Drive recordings finalize within a few
-  // minutes of conference end, so +30 min upper bound is enough to catch even
-  // a slow finalization.
+  // candidate, Latin-stored session name). The +2h upper bound covers
+  // Gemini Notes' slow finalization on personal Gmail tenants (verified
+  // 2026-05-29 with Alyona Rybachenko: meeting ended 15:34, video file
+  // landed in Drive at 16:36 — 62 minutes later — which the prior +30 min
+  // window missed entirely).
   const start = meeting.scheduledStart ?? new Date(0)
   const endBound = meeting.actualEnd ?? meeting.scheduledEnd ?? new Date(Date.now() + 24 * 60 * 60 * 1000)
   const candidates = await searchMeetRecordings(client, {
     folderId,
     createdAfter: new Date(start.getTime() - 15 * 60 * 1000),
-    createdBefore: new Date(endBound.getTime() + 30 * 60 * 1000),
+    createdBefore: new Date(endBound.getTime() + 2 * 60 * 60 * 1000),
     limit: 10,
   }).catch((err) => {
     console.error('[meet-sync] searchMeetRecordings failed:', (err as Error).message)
@@ -429,18 +388,9 @@ async function syncFromDriveRecording(
     driveRecordingFileId: chosen.id,
     recordingState: 'ready',
   }
-  // Don't stamp actualEnd from the recording artifact when the workspace
-  // has the attendance extension enabled — it both (a) is wrong on no-shows
-  // (the host alone produces a recording, but the candidate never joined)
-  // and (b) trips the shouldSync lockout that prevents us from re-checking
-  // for the attendance sheet once it lands. Let applyAttendanceSignal own
-  // actualEnd from the sheet's data instead.
-  if (!opts.extensionEnabled && !meeting.actualEnd) {
+  if (!meeting.actualEnd) {
     // Recording's createdTime is right after the meeting ends — close enough
     // for "Ended" UI. scheduledStart stays authoritative for the start time.
-    // Only stamp if actualEnd is unset; the HF Meet Tracker extension's
-    // attendance feed produces a more accurate end time and we don't want
-    // a later primary-pointer swap to silently move actualEnd.
     data.actualEnd = createdAt
   }
   const prevReady = meeting.recordingState === 'ready'
@@ -546,19 +496,11 @@ async function ensureFolderId(
 }
 
 /**
- * Apply a personal-Gmail attendance signal to the meeting:
- *
- *   - **attendance_sheet** with `candidatePresent=true`:
- *       emit meeting_started (idempotent) and meeting_ended (idempotent).
- *       Clear hint of true attendance.
- *   - **attendance_sheet** with `candidatePresent=false`:
- *       emit meeting_no_show (via the existing maybeFlagNoShow path).
- *   - **gemini_notes** or **recording**:
- *       proves *someone* met but can't disambiguate. When the workspace has
- *       the attendance extension *off*, emit meeting_started + meeting_ended
- *       so the kanban card advances; the recruiter manually marks no-show
- *       if the candidate didn't show up. When the extension is *on*, these
- *       weak signals are ignored — only the sheet drives lifecycle events.
+ * Apply a personal-Gmail attendance signal to the meeting. Both Gemini Notes
+ * and the Drive recording prove *someone* met but can't disambiguate the
+ * candidate from the host — emit meeting_started + meeting_ended so the
+ * kanban card advances; the recruiter manually marks no-show if the candidate
+ * didn't show up.
  *
  * Idempotency guard: each event type is only emitted if no SchedulingEvent
  * with the same `(sessionId, eventType, interviewMeetingId)` already exists.
@@ -568,108 +510,53 @@ async function ensureFolderId(
 export type ApplyAttendanceMeeting = Pick<InterviewMeeting,
   'id' | 'workspaceId' | 'sessionId' | 'meetSpaceName' |
   'scheduledStart' | 'scheduledEnd' | 'actualStart' | 'actualEnd' |
-  'driveGeminiNotesFileId' | 'attendanceSheetFileId'
+  'driveGeminiNotesFileId'
 >
 export async function applyAttendanceSignal(
   meeting: ApplyAttendanceMeeting,
   attendance: AttendanceSignal | null,
   driveOutcome: { recordingFileId: string | null; createdAt: Date | null },
-  opts: { extensionEnabled?: boolean } = {},
 ): Promise<boolean> {
   // Persist every file we found into the artifact table (full history),
   // separately from the primary denormalized pointer below.
   if (attendance?.allFiles && attendance.allFiles.length > 0) {
-    const kind: 'gemini_notes' | 'attendance_sheet' =
-      attendance.source === 'attendance_sheet' ? 'attendance_sheet' : 'gemini_notes'
-    await recordArtifacts(meeting.id, kind, attendance.allFiles.map((f) => ({
+    await recordArtifacts(meeting.id, 'gemini_notes', attendance.allFiles.map((f) => ({
       driveFileId: f.id,
       fileName: f.name,
       meetSpaceName: meeting.meetSpaceName,
       driveCreatedTime: f.createdAt,
-    }))).catch((err) => console.warn(`[meet-sync] recordArtifacts(${kind}) failed:`, (err as Error).message))
+    }))).catch((err) => console.warn('[meet-sync] recordArtifacts(gemini_notes) failed:', (err as Error).message))
   } else if (attendance) {
-    await recordArtifact(meeting.id, attendance.source === 'attendance_sheet' ? 'attendance_sheet' : 'gemini_notes', {
+    await recordArtifact(meeting.id, 'gemini_notes', {
       driveFileId: attendance.driveFileId,
       fileName: attendance.fileName,
       meetSpaceName: meeting.meetSpaceName,
       driveCreatedTime: attendance.createdAt,
-    }).catch((err) => console.warn('[meet-sync] recordArtifact (attendance) failed:', (err as Error).message))
+    }).catch((err) => console.warn('[meet-sync] recordArtifact (gemini_notes) failed:', (err as Error).message))
   }
 
-  // Persist primary pointers so the UI can deep-link them, even if we don't
-  // end up emitting any lifecycle events from this run. Write-once semantics
-  // — never overwrite a recruiter-relevant choice; the artifact table above
-  // carries the full history.
-  const linkUpdate: Prisma.InterviewMeetingUpdateInput = {}
-  if (attendance?.source === 'gemini_notes' && !meeting.driveGeminiNotesFileId) {
-    linkUpdate.driveGeminiNotesFileId = attendance.driveFileId
-  }
-  if (attendance?.source === 'attendance_sheet' && !meeting.attendanceSheetFileId) {
-    linkUpdate.attendanceSheetFileId = attendance.driveFileId
-  }
-  if (Object.keys(linkUpdate).length > 0) {
-    await prisma.interviewMeeting.update({ where: { id: meeting.id }, data: linkUpdate }).catch(() => {})
+  // Persist primary pointer so the UI can deep-link the Gemini Notes doc,
+  // even if we don't end up emitting any lifecycle events from this run.
+  // Write-once semantics — never overwrite a recruiter-relevant choice; the
+  // artifact table above carries the full history.
+  if (attendance && !meeting.driveGeminiNotesFileId) {
+    await prisma.interviewMeeting.update({
+      where: { id: meeting.id },
+      data: { driveGeminiNotesFileId: attendance.driveFileId },
+    }).catch(() => {})
   }
 
-  // Decide what happened.
-  const recordingPresent = !!driveOutcome.recordingFileId
-  const sheetSaysAbsent = attendance?.source === 'attendance_sheet' && attendance.candidatePresent === false
-
-  if (sheetSaysAbsent) {
-    // Definitive no-show from the extension's row data.
-    await maybeFlagNoShow(meeting, [], { reason: 'attendance_sheet_candidate_absent' })
-    return true
-  }
-
-  // When the workspace has the (third-party Drive) attendance extension
-  // enabled, the sheet is meant to be the authoritative attendance signal —
-  // Gemini Notes / recordings can't disambiguate "candidate attended" from
-  // "host was alone", so without the sheet a weaker signal would wrongly
-  // fire the post-meeting "next step" email for a no-show.
+  // Decide what happened. Either signal proves the meeting *occurred*.
   //
-  // BUT: this flag was overloaded after the HF Meet Tracker (Path B) shipped.
-  // If the workspace has an active Meet Tracker token, attendance flows in
-  // via POST /api/google-meet/attendance instead and we should fall back to
-  // Gemini Notes / recordings for any meeting the live extension didn't
-  // cover (past meetings, sessions where the recruiter didn't have the ext
-  // installed at the time). Same goes for meetings that already received
-  // direct attendance_uploaded events — the live signal already won.
-  const sheetSaysPresent = attendance?.source === 'attendance_sheet' && attendance.candidatePresent === true
-  if (opts.extensionEnabled && !sheetSaysPresent) {
-    const [hasMeetTracker, hasDirectAttendance] = await Promise.all([
-      prisma.extensionToken.findFirst({
-        where: { workspaceId: meeting.workspaceId, revokedAt: null },
-        select: { id: true },
-      }),
-      prisma.schedulingEvent.findFirst({
-        where: {
-          sessionId: meeting.sessionId,
-          eventType: 'attendance_uploaded',
-          metadata: { path: ['interviewMeetingId'], equals: meeting.id },
-        },
-        select: { id: true },
-      }),
-    ])
-    // Pure Path A workspace AND no live signal landed → preserve original
-    // wait-for-sheet behavior. Otherwise let Gemini Notes / recordings
-    // through as a weak fallback.
-    if (!hasMeetTracker && !hasDirectAttendance) return false
-  }
-
-  // Anything that proves the meeting *occurred*: attendance sheet (any
-  // present row), Gemini Notes, or a recording artifact.
-  //
-  // Gemini Notes alone is the weakest of these signals — opening the link
-  // before the meeting starts is enough to create a Notes doc, and a host
-  // testing the link post-no-show will spuriously revive the card. Reject
-  // a Gemini-only signal when either:
+  // Gemini Notes alone is the weakest signal — opening the link before the
+  // meeting starts is enough to create a Notes doc, and a host testing the
+  // link post-no-show will spuriously revive the card. Reject a Gemini-only
+  // signal when either:
   //   (a) a meeting_no_show event already exists for this meeting, OR
   //   (b) the Notes doc was created BEFORE scheduledStart (it can only be a
   //       pre-meeting link test, not the meeting itself).
-  const geminiOnly =
-    attendance?.source === 'gemini_notes' &&
-    !sheetSaysPresent &&
-    !recordingPresent
+  const recordingPresent = !!driveOutcome.recordingFileId
+  const geminiOnly = attendance?.source === 'gemini_notes' && !recordingPresent
   if (geminiOnly) {
     const createdBeforeStart =
       meeting.scheduledStart &&
@@ -698,10 +585,7 @@ export async function applyAttendanceSignal(
     }
   }
 
-  const happened =
-    sheetSaysPresent ||
-    attendance?.source === 'gemini_notes' ||
-    recordingPresent
+  const happened = !!attendance || recordingPresent
   if (!happened) return false
 
   // End time: prefer the artifact's createdTime (recording or Gemini Notes
