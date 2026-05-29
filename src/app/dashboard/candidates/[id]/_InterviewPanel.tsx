@@ -80,6 +80,7 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
   // Cancel meeting. Holds the meeting being cancelled until the recruiter
   // confirms a destination stage (or chooses to keep them where they are).
   const [cancelModal, setCancelModal] = useState<null | { meetingId: string }>(null)
+  const [copiedFor, setCopiedFor] = useState<string | null>(null)
   const [stages, setStages] = useState<FunnelStage[]>(DEFAULT_FUNNEL_STAGES)
   const [currentPipelineStatus, setCurrentPipelineStatus] = useState<string | null>(null)
 
@@ -329,14 +330,21 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                       ) : m.recallRecordingId ? (
                         <>
                           <span className="text-grey-40 text-xs">·</span>
-                          <a
-                            href={`/api/interview-meetings/${m.id}/recording`}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                          <button
+                            onClick={async () => {
+                              const url = `${window.location.origin}/play/${m.id}`
+                              try {
+                                await navigator.clipboard.writeText(url)
+                              } catch {
+                                window.prompt('Copy this link:', url)
+                              }
+                              setCopiedFor(m.id)
+                              setTimeout(() => setCopiedFor((cur) => (cur === m.id ? null : cur)), 2000)
+                            }}
                             className="text-xs text-primary hover:underline"
                           >
-                            Open in new tab
-                          </a>
+                            {copiedFor === m.id ? 'Copied!' : 'Copy link'}
+                          </button>
                         </>
                       ) : null}
                       <span className="text-grey-40 text-xs">·</span>
