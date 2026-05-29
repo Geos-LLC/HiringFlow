@@ -308,7 +308,12 @@ export function BookingClient(props: Props) {
         {/* Middle column — month calendar */}
         <div className="px-7 py-8 border-r border-[#E5E7EB]">
           {loading && <div className="text-[#888] text-[13px]">Loading…</div>}
-          {loadError && <div className="text-red-600 text-[13px]">Could not load availability.</div>}
+          {loadError && (
+            <div className="text-red-600 text-[13px]">
+              <div>Could not load availability.</div>
+              <div className="text-[11px] text-red-500 mt-1 font-mono">{loadError}</div>
+            </div>
+          )}
           {!loading && !loadError && (
             <MonthCalendar
               monthAnchor={monthAnchor}

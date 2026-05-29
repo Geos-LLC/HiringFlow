@@ -391,7 +391,7 @@ export default function SchedulingPage() {
                   <input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://calendly.com/your-name/interview" className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-ink text-[13px] focus:outline-none focus:ring-2 focus:ring-brand-500/40" />
                 </div>
               ) : (
-                <BookingRulesEditor value={bookingRules} onChange={setBookingRules} />
+                <BookingRulesEditor value={bookingRules} onChange={setBookingRules} configId={editing?.id} />
               )}
 
               <label className="flex items-center gap-2.5 cursor-pointer">

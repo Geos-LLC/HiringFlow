@@ -7,12 +7,34 @@
  * validated shape via onChange.
  */
 
-import { useEffect, useState } from 'react'
-import { defaultBookingRules, type BookingRules, type Weekday } from '@/lib/scheduling/booking-rules'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { defaultBookingRules, type BookingRules, type Weekday, type WorkingHourRange } from '@/lib/scheduling/booking-rules'
 
 interface Props {
   value: BookingRules | null
   onChange: (next: BookingRules) => void
+  /** When editing an existing config, pass its id so the preview panel
+   * resolves the right calendarId and excludes this config from the
+   * "other workspace configs" busy set. Omit for new configs. */
+  configId?: string
+}
+
+interface PreviewDay {
+  date: string
+  weekday: Weekday
+  workingRanges: WorkingHourRange[]
+  busyIntervals: { start: string; end: string }[]
+  slotCount: number
+  reason: 'off' | 'window_too_short' | 'min_notice' | 'past_max_days' | 'calendar_conflict' | 'available' | 'unknown'
+}
+
+interface PreviewResponse {
+  days: PreviewDay[]
+  totalSlots: number
+  recruiterTimezone: string
+  previewDayCap: number
+  truncated: boolean
+  calendarError: string | null
 }
 
 const WEEKDAYS: { key: Weekday; label: string }[] = [
@@ -25,12 +47,53 @@ const WEEKDAYS: { key: Weekday; label: string }[] = [
   { key: 'sun', label: 'Sun' },
 ]
 
-export function BookingRulesEditor({ value, onChange }: Props) {
+export function BookingRulesEditor({ value, onChange, configId }: Props) {
   const [rules, setRules] = useState<BookingRules>(value ?? defaultBookingRules())
 
   useEffect(() => {
     setRules(value ?? defaultBookingRules())
   }, [value])
+
+  // Live "what does the candidate actually see?" panel. Calls the preview
+  // endpoint on every rules change (debounced) so the recruiter understands
+  // *why* a day is empty without saving + opening the booking page.
+  const [preview, setPreview] = useState<PreviewResponse | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const previewAbortRef = useRef<AbortController | null>(null)
+  const rulesKey = useMemo(() => JSON.stringify(rules), [rules])
+
+  useEffect(() => {
+    const handle = setTimeout(async () => {
+      if (previewAbortRef.current) previewAbortRef.current.abort()
+      const ac = new AbortController()
+      previewAbortRef.current = ac
+      setPreviewLoading(true)
+      setPreviewError(null)
+      try {
+        const r = await fetch('/api/scheduling/preview-conflicts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bookingRules: rules, configId }),
+          signal: ac.signal,
+        })
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) {
+          setPreviewError(d.message || d.error || 'Preview failed')
+          setPreview(null)
+        } else {
+          setPreview(d as PreviewResponse)
+        }
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return
+        setPreviewError((err as Error).message)
+        setPreview(null)
+      } finally {
+        setPreviewLoading(false)
+      }
+    }, 350)
+    return () => clearTimeout(handle)
+  }, [rulesKey, configId])
 
   const update = (patch: Partial<BookingRules>) => {
     const next = { ...rules, ...patch }
@@ -189,8 +252,118 @@ export function BookingRulesEditor({ value, onChange }: Props) {
           })}
         </div>
       </div>
+
+      <PreviewPanel preview={preview} loading={previewLoading} error={previewError} />
     </div>
   )
+}
+
+function PreviewPanel({ preview, loading, error }: { preview: PreviewResponse | null; loading: boolean; error: string | null }) {
+  return (
+    <div className="border-t border-surface-divider pt-4">
+      <div className="eyebrow mb-2 flex items-center gap-1.5">
+        Preview — next {preview ? Math.min(preview.previewDayCap, preview.days.length || preview.previewDayCap) : 14} days
+        <InfoIcon tooltip="Live check against your connected Google Calendar. Shows how many slots candidates will see on each day and which existing events are blocking empty days." />
+        {loading && <span className="ml-1 text-grey-50 normal-case font-normal tracking-normal text-[11px]">checking…</span>}
+      </div>
+
+      {error && (
+        <div className="text-[12px] text-[color:var(--danger-fg)] mb-2">
+          {error}
+        </div>
+      )}
+
+      {preview?.calendarError && (
+        <div className="text-[12px] text-[color:var(--warn-fg,#b45309)] mb-2">
+          Could not read your Google Calendar — preview shows the rule window only.
+        </div>
+      )}
+
+      {preview && (
+        <>
+          <div className="text-[12px] text-grey-50 mb-2">
+            <span className="font-mono text-ink">{preview.totalSlots}</span> total slot{preview.totalSlots === 1 ? '' : 's'} across the next {preview.days.length} working day{preview.days.length === 1 ? '' : 's'} ({preview.recruiterTimezone})
+            {preview.truncated && <span className="ml-1">— preview capped at {preview.previewDayCap} days</span>}
+          </div>
+
+          {preview.days.length === 0 ? (
+            <div className="text-[12px] text-grey-50">No working days in the preview window.</div>
+          ) : (
+            <div className="space-y-1">
+              {preview.days.map((d) => (
+                <PreviewDayRow key={d.date} day={d} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function PreviewDayRow({ day }: { day: PreviewDay }) {
+  const dateLabel = formatDateLabel(day.date)
+  const ok = day.slotCount > 0
+  const reasonText = reasonLabel(day.reason, day.busyIntervals.length)
+
+  return (
+    <div className="flex items-start gap-3 text-[12px] py-1 border-b border-surface-divider/40 last:border-0">
+      <div className="w-24 shrink-0 font-mono text-grey-50">{dateLabel}</div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span
+            className={`font-mono ${ok ? 'text-[color:var(--success-fg,#16803c)]' : 'text-[color:var(--danger-fg)]'}`}
+          >
+            {day.slotCount} slot{day.slotCount === 1 ? '' : 's'}
+          </span>
+          {!ok && reasonText && (
+            <span className="text-grey-50 normal-case">— {reasonText}</span>
+          )}
+          <span className="text-grey-50 font-mono text-[11px]">
+            {day.workingRanges.map((r) => `${r.start}–${r.end}`).join(', ')}
+          </span>
+        </div>
+        {day.busyIntervals.length > 0 && (
+          <div className="text-[11px] text-grey-50 mt-0.5">
+            Calendar busy: {day.busyIntervals.map((b) => `${b.start}–${b.end}`).join(', ')}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function reasonLabel(reason: PreviewDay['reason'], busyCount: number): string {
+  switch (reason) {
+    case 'window_too_short':
+      return 'working window is shorter than meeting duration + buffers'
+    case 'min_notice':
+      return 'blocked by minimum-notice setting'
+    case 'past_max_days':
+      return 'beyond max-days-out window'
+    case 'calendar_conflict':
+      return busyCount === 1 ? 'calendar event blocks the window' : 'calendar events block the window'
+    case 'unknown':
+      return 'no fitting slot'
+    case 'available':
+      return ''
+    case 'off':
+      return ''
+    default:
+      return ''
+  }
+}
+
+function formatDateLabel(yyyymmdd: string): string {
+  // "2026-06-01" → "Mon Jun 1". Built locally so it stays in the workspace
+  // tz interpretation the server already used. We treat the date string as
+  // a calendar date (no tz conversion) — Date.UTC + UTC getters keep it
+  // unambiguous across the user's browser tz.
+  const [y, m, d] = yyyymmdd.split('-').map(Number)
+  const utc = new Date(Date.UTC(y, m - 1, d))
+  const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][utc.getUTCDay()]
+  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][utc.getUTCMonth()]
+  return `${wd} ${mon} ${utc.getUTCDate()}`
 }
 
 function NumberField({ label, tooltip, value, min, max, onChange }: { label: string; tooltip?: string; value: number; min: number; max: number; onChange: (v: number) => void }) {
