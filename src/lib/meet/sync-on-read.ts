@@ -142,7 +142,7 @@ export async function syncMeetingFromMeetApi(meeting: SyncableMeeting): Promise<
         // marks no-show if the candidate didn't show.
         const session = await prisma.session.findUnique({
           where: { id: meeting.sessionId },
-          select: { candidateName: true },
+          select: { candidateName: true, candidateEmail: true },
         })
         const folderId = await ensureFolderId(client, meeting.workspaceId, integ?.meetRecordingsFolderId ?? null)
         const driveOutcome = await syncFromDriveRecording(client, meeting, folderId)
@@ -156,6 +156,9 @@ export async function syncMeetingFromMeetApi(meeting: SyncableMeeting): Promise<
           windowEnd: meeting.scheduledEnd,
           folderId,
           candidateName: session?.candidateName ?? null,
+          candidateEmail: session?.candidateEmail ?? null,
+          extensionEnabled: false,
+          sheetsScopeGranted: false,
         }).catch((err) => {
           console.warn('[meet-sync] attendance fallback failed:', (err as Error).message)
           return null
