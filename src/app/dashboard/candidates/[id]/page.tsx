@@ -1732,19 +1732,29 @@ export default function CandidateDetailPage() {
         </div>
         {latestMeetingUrl && (() => {
           const isPast = latestMeetingAt ? new Date(latestMeetingAt).getTime() < Date.now() : false
-          return (
-            <div className="bg-white rounded-[8px] border border-surface-border p-4">
-              <div className="text-xs text-grey-40 mb-1 flex items-center gap-1.5">
-                <span>Meeting</span>
-                {isPast && (
-                  <span
-                    title="The scheduled time for this meeting has passed. Start an instant meeting to get a fresh link."
-                    className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium"
-                  >
-                    Past
-                  </span>
+          if (isPast) {
+            return (
+              <div className="bg-white rounded-[8px] border border-surface-border p-4">
+                <div className="text-xs text-grey-40 mb-1">Meeting</div>
+                <button
+                  onClick={startInstantInterviewFromCard}
+                  disabled={startingInstantFromCard}
+                  className="text-sm font-medium text-brand-600 hover:underline disabled:opacity-50 text-left"
+                  title="Spin up a fresh Meet link + recording bot, ready to copy and send"
+                >
+                  {startingInstantFromCard ? 'Starting…' : '+ Start instant meeting'}
+                </button>
+                {latestMeetingAt && (
+                  <div className="text-xs text-grey-40 mt-0.5">
+                    Last: {new Date(latestMeetingAt).toLocaleString()}
+                  </div>
                 )}
               </div>
+            )
+          }
+          return (
+            <div className="bg-white rounded-[8px] border border-surface-border p-4">
+              <div className="text-xs text-grey-40 mb-1">Meeting</div>
               <div className="flex items-center gap-2">
                 <a
                   href={latestMeetingUrl}
@@ -1775,16 +1785,6 @@ export default function CandidateDetailPage() {
               </div>
               {latestMeetingAt && (
                 <div className="text-xs text-grey-40 mt-0.5">{new Date(latestMeetingAt).toLocaleString()}</div>
-              )}
-              {isPast && (
-                <button
-                  onClick={startInstantInterviewFromCard}
-                  disabled={startingInstantFromCard}
-                  className="mt-2 text-xs text-brand-600 hover:underline disabled:opacity-50"
-                  title="Spin up a fresh Meet link + recording bot and replace the link above"
-                >
-                  {startingInstantFromCard ? 'Starting…' : '+ Start instant meeting'}
-                </button>
               )}
             </div>
           )
