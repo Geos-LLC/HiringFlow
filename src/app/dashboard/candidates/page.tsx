@@ -203,6 +203,23 @@ export default function CandidatesPage() {
   const [customStatuses, setCustomStatuses] = useState<CustomStatus[]>([])
   const [customSources, setCustomSources] = useState<string[]>([])
   const [createOpen, setCreateOpen] = useState(false)
+  // View mode toggle. Kanban is the default; table is a flat list with
+  // checkboxes for bulk operations (move-to-stage, delete) and sortable
+  // columns. Persisted so the recruiter's preferred view sticks across
+  // sessions.
+  const [view, setView] = useState<'kanban' | 'table'>(() => {
+    if (typeof window === 'undefined') return 'kanban'
+    try {
+      const saved = window.localStorage.getItem('hiringflow:candidates-view')
+      return saved === 'table' ? 'table' : 'kanban'
+    } catch { return 'kanban' }
+  })
+  // Table-view state — selection set for bulk actions and column sort.
+  // Selection clears whenever the filtered candidate list changes so we
+  // never carry an id that's no longer visible.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [sortKey, setSortKey] = useState<'name' | 'email' | 'status' | 'stage' | 'flow' | 'source' | 'startedAt' | 'nextMeetingAt'>('startedAt')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   // Per-stage sort direction. 'asc' = oldest first (FIFO follow-up — the
   // current default), 'desc' = newest first. Persisted in localStorage so
   // the choice survives page reloads. Stages without an entry default to asc.
@@ -390,6 +407,17 @@ export default function CandidatesPage() {
     try { localStorage.setItem('hiringflow:status-tab', statusTab) } catch {}
   }, [statusTab])
 
+  useEffect(() => {
+    try { localStorage.setItem('hiringflow:candidates-view', view) } catch {}
+  }, [view])
+
+  // Drop the selection set whenever the filter inputs change (or the user
+  // flips between kanban and table). The selected ids would otherwise refer
+  // to rows that may no longer be in the visible list.
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [view, statusTab, flowFilter, sourceFilter, search, interestingOnly, selectedPipelineId])
+
   // Debounce the search input → search state so results refresh as the
   // recruiter types instead of requiring Enter / blur. 250ms is fast enough
   // to feel live, slow enough to dedupe per-keystroke fetches. We trim so a
@@ -553,6 +581,80 @@ export default function CandidatesPage() {
       setCandidates(prev)
       alert('Failed to delete candidate')
     }
+  }
+
+  // Sorted candidate list for the table view. Mirrors `candidates` but
+  // re-ordered by the active column. Default sort is "newest applied
+  // first" — table viewers usually scan recent activity.
+  const tableRows = useMemo(() => {
+    const arr = [...candidates]
+    const dir = sortDir === 'asc' ? 1 : -1
+    const cmpStr = (a: string, b: string) => a.localeCompare(b)
+    arr.sort((a, b) => {
+      switch (sortKey) {
+        case 'name':           return dir * cmpStr((a.candidateName ?? '').toLowerCase(), (b.candidateName ?? '').toLowerCase())
+        case 'email':          return dir * cmpStr((a.candidateEmail ?? '').toLowerCase(), (b.candidateEmail ?? '').toLowerCase())
+        case 'status':         return dir * cmpStr(a.status ?? 'active', b.status ?? 'active')
+        case 'stage':          return dir * cmpStr(resolveStage(a.pipelineStatus, stages).label, resolveStage(b.pipelineStatus, stages).label)
+        case 'flow':           return dir * cmpStr((a.flow?.name ?? '').toLowerCase(), (b.flow?.name ?? '').toLowerCase())
+        case 'source':         return dir * cmpStr((a.ad?.source || a.source || '').toLowerCase(), (b.ad?.source || b.source || '').toLowerCase())
+        case 'nextMeetingAt': {
+          // Rows without an upcoming meeting always sink to the bottom so
+          // the columns of "scheduled" candidates stay grouped.
+          const av = a.nextMeetingAt ? new Date(a.nextMeetingAt).getTime() : null
+          const bv = b.nextMeetingAt ? new Date(b.nextMeetingAt).getTime() : null
+          if (av === null && bv === null) return 0
+          if (av === null) return 1
+          if (bv === null) return -1
+          return dir * (av - bv)
+        }
+        case 'startedAt':
+        default:               return dir * (new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+      }
+    })
+    return arr
+  }, [candidates, sortKey, sortDir, stages])
+
+  const allSelected = tableRows.length > 0 && selectedIds.size === tableRows.length
+  const someSelected = selectedIds.size > 0 && !allSelected
+
+  const toggleRow = (id: string) => {
+    setSelectedIds((cur) => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const toggleAll = () => {
+    setSelectedIds((cur) => (cur.size === tableRows.length ? new Set() : new Set(tableRows.map((c) => c.id))))
+  }
+  const setSort = (k: typeof sortKey) => {
+    if (sortKey === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(k); setSortDir(k === 'startedAt' || k === 'nextMeetingAt' ? 'desc' : 'asc') }
+  }
+
+  // Bulk move — fans out a PATCH per selected id. Optimistic so the rows
+  // visibly slide to the new stage before the network round-trip lands.
+  const bulkMoveToStage = async (stageId: string) => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    setCandidates((prev) => prev.map((c) => (selectedIds.has(c.id) ? { ...c, pipelineStatus: stageId } : c)))
+    setSelectedIds(new Set())
+    await Promise.allSettled(ids.map((id) => fetch(`/api/candidates/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pipelineStatus: stageId }),
+    })))
+  }
+
+  const bulkDelete = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    if (!confirm(`Delete ${ids.length} candidate${ids.length === 1 ? '' : 's'}? This permanently removes their answers, video submissions, training progress, and scheduled interviews. This cannot be undone.`)) return
+    setCandidates((prev) => prev.filter((c) => !selectedIds.has(c.id)))
+    setSelectedIds(new Set())
+    await Promise.allSettled(ids.map((id) => fetch(`/api/candidates/${id}`, { method: 'DELETE' })))
   }
 
   // Group candidates by resolved stage. Legacy statuses fall through to the
@@ -790,6 +892,37 @@ export default function CandidatesPage() {
             <span className={interestingOnly ? 'text-amber-500' : 'text-grey-50'}>{interestingOnly ? '★' : '☆'}</span>
             Interesting
           </button>
+
+          {/* View toggle — Kanban (default) vs. Table. Pushed to the right
+              edge of the filter row so it reads as a viewport control,
+              not a filter. */}
+          <div data-no-pan className="ml-auto inline-flex items-center bg-surface-light border border-surface-border rounded-[10px] p-0.5">
+            <button
+              onClick={() => setView('kanban')}
+              aria-pressed={view === 'kanban'}
+              title="Kanban view"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] text-[12px] font-medium transition-colors ${view === 'kanban' ? 'bg-white text-ink shadow-sm' : 'text-grey-35 hover:text-ink'}`}
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="2" y="2.5" width="3.5" height="11" rx="0.8" />
+                <rect x="6.5" y="2.5" width="3.5" height="7" rx="0.8" />
+                <rect x="11" y="2.5" width="3" height="5" rx="0.8" />
+              </svg>
+              Kanban
+            </button>
+            <button
+              onClick={() => setView('table')}
+              aria-pressed={view === 'table'}
+              title="Table view"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] text-[12px] font-medium transition-colors ${view === 'table' ? 'bg-white text-ink shadow-sm' : 'text-grey-35 hover:text-ink'}`}
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="2" y="3" width="12" height="10" rx="1" />
+                <path d="M2 6.5h12M2 10h12M6 6.5v6.5" strokeLinecap="round" />
+              </svg>
+              Table
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -849,7 +982,7 @@ export default function CandidatesPage() {
               </Card>
             )
           })()
-        ) : (
+        ) : view === 'kanban' ? (
           <div
             ref={kanbanRef}
             onMouseDown={onPanMouseDown}
@@ -1132,6 +1265,196 @@ export default function CandidatesPage() {
                 </div>
               )
             })}
+          </div>
+        ) : (
+          <div className="flex-1 min-h-0 flex flex-col rounded-[14px] border border-surface-border bg-white overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-auto">
+              <table className="w-full text-[13px] border-separate border-spacing-0">
+                <thead className="sticky top-0 bg-surface-light z-10">
+                  <tr>
+                    <th className="w-9 px-3 py-2.5 text-left border-b border-surface-divider">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={(el) => { if (el) el.indeterminate = someSelected }}
+                        onChange={toggleAll}
+                        aria-label="Select all rows"
+                        className="cursor-pointer"
+                      />
+                    </th>
+                    <th className="w-8 px-1 py-2.5 border-b border-surface-divider"></th>
+                    {([
+                      { k: 'name',          label: 'Name',         w: 'min-w-[180px]' },
+                      { k: 'email',         label: 'Email',        w: 'min-w-[200px]' },
+                      { k: 'status',        label: 'Status',       w: 'min-w-[100px]' },
+                      { k: 'stage',         label: 'Stage',        w: 'min-w-[120px]' },
+                      { k: 'flow',          label: 'Flow',         w: 'min-w-[140px]' },
+                      { k: 'source',        label: 'Source',       w: 'min-w-[110px]' },
+                      { k: 'nextMeetingAt', label: 'Next meeting', w: 'min-w-[160px]' },
+                      { k: 'startedAt',     label: 'Applied',      w: 'min-w-[110px]' },
+                    ] as { k: typeof sortKey; label: string; w: string }[]).map((col) => {
+                      const active = sortKey === col.k
+                      return (
+                        <th
+                          key={col.k}
+                          onClick={() => setSort(col.k)}
+                          className={`${col.w} px-3 py-2.5 text-left text-[11px] font-mono uppercase border-b border-surface-divider cursor-pointer select-none hover:bg-white ${active ? 'text-ink' : 'text-grey-40'}`}
+                          style={{ letterSpacing: '0.06em' }}
+                          aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {col.label}
+                            {active && (
+                              <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                {sortDir === 'asc' ? <path d="M3 7l3-3 3 3" /> : <path d="M3 5l3 3 3-3" />}
+                              </svg>
+                            )}
+                          </span>
+                        </th>
+                      )
+                    })}
+                    <th className="w-10 px-2 py-2.5 border-b border-surface-divider"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="px-6 py-12 text-center font-mono text-[11px] uppercase text-grey-40" style={{ letterSpacing: '0.1em' }}>
+                        No candidates match the current filters
+                      </td>
+                    </tr>
+                  ) : tableRows.map((c) => {
+                    const checked = selectedIds.has(c.id)
+                    const stage = resolveStage(c.pipelineStatus, stages)
+                    const rawStatus: string = c.status ?? 'active'
+                    const builtin = (STATUS_DISPLAY as Record<string, { label: string; tone: 'neutral' | 'brand' | 'success' | 'warn' | 'info' | 'danger' }>)[rawStatus]
+                    const custom = customStatuses.find((cs) => cs.id === rawStatus)
+                    const statusMeta = builtin
+                      ? builtin
+                      : custom
+                        ? { label: custom.label, tone: custom.tone }
+                        : { label: rawStatus, tone: 'neutral' as const }
+                    return (
+                      <tr
+                        key={c.id}
+                        onClick={(e) => {
+                          const t = e.target as HTMLElement
+                          if (t.closest('a, button, input')) return
+                          router.push(`/dashboard/candidates/${c.id}`)
+                        }}
+                        className={`group cursor-pointer transition-colors ${checked ? 'bg-brand-50/40' : 'hover:bg-surface-light'}`}
+                      >
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleRow(c.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            aria-label={`Select ${c.candidateName || c.candidateEmail || 'candidate'}`}
+                            className="cursor-pointer"
+                          />
+                        </td>
+                        <td className="px-1 py-2 border-b border-surface-divider align-middle">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleInteresting(c) }}
+                            className={`text-[14px] leading-none ${c.interestingAt ? 'text-amber-500 hover:text-amber-600' : 'text-grey-50 hover:text-amber-500'}`}
+                            title={c.interestingAt ? 'Remove from interesting' : 'Mark as interesting'}
+                            aria-pressed={!!c.interestingAt}
+                          >
+                            {c.interestingAt ? '★' : '☆'}
+                          </button>
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle">
+                          <Link
+                            href={`/dashboard/candidates/${c.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="font-medium text-[13px] text-ink hover:text-[color:var(--brand-primary)] truncate inline-block max-w-[220px]"
+                          >
+                            {c.candidateName || 'Anonymous'}
+                          </Link>
+                          <div className="flex gap-1 mt-0.5">
+                            {c.isRebook && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">Rebook</span>}
+                            {c.addedManually && <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">Manual</span>}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle font-mono text-[11px] text-grey-35" style={{ letterSpacing: '0.02em' }}>
+                          <span className="truncate inline-block max-w-[240px]">{c.candidateEmail || '—'}</span>
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle">
+                          <Badge tone={statusMeta.tone}>{statusMeta.label}</Badge>
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle">
+                          <span className="inline-flex items-center gap-1.5 text-[12px] text-grey-15">
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: stage.color }} />
+                            <span className="truncate max-w-[120px]">{stage.label}</span>
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle text-[12px] text-grey-15">
+                          <span className="truncate inline-block max-w-[160px]">{c.flow?.name ?? '—'}</span>
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle text-[12px] text-grey-15 capitalize">
+                          {c.ad?.source || c.source || '—'}
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle text-[12px] text-grey-15">
+                          {c.nextMeetingAt ? new Date(c.nextMeetingAt).toLocaleString(undefined, {
+                            month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+                          }) : <span className="text-grey-50">—</span>}
+                        </td>
+                        <td className="px-3 py-2 border-b border-surface-divider align-middle font-mono text-[11px] text-grey-35" style={{ letterSpacing: '0.02em' }}>
+                          {new Date(c.startedAt).toLocaleDateString()}
+                        </td>
+                        <td className="px-2 py-2 border-b border-surface-divider align-middle text-right">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteCandidate(c) }}
+                            className="w-6 h-6 inline-flex items-center justify-center rounded-md text-grey-50 hover:text-[color:var(--danger-fg)] hover:bg-[color:var(--danger-bg)] opacity-0 group-hover:opacity-100 transition-all text-[14px] leading-none"
+                            title="Delete candidate"
+                            aria-label="Delete candidate"
+                          >
+                            ×
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Bulk action bar — appears as a sticky footer inside the
+                table container whenever rows are selected. Move-to-stage
+                fans out PATCHes; Delete fans out DELETEs. Both are
+                optimistic so the table updates before the network
+                resolves. */}
+            {selectedIds.size > 0 && (
+              <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-t border-surface-divider bg-white">
+                <span className="text-[12px] text-ink font-medium">
+                  {selectedIds.size} selected
+                </span>
+                <div className="flex items-center gap-1.5 ml-2">
+                  <span className="text-[11px] font-mono uppercase text-grey-40" style={{ letterSpacing: '0.08em' }}>Move to</span>
+                  <select
+                    value=""
+                    onChange={(e) => { if (e.target.value) bulkMoveToStage(e.target.value) }}
+                    className="px-2.5 py-1.5 border border-surface-border rounded-[8px] text-[12px] bg-white text-ink focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                  >
+                    <option value="">Choose stage…</option>
+                    {stages.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                  </select>
+                </div>
+                <button
+                  onClick={bulkDelete}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] border border-red-200 text-[12px] text-[color:var(--danger-fg)] hover:bg-[color:var(--danger-bg)] transition-colors"
+                >
+                  Delete
+                </button>
+                <button
+                  onClick={() => setSelectedIds(new Set())}
+                  className="ml-auto text-[12px] text-grey-40 hover:text-ink"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
