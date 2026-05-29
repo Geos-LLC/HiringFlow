@@ -3,11 +3,10 @@
  * InterviewMeeting + SchedulingEvent + InterviewMeetingArtifact writes.
  *
  * Source-of-truth contract: the SAME lifecycle events that the Meet
- * Workspace Events webhook / chrome-extension attendance route emit
- * (meeting_started / meeting_ended / meeting_no_show / recording_ready)
- * are fired here when the equivalent Recall event arrives. Downstream
- * automation rules don't need to know whether the signal came from Meet,
- * the chrome extension, or Recall — they just trigger off the
+ * Workspace Events webhook emits (meeting_started / meeting_ended /
+ * meeting_no_show / recording_ready) are fired here when the equivalent
+ * Recall event arrives. Downstream automation rules don't need to know
+ * whether the signal came from Meet or Recall — they just trigger off the
  * SchedulingEvent.
  *
  * Idempotency: every dispatch goes through emitLifecycleOnce / recordArtifact
@@ -24,10 +23,9 @@ import { recordArtifact } from '../meet/artifacts'
 import { getBot, listBotParticipants, type RecallParticipant } from './client'
 
 /**
- * Idempotently emit a meeting lifecycle event + run automations.
- * Mirrors emitLifecycleOnce in /api/google-meet/attendance/route.ts so a
- * Recall-driven meeting_started doesn't double-fire with a stale extension
- * snapshot for the same meeting.
+ * Idempotently emit a meeting lifecycle event + run automations. Dedupes
+ * by (sessionId, eventType, metadata.interviewMeetingId) against any prior
+ * Workspace Events / sync-on-read emission for the same meeting.
  */
 async function emitLifecycleOnce(
   interviewMeetingId: string,
@@ -70,7 +68,7 @@ interface StoredParticipantRow {
  * Recall participant events array contains a chronological log of
  * join/leave-style codes. We collapse it into the earliest join + latest
  * leave timestamps so the merged participants[] is comparable to what the
- * Workspace Events / chrome-extension paths produce.
+ * Workspace Events path produces.
  */
 function participantToRow(p: RecallParticipant): StoredParticipantRow {
   const joins = (p.events || []).filter((e) => /join/i.test(e.code)).map((e) => e.created_at)
@@ -132,13 +130,11 @@ export async function handleBotInCallRecording(
  * participant list is sometimes empty or mislabels everyone as host when
  * polled milliseconds after bot.call_ended. We refuse to fire meeting_no_show
  * if ANY of these prove the candidate actually attended:
- *   1. occurredAt < scheduledEnd (port of the c47d752 chrome-ext gate;
- *      bot.call_ended can fire when the host leaves first, mid-interview).
+ *   1. occurredAt < scheduledEnd (bot.call_ended can fire when the host
+ *      leaves first, mid-interview).
  *   2. InterviewMeeting.participants[] already has a non-host with a
- *      joinTime (chrome-ext snapshot or earlier Meet API sync saw them).
- *   3. An attendance_uploaded SchedulingEvent with participantCount > 1
- *      exists (chrome ext saw multiple humans in the room at some point).
- * In any of those cases we emit meeting_ended instead.
+ *      joinTime (an earlier Workspace Events Meet API sync saw them).
+ * In either case we emit meeting_ended instead.
  */
 export async function handleBotCallEnded(
   meetingId: string,
@@ -171,7 +167,7 @@ export async function handleBotCallEnded(
   const nonHostPresentFromRecall = rows.some((r) => !r.isHost && (r.joinTime || r.leaveTime))
 
   // Merge Recall's snapshot into the stored participants[] WITHOUT clobbering
-  // a richer snapshot that the chrome ext / Meet API sync may have already
+  // a richer snapshot that the Workspace Events Meet API sync may have already
   // written. If Recall returned nothing, keep what we have.
   const updateData: { actualEnd: Date; participants?: object } = {
     actualEnd: meeting.actualEnd ?? occurredAt,
@@ -197,20 +193,25 @@ export async function handleBotCallEnded(
     }
   }
 
+  // Final fallback (Alyona Rybachenko 2026-05-29): if Recall's participants
+  // endpoint 404s AND there's no Workspace Events Meet API snapshot (personal
+  // Gmail workspaces), but the bot did record for a non-trivial duration, the
+  // call clearly had a human in it — the bot only reaches in_call_recording
+  // when a host admits it from the waiting room, and Recall's
+  // timeout_exceeded_everyone_left can't fire in <2 min of real recording.
   if (!nonHostPresent) {
-    const attendanceEvent = await prisma.schedulingEvent.findFirst({
-      where: {
-        sessionId: meeting.sessionId,
-        eventType: 'attendance_uploaded',
-        metadata: { path: ['interviewMeetingId'], equals: meeting.id },
-      },
-      orderBy: { eventAt: 'desc' },
-      select: { metadata: true },
-    })
-    const pc = (attendanceEvent?.metadata as { participantCount?: number } | null)?.participantCount
-    if (typeof pc === 'number' && pc > 1) {
-      nonHostPresent = true
-      attendedSource = 'attendance_uploaded_event'
+    try {
+      const bot = await getBot(botId)
+      const rec = bot?.recordings?.[0]
+      if (rec?.started_at && rec?.completed_at) {
+        const durMs = new Date(rec.completed_at).getTime() - new Date(rec.started_at).getTime()
+        if (durMs >= 2 * 60 * 1000) {
+          nonHostPresent = true
+          attendedSource = `recording_duration_${Math.round(durMs / 1000)}s`
+        }
+      }
+    } catch (err) {
+      console.error('[recall] recording-duration fallback getBot failed for', botId, ':', (err as Error).message)
     }
   }
 
@@ -224,10 +225,9 @@ export async function handleBotCallEnded(
   }
 
   // Premature gate: Recall's bot.call_ended can fire BEFORE scheduledEnd if
-  // the host leaves first or wraps up the bot early. The chrome-ext path
-  // hardened this in c47d752; mirror it here. Drop the verdict silently —
-  // the cron stalled-detector will still catch true no-shows after the
-  // scheduledEnd + grace window.
+  // the host leaves first or wraps up the bot early. Drop the verdict
+  // silently — the cron stalled-detector will still catch true no-shows
+  // after the scheduledEnd + grace window.
   if (meeting.scheduledEnd && occurredAt < meeting.scheduledEnd) {
     console.warn(
       `[recall] suppressed premature meeting_no_show for ${meeting.id}: ` +
@@ -311,9 +311,9 @@ export async function dispatchRecallEvent(input: {
       return
     case 'bot.fatal':
     case 'bot.recording_permission_denied': {
-      // Don't fire lifecycle — leave room for the legacy chrome-ext path to
-      // catch attendance if the workspace still has it installed. But do
-      // record an audit event so recruiters can see why the recording
+      // Don't fire lifecycle — leave room for the Workspace Events /
+      // sync-on-read fallback to land an end signal from Drive artifacts.
+      // Record an audit event so recruiters can see why the recording
       // doesn't exist.
       const m = await prisma.interviewMeeting.findUnique({
         where: { id: input.meetingId },

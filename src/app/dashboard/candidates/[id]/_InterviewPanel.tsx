@@ -314,7 +314,7 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                       <a href={`/api/interview-meetings/${m.id}/recording`} className="text-xs text-primary hover:underline">
                         Download recording
                       </a>
-                      {m.driveRecordingFileId && (
+                      {m.driveRecordingFileId ? (
                         <>
                           <span className="text-grey-40 text-xs">·</span>
                           <a
@@ -326,7 +326,19 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                             Open in Drive
                           </a>
                         </>
-                      )}
+                      ) : m.recallRecordingId ? (
+                        <>
+                          <span className="text-grey-40 text-xs">·</span>
+                          <a
+                            href={`/api/interview-meetings/${m.id}/recording`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-primary hover:underline"
+                          >
+                            Open in new tab
+                          </a>
+                        </>
+                      ) : null}
                       <span className="text-grey-40 text-xs">·</span>
                       <button
                         onClick={() => removeRecording(m.id)}
