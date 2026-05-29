@@ -668,9 +668,10 @@ export default function FlowSchemaView({
   }, [allConnections, positions, connKey, computeDetourLane, steps])
 
   // Fan-in geometry for every arrow that terminates at the End node.
-  // Each terminal source gets its own LANE Y (stacked so the curves
-  // don't cross) and its own ENTRY Y on End's left edge (distributed
-  // top-to-bottom). Single-source case keeps natural detour routing.
+  // Sources sorted by source Y (top first) → each enters End at a
+  // distinct Y on End's left edge matching that order. With matched
+  // ordering, natural beziers don't cross. Lane Y comes from the
+  // detour helper only when there's an actual blocker in the path.
   const endArrowGeomByStep = useMemo(() => {
     const m = new Map<string, { fromX: number; fromY: number; toX: number; toY: number; laneY?: number }>()
     const endPos = positions[END_ID]
@@ -689,37 +690,24 @@ export default function FlowSchemaView({
       .sort((a, b) => {
         const pa = positions[a]
         const pb = positions[b]
-        const ax = pa.x + NODE_W
-        const bx = pb.x + NODE_W
-        if (ax !== bx) return bx - ax // rightmost first
-        return pa.y - pb.y
+        if (pa.y !== pb.y) return pa.y - pb.y // topmost first
+        return pa.x - pb.x
       })
     const N = sourcesSorted.length
     if (N === 0) return m
-
-    let maxBot = 0
-    for (const id of Object.keys(positions)) {
-      const p = positions[id]
-      const h = id === START_ID || id === END_ID ? SPECIAL_H : NODE_H
-      maxBot = Math.max(maxBot, p.y + h)
-    }
-    const laneBase = maxBot + 70
-    const laneSpacing = 55
 
     sourcesSorted.forEach((stepId, idx) => {
       const sp = positions[stepId]
       const fromX = sp.x + NODE_W
       const fromY = sp.y + NODE_H / 2
+      // Distribute entries top-to-bottom on End's left edge, matching
+      // source Y order. End is only SPECIAL_H tall (80 px), so tightly
+      // packed when N is large but each arrow still gets a unique Y.
       const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
       const toX = endPos.x
       const toY = endPos.y + SPECIAL_H * fraction
 
-      let laneY: number | undefined
-      if (N === 1) {
-        laneY = computeDetourLane(fromX, fromY, toX, toY, new Set([stepId]))
-      } else {
-        laneY = laneBase + idx * laneSpacing
-      }
+      const laneY = computeDetourLane(fromX, fromY, toX, toY, new Set([stepId]))
       m.set(stepId, { fromX, fromY, toX, toY, laneY })
     })
     return m
