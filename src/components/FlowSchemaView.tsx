@@ -2491,11 +2491,12 @@ function bezierCps(
   laneY?: number
 ): readonly [number, number, number, number] {
   if (laneY !== undefined) {
-    // Wide control-point offset for lane-routed bezier so the
-    // transition into / out of the lane is gentle enough not to clip
-    // intermediate cards that sit close to the endpoints.
+    // Very wide control-point offset for lane-routed bezier so the
+    // transition into / out of the lane clears the card directly below
+    // the source (or above the target) before the curve has time to
+    // enter that card's Y range.
     const span = Math.abs(toX - fromX)
-    const cpOffset = Math.max(120, span * 0.3)
+    const cpOffset = Math.max(NODE_W + 40, span * 0.45)
     return [fromX + cpOffset, laneY, toX - cpOffset, laneY] as const
   }
   const isBackward = toX < fromX
