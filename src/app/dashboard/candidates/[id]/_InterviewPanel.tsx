@@ -80,7 +80,6 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
   // Cancel meeting. Holds the meeting being cancelled until the recruiter
   // confirms a destination stage (or chooses to keep them where they are).
   const [cancelModal, setCancelModal] = useState<null | { meetingId: string }>(null)
-  const [copiedFor, setCopiedFor] = useState<string | null>(null)
   const [stages, setStages] = useState<FunnelStage[]>(DEFAULT_FUNNEL_STAGES)
   const [currentPipelineStatus, setCurrentPipelineStatus] = useState<string | null>(null)
 
@@ -315,7 +314,7 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                       <a href={`/api/interview-meetings/${m.id}/recording`} className="text-xs text-primary hover:underline">
                         Download recording
                       </a>
-                      {m.driveRecordingFileId ? (
+                      {m.driveRecordingFileId && (
                         <>
                           <span className="text-grey-40 text-xs">·</span>
                           <a
@@ -327,26 +326,7 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                             Open in Drive
                           </a>
                         </>
-                      ) : m.recallRecordingId ? (
-                        <>
-                          <span className="text-grey-40 text-xs">·</span>
-                          <button
-                            onClick={async () => {
-                              const url = `${window.location.origin}/play/${m.id}`
-                              try {
-                                await navigator.clipboard.writeText(url)
-                              } catch {
-                                window.prompt('Copy this link:', url)
-                              }
-                              setCopiedFor(m.id)
-                              setTimeout(() => setCopiedFor((cur) => (cur === m.id ? null : cur)), 2000)
-                            }}
-                            className="text-xs text-primary hover:underline"
-                          >
-                            {copiedFor === m.id ? 'Copied!' : 'Copy link'}
-                          </button>
-                        </>
-                      ) : null}
+                      )}
                       <span className="text-grey-40 text-xs">·</span>
                       <button
                         onClick={() => removeRecording(m.id)}
