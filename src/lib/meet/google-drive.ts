@@ -77,6 +77,14 @@ export async function searchMeetRecordings(
   opts: {
     folderId?: string | null
     candidateName?: string
+    /**
+     * Meet space code (e.g. "jaj-acxe-ayr"). When provided, restricts the
+     * search to filenames containing that code. The personal-Gmail Gemini
+     * Notes pipeline names every recording `<code> (YYYY-MM-DD HH:MM TZ)`,
+     * so matching by code is the single most reliable way to bind the right
+     * Drive file to the meeting regardless of when Gemini finalizes it.
+     */
+    meetingCode?: string | null
     createdAfter?: Date
     createdBefore?: Date
     limit?: number
@@ -88,6 +96,10 @@ export async function searchMeetRecordings(
   if (opts.folderId) conditions.push(`'${opts.folderId}' in parents`)
   if (opts.candidateName) {
     const safe = opts.candidateName.replace(/'/g, "\\'")
+    conditions.push(`name contains '${safe}'`)
+  }
+  if (opts.meetingCode) {
+    const safe = opts.meetingCode.replace(/'/g, "\\'")
     conditions.push(`name contains '${safe}'`)
   }
   if (opts.createdAfter) conditions.push(`createdTime>='${opts.createdAfter.toISOString()}'`)

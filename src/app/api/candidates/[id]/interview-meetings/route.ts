@@ -25,10 +25,10 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   const stale = await prisma.interviewMeeting.findMany({
     where: { sessionId: session.id },
     select: {
-      id: true, workspaceId: true, sessionId: true, meetSpaceName: true,
+      id: true, workspaceId: true, sessionId: true, meetSpaceName: true, meetingCode: true,
       scheduledStart: true, scheduledEnd: true, actualStart: true, actualEnd: true,
       recordingState: true, transcriptState: true,
-      meetApiSyncedAt: true, attendanceSheetFileId: true,
+      meetApiSyncedAt: true,
       driveRecordingFileId: true, driveGeminiNotesFileId: true, driveTranscriptFileId: true,
     },
   })
@@ -56,7 +56,6 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       driveRecordingFileId: true,
       driveTranscriptFileId: true,
       driveGeminiNotesFileId: true,
-      attendanceSheetFileId: true,
       participants: true,
       confirmedAt: true,
       createdAt: true,

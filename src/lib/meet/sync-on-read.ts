@@ -43,7 +43,7 @@ const GRACE_AFTER_SCHEDULED_END_MS = 15 * 60 * 1000
 const MIN_RESYNC_INTERVAL_MS = 5 * 60 * 1000
 
 type SyncableMeeting = Pick<InterviewMeeting,
-  'id' | 'workspaceId' | 'sessionId' | 'meetSpaceName' |
+  'id' | 'workspaceId' | 'sessionId' | 'meetSpaceName' | 'meetingCode' |
   'scheduledStart' | 'scheduledEnd' | 'actualStart' | 'actualEnd' |
   'recordingState' | 'transcriptState' |
   'meetApiSyncedAt' |
@@ -265,7 +265,7 @@ export async function syncWorkspaceMeetings(workspaceId: string): Promise<number
   const candidates = await prisma.interviewMeeting.findMany({
     where: { workspaceId },
     select: {
-      id: true, workspaceId: true, sessionId: true, meetSpaceName: true,
+      id: true, workspaceId: true, sessionId: true, meetSpaceName: true, meetingCode: true,
       scheduledStart: true, scheduledEnd: true, actualStart: true, actualEnd: true,
       recordingState: true, transcriptState: true,
       meetApiSyncedAt: true,
@@ -318,21 +318,22 @@ async function syncFromDriveRecording(
   }
   if (!folderId) return { updated: false, recordingFileId: null, createdAt: null }
 
-  // Search window: 15 min before scheduledStart through actualEnd (or
-  // scheduledEnd) + 2 hours. Drive search no longer filters by candidate name —
-  // Meet's filename is derived from the calendar event title and won't always
-  // contain the stored `session.candidateName` (e.g. Cyrillic-displayed
-  // candidate, Latin-stored session name). The +2h upper bound covers
-  // Gemini Notes' slow finalization on personal Gmail tenants (verified
-  // 2026-05-29 with Alyona Rybachenko: meeting ended 15:34, video file
-  // landed in Drive at 16:36 — 62 minutes later — which the prior +30 min
-  // window missed entirely).
-  const start = meeting.scheduledStart ?? new Date(0)
-  const endBound = meeting.actualEnd ?? meeting.scheduledEnd ?? new Date(Date.now() + 24 * 60 * 60 * 1000)
+  // Bind the Drive recording to the meeting by Meet space code, not by time
+  // window. The Gemini Notes pipeline names every personal-Gmail recording
+  // `<code> (YYYY-MM-DD HH:MM TZ)`, and the code is unique to this Meet
+  // space — so a `name contains '<code>'` filter reliably matches no matter
+  // how late Drive finalizes the file (verified 2026-05-29 with Alyona
+  // Rybachenko: meeting ended 15:34, video appeared at 16:36 / +62m, the
+  // prior +30m / +2h time windows would still miss other Gemini deliveries
+  // that take longer). Skip the lookup if we don't have a code on file (
+  // very old meetings booked before meetingCode capture); those fall back
+  // to attendance-sheet-only.
+  if (!meeting.meetingCode) {
+    return { updated: false, recordingFileId: null, createdAt: null }
+  }
   const candidates = await searchMeetRecordings(client, {
     folderId,
-    createdAfter: new Date(start.getTime() - 15 * 60 * 1000),
-    createdBefore: new Date(endBound.getTime() + 2 * 60 * 60 * 1000),
+    meetingCode: meeting.meetingCode,
     limit: 10,
   }).catch((err) => {
     console.error('[meet-sync] searchMeetRecordings failed:', (err as Error).message)
