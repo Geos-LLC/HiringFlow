@@ -542,17 +542,33 @@ export default function FlowSchemaView({
         return undefined
       }
       let laneY = blockerMaxBot + 90
-      // If the lane would land INSIDE an endpoint rect, push it just
-      // below that endpoint instead. This handles target-below-blocker
-      // without over-deepening every long-span lane.
-      for (const r of endpointRects) {
-        if (laneY > r.top - 10 && laneY < r.bot + 10) {
-          laneY = r.bot + 90
+      let mode = 'below-blocker'
+      const intersectsEndpoint = () =>
+        endpointRects.some((r) => laneY > r.top - 10 && laneY < r.bot + 10)
+      if (intersectsEndpoint()) {
+        // Default lane lands inside an endpoint card. Prefer routing
+        // through the GAP between blockerBot and the nearest endpoint
+        // top below it — much cleaner than a deep V dip below the
+        // target. Only fall back to "below all endpoints" if the gap
+        // is too tight to fit a curve.
+        let nearestTopBelow = Infinity
+        for (const r of endpointRects) {
+          if (r.top > blockerMaxBot && r.top < nearestTopBelow) nearestTopBelow = r.top
+        }
+        const gap = nearestTopBelow - blockerMaxBot
+        if (gap >= 20 && nearestTopBelow !== Infinity) {
+          laneY = (blockerMaxBot + nearestTopBelow) / 2
+          mode = `gap(${Math.round(gap)})`
+        } else {
+          let maxEndpointBot = -Infinity
+          for (const r of endpointRects) if (r.bot > maxEndpointBot) maxEndpointBot = r.bot
+          laneY = maxEndpointBot + 90
+          mode = 'below-endpoint'
         }
       }
       if (debugLabel) {
         // eslint-disable-next-line no-console
-        console.log(`[lane] ${debugLabel} from=(${Math.round(fromX)},${Math.round(fromY)}) to=(${Math.round(toX)},${Math.round(toY)}) blockerBot=${Math.round(blockerMaxBot)} → laneY=${Math.round(laneY)}`)
+        console.log(`[lane] ${debugLabel} from=(${Math.round(fromX)},${Math.round(fromY)}) to=(${Math.round(toX)},${Math.round(toY)}) blockerBot=${Math.round(blockerMaxBot)} mode=${mode} → laneY=${Math.round(laneY)}`)
         if (dbg.length) console.table(dbg)
       }
       return laneY
