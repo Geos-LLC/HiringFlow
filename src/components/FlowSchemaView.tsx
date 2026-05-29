@@ -667,6 +667,64 @@ export default function FlowSchemaView({
     return m
   }, [allConnections, positions, connKey, computeDetourLane, steps])
 
+  // Fan-in geometry for every arrow that terminates at the End node.
+  // Each terminal source gets its own LANE Y (stacked so the curves
+  // don't cross) and its own ENTRY Y on End's left edge (distributed
+  // top-to-bottom). Single-source case keeps natural detour routing.
+  const endArrowGeomByStep = useMemo(() => {
+    const m = new Map<string, { fromX: number; fromY: number; toX: number; toY: number; laneY?: number }>()
+    const endPos = positions[END_ID]
+    if (!endPos || endMessage === '') return m
+
+    const implicitEnds = getEndStepIds()
+    const sourceIds = new Set<string>(implicitEnds)
+    for (const step of steps) {
+      if ((step as any).buttonConfig?.nextStepId === '__end__') {
+        sourceIds.add(step.id)
+      }
+    }
+
+    const sourcesSorted = Array.from(sourceIds)
+      .filter((id) => !!positions[id])
+      .sort((a, b) => {
+        const pa = positions[a]
+        const pb = positions[b]
+        const ax = pa.x + NODE_W
+        const bx = pb.x + NODE_W
+        if (ax !== bx) return bx - ax // rightmost first
+        return pa.y - pb.y
+      })
+    const N = sourcesSorted.length
+    if (N === 0) return m
+
+    let maxBot = 0
+    for (const id of Object.keys(positions)) {
+      const p = positions[id]
+      const h = id === START_ID || id === END_ID ? SPECIAL_H : NODE_H
+      maxBot = Math.max(maxBot, p.y + h)
+    }
+    const laneBase = maxBot + 70
+    const laneSpacing = 55
+
+    sourcesSorted.forEach((stepId, idx) => {
+      const sp = positions[stepId]
+      const fromX = sp.x + NODE_W
+      const fromY = sp.y + NODE_H / 2
+      const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
+      const toX = endPos.x
+      const toY = endPos.y + SPECIAL_H * fraction
+
+      let laneY: number | undefined
+      if (N === 1) {
+        laneY = computeDetourLane(fromX, fromY, toX, toY, new Set([stepId]))
+      } else {
+        laneY = laneBase + idx * laneSpacing
+      }
+      m.set(stepId, { fromX, fromY, toX, toY, laneY })
+    })
+    return m
+  }, [positions, steps, endMessage, getEndStepIds, computeDetourLane])
+
   // Diagnostic log: dump every drawn connection with source/target titles
   // and coordinates whenever the toggle is on or the data changes.
   useEffect(() => {
@@ -1250,39 +1308,20 @@ export default function FlowSchemaView({
       }
     }
 
-    // End connections — from every reachable terminal step + any step
-    // explicitly set to End via buttonConfig.
+    // End connections — geometry computed in endArrowGeomByStep useMemo
+    // so hit tests use identical lane / entry Y.
     const endPos = positions[END_ID]
     if (endPos && endMessage !== '') {
-      const toX = endPos.x
-      const toY = endPos.y + SPECIAL_H / 2
-      const drawnEndFrom = new Set<string>(implicitEndIds)
+      endArrowGeomByStep.forEach((g, stepId) => {
+        drawConnection(ctx, g.fromX, g.fromY, g.toX, g.toY, '', false, '#FF9500', g.laneY)
 
-      for (const step of steps) {
-        if ((step as any).buttonConfig?.nextStepId === '__end__') {
-          drawnEndFrom.add(step.id)
-        }
-      }
-
-      drawnEndFrom.forEach(stepId => {
-        const eStepPos = positions[stepId]
-        if (!eStepPos) return
-        const fromX = eStepPos.x + NODE_W
-        const fromY = eStepPos.y + NODE_H / 2
-        // Detour around any cards sitting between this source and the End
-        // node, same way option/button arrows do.
-        const endLane = computeDetourLane(fromX, fromY, toX, toY, new Set([stepId]))
-        drawConnection(ctx, fromX, fromY, toX, toY, '', false, '#FF9500', endLane)
-
-        // Implicit-End arrows (terminal reachable steps) get the +/delete UI;
-        // buttonConfig=__end__ arrows are handled via button-arrow logic.
         if (!implicitEndIds.has(stepId)) return
         const isThisEndSelected =
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
-        const [eMidX, eMidY] = bezierMid(fromX, fromY, toX, toY, endLane)
+        const [eMidX, eMidY] = bezierMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)
 
         if (isThisEndSelected) {
-          drawDragHandle(ctx, fromX, fromY)
+          drawDragHandle(ctx, g.fromX, g.fromY)
           drawDeleteButton(ctx, eMidX, eMidY)
         } else {
           const isPlusHovered = hoveredPort === `__insert_end_${stepId}`
@@ -1429,7 +1468,7 @@ export default function FlowSchemaView({
     }
 
     ctx.restore()
-  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections, stageNumberByStep, computeDetourLane])
+  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections, stageNumberByStep, computeDetourLane, endArrowGeomByStep])
 
   // Animation frame for smooth rendering
   useEffect(() => {
@@ -1474,15 +1513,9 @@ export default function FlowSchemaView({
     }
 
     if (selectedArrow.kind === 'end') {
-      const ePos = posRef.current[END_ID]
-      const sPos = posRef.current[selectedArrow.stepId]
-      if (!ePos || !sPos) return false
-      const [midX, midY] = bezierMid(
-        sPos.x + NODE_W,
-        sPos.y + NODE_H / 2,
-        ePos.x,
-        ePos.y + SPECIAL_H / 2,
-      )
+      const g = endArrowGeomByStep.get(selectedArrow.stepId)
+      if (!g) return false
+      const [midX, midY] = bezierMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)
       return dist(cx, cy, midX, midY) <= 14
     }
 
@@ -1512,7 +1545,7 @@ export default function FlowSchemaView({
     const inp = getInputPort(targetPos)
     const [midX, midY] = bezierMid(out.x, out.y, inp.x, inp.y, lane)
     return dist(cx, cy, midX, midY) <= 14
-  }, [selectedArrow, steps, laneYByConn])
+  }, [selectedArrow, steps, laneYByConn, endArrowGeomByStep])
 
   // Hit test: arrow midpoint "+" insert button. Iterates every connection
   // (start, end, option, button) since "+" is now always rendered, and
@@ -1552,23 +1585,16 @@ export default function FlowSchemaView({
 
       // End arrows (every terminal reachable step)
       if (endMessage !== '') {
-        const ePos = posRef.current[END_ID]
-        if (ePos) {
-          const ends = getEndStepIds()
-          let result: { kind: 'end'; fromStepId: string } | null = null
-          ends.forEach((sid) => {
-            if (result) return
-            if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-            const sPos = posRef.current[sid]
-            if (!sPos) return
-            const fromX = sPos.x + NODE_W
-            const fromY = sPos.y + NODE_H / 2
-            const toX = ePos.x
-            const toY = ePos.y + SPECIAL_H / 2
-            if (tryMid(fromX, fromY, toX, toY)) result = { kind: 'end', fromStepId: sid }
-          })
-          if (result) return result
-        }
+        const ends = getEndStepIds()
+        let result: { kind: 'end'; fromStepId: string } | null = null
+        ends.forEach((sid) => {
+          if (result) return
+          if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
+          const g = endArrowGeomByStep.get(sid)
+          if (!g) return
+          if (tryMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)) result = { kind: 'end', fromStepId: sid }
+        })
+        if (result) return result
       }
 
       for (const step of steps) {
@@ -1609,7 +1635,7 @@ export default function FlowSchemaView({
 
       return null
     },
-    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn]
+    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn, endArrowGeomByStep]
   )
 
   // Detect hovered arrow line (option, button, start, or end), so "+" only
@@ -1644,23 +1670,16 @@ export default function FlowSchemaView({
 
       // End arrows (implicit) — any terminal reachable step's arrow to End.
       if (endMessage !== '') {
-        const ePos = posRef.current[END_ID]
-        if (ePos) {
-          const toX = ePos.x
-          const toY = ePos.y + SPECIAL_H / 2
-          const ends = getEndStepIds()
-          let hovered: string | null = null
-          ends.forEach((sid) => {
-            if (hovered) return
-            if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-            const sPos = posRef.current[sid]
-            if (!sPos) return
-            const fromX = sPos.x + NODE_W
-            const fromY = sPos.y + NODE_H / 2
-            if (isNearBezier(cx, cy, fromX, fromY, toX, toY, 12)) hovered = sid
-          })
-          if (hovered) return { kind: 'end', fromStepId: hovered }
-        }
+        const ends = getEndStepIds()
+        let hovered: string | null = null
+        ends.forEach((sid) => {
+          if (hovered) return
+          if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
+          const g = endArrowGeomByStep.get(sid)
+          if (!g) return
+          if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 12, g.laneY)) hovered = sid
+        })
+        if (hovered) return { kind: 'end', fromStepId: hovered }
       }
 
       for (const step of steps) {
@@ -1698,7 +1717,7 @@ export default function FlowSchemaView({
       }
       return null
     },
-    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn]
+    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn, endArrowGeomByStep]
   )
 
   // Mouse handlers
@@ -1944,16 +1963,12 @@ export default function FlowSchemaView({
 
     // Check End arrow click — pick whichever terminal step's End arrow is hit.
     if (endPos && implicitEndIds.size > 0 && endMessage !== '') {
-      const toX = endPos.x
-      const toY = endPos.y + SPECIAL_H / 2
       let hitStepId: string | null = null
       implicitEndIds.forEach((sid) => {
         if (hitStepId) return
-        const ePos = positions[sid]
-        if (!ePos) return
-        const fromX = ePos.x + NODE_W
-        const fromY = ePos.y + NODE_H / 2
-        if (isNearBezier(cx, cy, fromX, fromY, toX, toY, 10)) hitStepId = sid
+        const g = endArrowGeomByStep.get(sid)
+        if (!g) return
+        if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 10, g.laneY)) hitStepId = sid
       })
       if (hitStepId) {
         setSelectedArrow({ optionId: '__end_arrow__', stepId: hitStepId, kind: 'end' })
