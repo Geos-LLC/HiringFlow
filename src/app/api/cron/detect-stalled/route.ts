@@ -150,27 +150,71 @@ export async function GET(request: NextRequest) {
   // `lastActivityAt`, which gets bumped by every tangential heartbeat
   // (opening any link, automation sends) and effectively kept candidates
   // out of this rule indefinitely.
+  //
+  // Per-(session,training) dedupe: if the candidate has a separate
+  // `completed` enrollment for the same training, ignore the orphan
+  // in-progress one. This happens when a second token gets re-sent for the
+  // same training and the candidate completes that one instead, leaving
+  // the original enrollment frozen at in_progress forever (Henry,
+  // 2026-05-29: May 20 in-progress orphan vs. May 25 completed via re-sent
+  // token; the old session-wide `some` clause flagged him post-interview).
   for (const flow of flows) {
     const days = flow.trainingTimeoutDays ?? DEFAULT_TIMEOUTS.trainingTimeoutDays
     const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
-    const stuck = await prisma.session.findMany({
+
+    const stuckEnrollments = await prisma.trainingEnrollment.findMany({
       where: {
-        flowId: flow.id,
-        status: 'active',
-        ...excludeTestSessions(),
-        trainingEnrollments: {
-          some: {
-            status: 'in_progress',
-            completedAt: null,
-            startedAt: { lt: cutoff },
+        status: 'in_progress',
+        completedAt: null,
+        startedAt: { lt: cutoff },
+        session: {
+          is: {
+            flowId: flow.id,
+            status: 'active',
+            ...excludeTestSessions(),
           },
         },
       },
-      select: { id: true },
+      select: { sessionId: true, trainingId: true },
     })
-    if (stuck.length > 0) {
+    if (stuckEnrollments.length === 0) continue
+
+    const sessionIds = Array.from(
+      new Set(
+        stuckEnrollments
+          .map((e) => e.sessionId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    )
+    const trainingIds = Array.from(new Set(stuckEnrollments.map((e) => e.trainingId)))
+
+    const completedPairs = await prisma.trainingEnrollment.findMany({
+      where: {
+        status: 'completed',
+        sessionId: { in: sessionIds },
+        trainingId: { in: trainingIds },
+      },
+      select: { sessionId: true, trainingId: true },
+    })
+    const completedKey = new Set(
+      completedPairs
+        .filter((p) => p.sessionId)
+        .map((p) => `${p.sessionId}::${p.trainingId}`),
+    )
+
+    const trulyStuckIds = Array.from(
+      new Set(
+        stuckEnrollments
+          .filter(
+            (e) => e.sessionId && !completedKey.has(`${e.sessionId}::${e.trainingId}`),
+          )
+          .map((e) => e.sessionId as string),
+      ),
+    )
+
+    if (trulyStuckIds.length > 0) {
       const result = await prisma.session.updateMany({
-        where: { id: { in: stuck.map((s) => s.id) }, status: 'active' },
+        where: { id: { in: trulyStuckIds }, status: 'active' },
         data: stalledPayload(now, 'training_not_completed'),
       })
       counts.trainingNotCompleted += result.count
