@@ -500,9 +500,12 @@ export default function FlowSchemaView({
   }, [])
   // Shared helper: for a forward connection from (fromX, fromY) to
   // (toX, toY), return a lane Y that routes the bezier around any cards
-  // sitting inside the source→target corridor — or undefined if there's
-  // nothing in the way. excludeIds covers the connection's own
-  // endpoints so they don't count as obstacles.
+  // sitting inside the source→target corridor. The "band" the natural
+  // bezier sweeps through is wider than just the endpoint Y range — for
+  // connections whose endpoints have very different Y, the curve spans
+  // from one Y to the other. Use the FULL endpoint Y range plus 16 px
+  // padding as the band, so a card sitting anywhere between the source
+  // and target row counts as a blocker.
   const computeDetourLane = useCallback(
     (fromX: number, fromY: number, toX: number, toY: number, excludeIds: Set<string>) => {
       if (toX <= fromX) return undefined
@@ -514,19 +517,19 @@ export default function FlowSchemaView({
         if (excludeIds.has(s.id)) continue
         const p = positions[s.id]
         if (!p) continue
+        // Card sits inside the source→target horizontal corridor (with
+        // a 4 px nudge so cards exactly aligned with an endpoint X don't
+        // count). And its Y rectangle overlaps the bezier's natural sweep.
         if (p.x + NODE_W <= fromX + 4 || p.x >= toX - 4) continue
         if (p.y + NODE_H < minPathY || p.y > maxPathY) continue
         if (p.y < blockMinTop) blockMinTop = p.y
         if (p.y + NODE_H > blockMaxBot) blockMaxBot = p.y + NODE_H
       }
       if (blockMinTop === Infinity) return undefined
-      // Wider clearance — the bezier still has Y momentum coming out of
-      // the lane, so leave plenty of room so the rise/dip doesn't clip
-      // the blocker as the curve transitions back to its endpoint.
-      const aboveLane = blockMinTop - 70
-      const belowLane = blockMaxBot + 70
-      const avg = (fromY + toY) / 2
-      return Math.abs(avg - aboveLane) <= Math.abs(avg - belowLane) ? aboveLane : belowLane
+      // Always route BENEATH the blocker(s) — cards live in the top of
+      // the canvas and the empty space below is the cleanest detour
+      // path. Generous clearance so the bezier never enters the card.
+      return blockMaxBot + 90
     },
     [steps, positions]
   )
