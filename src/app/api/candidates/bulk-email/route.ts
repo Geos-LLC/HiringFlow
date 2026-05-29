@@ -90,6 +90,15 @@ export async function POST(request: NextRequest) {
       source: true,
       flow: { select: { name: true } },
       ad: { select: { name: true } },
+      workspace: { select: { timezone: true } },
+      // Pull the latest InterviewMeeting per session so {{meeting_date}},
+      // {{meeting_clock}}, {{meeting_time}}, {{meeting_link}} fill when the
+      // recruiter is following up on candidates who already booked.
+      interviewMeetings: {
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        select: { meetingUri: true, scheduledStart: true },
+      },
     },
   })
 
@@ -134,6 +143,31 @@ export async function POST(request: NextRequest) {
       select: { id: true },
     })
 
+    // Meeting tokens — populated only if this candidate has a meeting on
+    // file. Same workspace-tz formatting as the automation engine so a
+    // template authored for `meeting_scheduled` automations renders
+    // identically when reused via bulk email.
+    const tz = s.workspace?.timezone || 'America/New_York'
+    const m = s.interviewMeetings[0]
+    let mTime = '', mDate = '', mClock = '', mLink = ''
+    if (m?.scheduledStart) {
+      const d = m.scheduledStart
+      mTime = d.toLocaleString('en-US', {
+        weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit', hour12: true,
+        timeZone: tz, timeZoneName: 'short',
+      })
+      mDate = d.toLocaleDateString('en-US', {
+        weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+        timeZone: tz,
+      })
+      mClock = d.toLocaleTimeString('en-US', {
+        hour: 'numeric', minute: '2-digit', hour12: true,
+        timeZone: tz, timeZoneName: 'short',
+      })
+    }
+    if (m?.meetingUri) mLink = m.meetingUri
+
     const variables: Record<string, string> = {
       candidate_name: s.candidateName || 'Candidate',
       candidate_email: s.candidateEmail,
@@ -141,6 +175,10 @@ export async function POST(request: NextRequest) {
       flow_name: s.flow?.name || '',
       source: s.source || '',
       ad_name: s.ad?.name || '',
+      meeting_time: mTime,
+      meeting_date: mDate,
+      meeting_clock: mClock,
+      meeting_link: mLink,
     }
     const renderedSubject = renderTemplate(subject, variables)
     const renderedHtml = renderTemplate(bodyHtml, variables)

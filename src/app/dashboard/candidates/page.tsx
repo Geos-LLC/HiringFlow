@@ -2003,11 +2003,18 @@ function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalPro
               required
             />
             <p className="mt-1 text-[11px] text-grey-35">
-              Merge tokens: <code className="px-1 py-0.5 bg-surface-light rounded">{'{{candidate_name}}'}</code>{' '}
+              Candidate tokens: <code className="px-1 py-0.5 bg-surface-light rounded">{'{{candidate_name}}'}</code>{' '}
               <code className="px-1 py-0.5 bg-surface-light rounded">{'{{candidate_email}}'}</code>{' '}
               <code className="px-1 py-0.5 bg-surface-light rounded">{'{{candidate_phone}}'}</code>{' '}
               <code className="px-1 py-0.5 bg-surface-light rounded">{'{{flow_name}}'}</code>{' '}
               <code className="px-1 py-0.5 bg-surface-light rounded">{'{{source}}'}</code>
+            </p>
+            <p className="mt-1 text-[11px] text-grey-35">
+              Meeting tokens (fill only when the candidate has a booking):{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{meeting_date}}'}</code>{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{meeting_clock}}'}</code>{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{meeting_time}}'}</code>{' '}
+              <code className="px-1 py-0.5 bg-surface-light rounded">{'{{meeting_link}}'}</code>
             </p>
           </div>
 

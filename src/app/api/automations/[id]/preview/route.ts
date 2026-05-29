@@ -66,17 +66,27 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     : (step.nextStepUrl || '')
 
   const workspaceTz = rule.workspace.timezone || 'America/New_York'
-  const sampleMeetingTime = (() => {
+  const sampleMeetingDateObj = (() => {
     const d = new Date()
     d.setDate(d.getDate() + 1)
     d.setHours(14, 0, 0, 0)
-    return d.toLocaleString('en-US', {
-      weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-      hour: 'numeric', minute: '2-digit', hour12: true,
-      timeZone: workspaceTz,
-      timeZoneName: 'short',
-    })
+    return d
   })()
+  const sampleMeetingTime = sampleMeetingDateObj.toLocaleString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    timeZone: workspaceTz,
+    timeZoneName: 'short',
+  })
+  const sampleMeetingDate = sampleMeetingDateObj.toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    timeZone: workspaceTz,
+  })
+  const sampleMeetingClock = sampleMeetingDateObj.toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    timeZone: workspaceTz,
+    timeZoneName: 'short',
+  })
 
   const variables: Record<string, string> = {
     candidate_name: 'Alex Sample',
@@ -84,6 +94,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     training_link: sampleTrainingLink,
     schedule_link: sampleScheduleLink,
     meeting_time: sampleMeetingTime,
+    meeting_date: sampleMeetingDate,
+    meeting_clock: sampleMeetingClock,
     meeting_link: 'https://meet.google.com/sam-ple-xyz',
     recording_link: 'https://hirefunnel.app/api/interview-meetings/sample/recording',
     transcript_link: 'https://hirefunnel.app/api/interview-meetings/sample/transcript',

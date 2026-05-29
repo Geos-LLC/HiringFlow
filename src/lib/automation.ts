@@ -1426,6 +1426,8 @@ export async function executeStep(
   }
 
   let meetingTime = ''
+  let meetingDate = ''
+  let meetingClock = ''
   let meetingLink = ''
   let rescheduleLink = ''
   let cancelLink = ''
@@ -1453,11 +1455,27 @@ export async function executeStep(
     timeZone: workspaceTz,
     timeZoneName: 'short',
   })
+  // Date-only and time-only renderings so templates can place them in
+  // separate fields ("Date: …", "Time: …") without the combined
+  // meeting_time string duplicating the date.
+  const formatMeetingDate = (d: Date) => d.toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    timeZone: workspaceTz,
+  })
+  const formatMeetingClock = (d: Date) => d.toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    timeZone: workspaceTz,
+    timeZoneName: 'short',
+  })
 
   if (interviewMeeting) {
     meetingLink = interviewMeeting.meetingUri || ''
     const d = interviewMeeting.scheduledStart
-    if (d) meetingTime = formatMeetingTime(d)
+    if (d) {
+      meetingTime = formatMeetingTime(d)
+      meetingDate = formatMeetingDate(d)
+      meetingClock = formatMeetingClock(d)
+    }
     const appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://www.hirefunnel.app'
     // Issue reschedule + cancel links if the meeting was created via a
     // built-in scheduler config. External-provider configs (Calendly etc.)
@@ -1520,7 +1538,11 @@ export async function executeStep(
       const meta = latestMeeting.metadata as Record<string, unknown>
       if (typeof meta.scheduledAt === 'string') {
         const d = new Date(meta.scheduledAt)
-        if (!isNaN(d.getTime())) meetingTime = formatMeetingTime(d)
+        if (!isNaN(d.getTime())) {
+          meetingTime = formatMeetingTime(d)
+          meetingDate = formatMeetingDate(d)
+          meetingClock = formatMeetingClock(d)
+        }
       }
       if (typeof meta.meetingUrl === 'string') meetingLink = meta.meetingUrl
     }
@@ -1535,6 +1557,8 @@ export async function executeStep(
     schedule_link: scheduleLink,
     certn_link: certnLink,
     meeting_time: meetingTime,
+    meeting_date: meetingDate,
+    meeting_clock: meetingClock,
     meeting_link: meetingLink,
     reschedule_link: rescheduleLink,
     cancel_link: cancelLink,
