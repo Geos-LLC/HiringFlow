@@ -525,7 +525,7 @@ export default function FlowSchemaView({
         if (debugLabel) {
           dbg.push({
             title: s.title || s.id.slice(0, 6),
-            role: isExcluded ? (s.id === [...excludeIds][0] ? 'SRC' : 'TGT') : (inY ? 'BLOCKER' : 'corridor'),
+            role: isExcluded ? (s.id === Array.from(excludeIds)[0] ? 'SRC' : 'TGT') : (inY ? 'BLOCKER' : 'corridor'),
             x: Math.round(p.x),
             y: Math.round(p.y),
             bot: Math.round(cardBot),
