@@ -357,8 +357,8 @@ function AutomationsPageInner() {
   const [showCompanyPhoneWarning, setShowCompanyPhoneWarning] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
-  // Extension/meeting-flow interference warnings — soft, surfaced on save
-  // and overridable via "Save anyway" once the user has read them.
+  // Meeting-flow / trigger-mismatch warnings — soft, surfaced on save and
+  // overridable via "Save anyway" once the user has read them.
   const [saveWarnings, setSaveWarnings] = useState<string[]>([])
   const [warningsAcked, setWarningsAcked] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -456,6 +456,21 @@ function AutomationsPageInner() {
     refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pipelineFilter])
+
+  // Swap the table's stages list to match the visible pipeline. Without
+  // this, the Stage column resolves rule.stageId against the workspace
+  // default pipeline's stages — so a Dispatcher rule pinned to e.g.
+  // "Onboarding" couldn't find that id in Cleaner's stages and would
+  // silently render the implicit-trigger fallback ("Test job"), causing
+  // the discrepancy between the table and the edit modal.
+  useEffect(() => {
+    if (loading) return
+    const targetPipelineId = pipelineFilter && pipelineFilter !== 'workspace'
+      ? pipelineFilter
+      : (pipelines.find((p) => p.isDefault)?.id ?? pipelines[0]?.id ?? null)
+    const picked = pipelines.find((p) => p.id === targetPipelineId)
+    if (picked?.stages && picked.stages.length > 0) setStages(picked.stages)
+  }, [pipelineFilter, pipelines, loading])
 
   // Deep-link from the Stages drawer "+ Add action" CTA — when the URL
   // carries (triggerType, pipelineId, stageId) AND we've finished initial
