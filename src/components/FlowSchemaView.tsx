@@ -511,25 +511,28 @@ export default function FlowSchemaView({
       if (toX <= fromX) return undefined
       const minPathY = Math.min(fromY, toY) - 16
       const maxPathY = Math.max(fromY, toY) + 16
-      let blockMinTop = Infinity
-      let blockMaxBot = -Infinity
+      let hasBlocker = false
+      // Track max bottom of every card in the horizontal corridor —
+      // including source and target — so the lane sits beneath ALL of
+      // them. Otherwise, when the target sits below the blocker (e.g.
+      // forked options stacked vertically), the lane ends up cutting
+      // through the target card on its way to its left port.
+      let maxBot = -Infinity
       for (const s of steps) {
-        if (excludeIds.has(s.id)) continue
         const p = positions[s.id]
         if (!p) continue
-        // Card sits inside the source→target horizontal corridor (with
-        // a 4 px nudge so cards exactly aligned with an endpoint X don't
-        // count). And its Y rectangle overlaps the bezier's natural sweep.
         if (p.x + NODE_W <= fromX + 4 || p.x >= toX - 4) continue
+        const cardBot = p.y + NODE_H
+        if (excludeIds.has(s.id)) {
+          if (cardBot > maxBot) maxBot = cardBot
+          continue
+        }
         if (p.y + NODE_H < minPathY || p.y > maxPathY) continue
-        if (p.y < blockMinTop) blockMinTop = p.y
-        if (p.y + NODE_H > blockMaxBot) blockMaxBot = p.y + NODE_H
+        hasBlocker = true
+        if (cardBot > maxBot) maxBot = cardBot
       }
-      if (blockMinTop === Infinity) return undefined
-      // Always route BENEATH the blocker(s) — cards live in the top of
-      // the canvas and the empty space below is the cleanest detour
-      // path. Generous clearance so the bezier never enters the card.
-      return blockMaxBot + 90
+      if (!hasBlocker) return undefined
+      return maxBot + 90
     },
     [steps, positions]
   )
