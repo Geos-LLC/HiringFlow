@@ -18,7 +18,7 @@ import { ScheduleInterviewDialog } from './_ScheduleInterviewDialog'
 
 interface InterviewMeetingArtifact {
   id: string
-  kind: 'recording' | 'transcript' | 'gemini_notes' | 'attendance_sheet' | string
+  kind: 'recording' | 'transcript' | 'gemini_notes' | string
   driveFileId: string
   fileName: string | null
   meetSpaceName: string | null
@@ -71,11 +71,11 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
   const [showDialog, setShowDialog] = useState(false)
   const [featureOn, setFeatureOn] = useState<boolean | null>(null)
   const [markingNoShow, setMarkingNoShow] = useState<string | null>(null)
-  const [uploadingFor, setUploadingFor] = useState<string | null>(null)
-  const [uploadResult, setUploadResult] = useState<Record<string, { ok: boolean; text: string }>>({})
   const [removingRecording, setRemovingRecording] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState<string | null>(null)
   const [reschedulingFor, setReschedulingFor] = useState<InterviewMeeting | null>(null)
+  const [startingInstant, setStartingInstant] = useState(false)
+  const [instantToast, setInstantToast] = useState<string | null>(null)
   // "Where to move the candidate?" modal — opens when the recruiter clicks
   // Cancel meeting. Holds the meeting being cancelled until the recruiter
   // confirms a destination stage (or chooses to keep them where they are).
@@ -102,31 +102,6 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
     const body = await res.json()
     setMeetings(body.meetings || [])
   }, [candidateId])
-
-  const uploadAttendance = useCallback(async (meetingId: string, file: File) => {
-    setUploadingFor(meetingId)
-    setUploadResult((p) => ({ ...p, [meetingId]: { ok: false, text: 'Uploading…' } }))
-    try {
-      const fd = new FormData()
-      fd.append('file', file)
-      const res = await fetch(`/api/interview-meetings/${meetingId}/attendance-upload`, { method: 'POST', body: fd })
-      const body = await res.json()
-      if (!res.ok) {
-        setUploadResult((p) => ({ ...p, [meetingId]: { ok: false, text: body.message || body.error || 'Upload failed' } }))
-        return
-      }
-      const summary = body.candidatePresent
-        ? `${body.rowCount} rows imported. Candidate found in attendance — meeting marked as completed.`
-        : `${body.rowCount} rows imported. Candidate not found — flagged as no-show.`
-      setUploadResult((p) => ({ ...p, [meetingId]: { ok: true, text: summary } }))
-      await load()
-      onCandidateChanged?.()
-    } catch (err) {
-      setUploadResult((p) => ({ ...p, [meetingId]: { ok: false, text: err instanceof Error ? err.message : 'Upload failed' } }))
-    } finally {
-      setUploadingFor(null)
-    }
-  }, [load, onCandidateChanged])
 
   const removeRecording = useCallback(async (meetingId: string) => {
     if (!confirm('Remove this recording from the candidate profile? The video file will remain in your Google Drive — delete it from there if you also want it gone there.')) return
@@ -188,6 +163,34 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
     }
   }, [candidateId, currentPipelineStatus, load, onCandidateChanged])
 
+  const startInstantInterview = useCallback(async () => {
+    if (!confirm('Start an instant interview now? This creates a fresh Meet link, sends the recording bot to join immediately, and clears any prior no-show on this candidate.')) return
+    setStartingInstant(true)
+    setInstantToast(null)
+    try {
+      const res = await fetch(`/api/candidates/${candidateId}/start-instant-interview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ durationMinutes: 30 }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        alert(body?.message || body?.error || 'Could not start instant interview.')
+        return
+      }
+      const uri = typeof body?.meetingUri === 'string' ? body.meetingUri : null
+      if (uri) {
+        try { await navigator.clipboard.writeText(uri) } catch { /* ignore — surface fallback below */ }
+        window.open(uri, '_blank', 'noopener')
+        setInstantToast(`Instant meeting created. Link copied to clipboard — paste it to the candidate. ${body?.botScheduled ? 'Recording bot is on its way.' : 'Recording bot could not be scheduled.'}`)
+      }
+      await load()
+      onCandidateChanged?.()
+    } finally {
+      setStartingInstant(false)
+    }
+  }, [candidateId, load, onCandidateChanged])
+
   const markNoShow = useCallback(async (meetingId: string) => {
     if (!confirm('Mark this meeting as a no-show? The candidate will be moved to Rejected and the no-show follow-up automation (if configured) will run.')) return
     setMarkingNoShow(meetingId)
@@ -216,12 +219,34 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
 
   return (
     <div className="mt-4 bg-white rounded-[12px] border border-surface-border p-5">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h3 className="text-sm font-semibold text-grey-15">Google Meet interviews</h3>
-        <button className="btn-primary text-xs" onClick={() => setShowDialog(true)}>
-          Schedule interview
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="text-xs px-3 py-1.5 rounded-[8px] border border-surface-border text-grey-15 hover:bg-surface-light disabled:opacity-50"
+            onClick={startInstantInterview}
+            disabled={startingInstant}
+            title="Spin up a fresh Meet link + recording bot right now (use this when a scheduled candidate joined late on a new link)"
+          >
+            {startingInstant ? 'Starting…' : 'Start instant interview'}
+          </button>
+          <button className="btn-primary text-xs" onClick={() => setShowDialog(true)}>
+            Schedule interview
+          </button>
+        </div>
       </div>
+      {instantToast && (
+        <div className="mt-3 p-2 rounded-[8px] bg-green-50 text-xs text-green-700 flex items-start justify-between gap-2">
+          <span>{instantToast}</span>
+          <button
+            onClick={() => setInstantToast(null)}
+            className="text-green-700 hover:text-green-900 flex-shrink-0"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {meetings.length === 0 ? (
         <p className="mt-3 text-xs text-grey-40">No Meet interviews scheduled yet.</p>
@@ -402,39 +427,14 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                 )}
 
                 {!m.cancelledAt && new Date(m.scheduledEnd).getTime() < Date.now() && (
-                  <div className="mt-3 pt-3 border-t border-surface-border space-y-2">
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <button
-                        onClick={() => markNoShow(m.id)}
-                        disabled={markingNoShow === m.id || uploadingFor === m.id}
-                        className="text-xs text-red-600 hover:underline disabled:opacity-50"
-                      >
-                        {markingNoShow === m.id ? 'Marking…' : 'Mark as no-show'}
-                      </button>
-                      <span className="text-grey-40 text-xs">·</span>
-                      <label className="text-xs text-primary hover:underline cursor-pointer">
-                        <input
-                          type="file"
-                          accept=".csv,text/csv,text/tab-separated-values,text/plain,application/vnd.ms-excel,.tsv"
-                          className="hidden"
-                          disabled={uploadingFor === m.id}
-                          onChange={(e) => {
-                            const f = e.target.files?.[0]
-                            if (f) uploadAttendance(m.id, f)
-                            e.currentTarget.value = ''
-                          }}
-                        />
-                        {uploadingFor === m.id ? 'Uploading…' : 'Upload attendance file'}
-                      </label>
-                    </div>
-                    {uploadResult[m.id] && (
-                      <p className={`text-xs ${uploadResult[m.id].ok ? 'text-green-700' : 'text-red-700'}`}>
-                        {uploadResult[m.id].text}
-                      </p>
-                    )}
-                    <p className="text-[11px] text-grey-40">
-                      CSV or Google Sheets-exported file. Columns we look for: name, email, joined, left, duration.
-                    </p>
+                  <div className="mt-3 pt-3 border-t border-surface-border">
+                    <button
+                      onClick={() => markNoShow(m.id)}
+                      disabled={markingNoShow === m.id}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      {markingNoShow === m.id ? 'Marking…' : 'Mark as no-show'}
+                    </button>
                   </div>
                 )}
               </div>
