@@ -96,6 +96,28 @@ export async function POST(request: NextRequest) {
     })
   }
 
+  // Resolve workspace sender. Same gate the automation engine uses:
+  // send From: the workspace's branded address only when EITHER the
+  // domain is validated AND the sender's domain matches, OR single-
+  // sender verification is on file. Otherwise fall back to the platform
+  // default in sendEmail. Without this, bulk email left the From: as
+  // noreply@hirefunnel.app — which mismatches the body's claimed
+  // identity ("Best regards, Kate, Spotless Homes…") and gets aggressively
+  // spam-filtered, especially when the recipient is on the same domain
+  // the body claims to represent.
+  const wsRow = await prisma.workspace.findUnique({
+    where: { id: ws.workspaceId },
+    select: { senderEmail: true, senderName: true, senderVerifiedAt: true, senderDomain: true, senderDomainValidatedAt: true },
+  })
+  let from: { email: string; name?: string } | null = null
+  if (wsRow?.senderEmail && wsRow?.senderName) {
+    const domainOk = !!(wsRow.senderDomainValidatedAt && wsRow.senderDomain && wsRow.senderEmail.toLowerCase().endsWith('@' + wsRow.senderDomain.toLowerCase()))
+    const singleOk = !!wsRow.senderVerifiedAt
+    if (domainOk || singleOk) {
+      from = { email: wsRow.senderEmail, name: wsRow.senderName }
+    }
+  }
+
   const sessions = await prisma.session.findMany({
     where: { id: { in: ids }, workspaceId: ws.workspaceId },
     select: {
@@ -205,6 +227,7 @@ export async function POST(request: NextRequest) {
       subject: renderedSubject,
       html: renderedHtml,
       text: renderedText,
+      from,
       executionId: execution.id,
       workspaceId: ws.workspaceId,
       candidateId: s.id,
