@@ -507,7 +507,7 @@ export default function ContentPage() {
                   placeholder={'Hi {{candidate_name}},\n\nThanks for completing the application…'}
                   className="w-full px-4 py-3 border border-surface-border rounded-b-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
-                <p className="mt-1.5 text-xs text-grey-40">Plain text by default — use the toolbar for <span className="font-bold">bold</span>, <span className="italic">italic</span>, links, or lists. Blank line = new paragraph. URLs and <code className="font-mono">{'{{...}}'}</code> tokens become clickable automatically.</p>
+                <p className="mt-1.5 text-xs text-grey-40">Plain text by default — use the toolbar for <span className="font-bold">bold</span>, <span className="italic">italic</span>, links, or lists. Start a line with <code className="font-mono">#</code>, <code className="font-mono">##</code>, or <code className="font-mono">###</code> for a heading. Blank line = new paragraph. URLs and <code className="font-mono">{'{{...}}'}</code> tokens become clickable automatically.</p>
               </div>
               <div className="bg-surface rounded-[8px] p-3"><label className="text-xs font-medium text-grey-40 uppercase mb-2 block">Variables — click to copy</label><div className="flex flex-wrap gap-2">{EMAIL_VARIABLES.map(v => <button key={v} onClick={() => navigator.clipboard.writeText(v)} className="text-xs px-2.5 py-1 bg-white border border-surface-border rounded-[8px] text-grey-15 font-mono hover:bg-brand-50">{v}</button>)}</div></div>
             </div>

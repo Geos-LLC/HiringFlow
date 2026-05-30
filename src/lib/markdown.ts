@@ -4,10 +4,9 @@
 // when saving as EmailTemplate or sending without one).
 //
 // Recruiters compose templates in plain text with a small set of inline
-// markers — bold (**), italic (*), links ([text](url)), bullet/numbered
-// lists, and auto-linked URLs / {{*_link}} merge tokens. Headings are NOT
-// supported; lines like "### Section" render literally so users don't
-// rely on an unstable subset.
+// markers — headings (# / ## / ###), bold (**), italic (*),
+// links ([text](url)), bullet/numbered lists, and auto-linked URLs /
+// {{*_link}} merge tokens.
 //
 // Pure string transforms (no DOM); safe to import from server routes.
 
@@ -47,6 +46,18 @@ export function plainTextToHtml(text: string): string {
 
   return blocks.map(block => {
     const lines = block.split('\n')
+    // Single-line heading block: # / ## / ### at the start of a line.
+    // Mapped to <h3>/<h2>/<h1>-ish via the count. We cap at 3 # because
+    // anything bigger is almost certainly a typo and email clients don't
+    // give h4-h6 visible distinction anyway.
+    if (lines.length === 1) {
+      const m = /^(#{1,3})\s+(.+)$/.exec(lines[0])
+      if (m) {
+        const level = m[1].length // 1..3
+        const tag = level === 1 ? 'h1' : level === 2 ? 'h2' : 'h3'
+        return `<${tag}>${applyInlineMarkdown(m[2])}</${tag}>`
+      }
+    }
     if (lines.length > 0 && lines.every(l => /^-\s+/.test(l))) {
       const items = lines.map(l => `<li>${applyInlineMarkdown(l.replace(/^-\s+/, ''))}</li>`).join('')
       return `<ul>${items}</ul>`
@@ -80,6 +91,11 @@ export function htmlToPlainText(html: string): string {
         `- ${c.replace(/<[^>]+>/g, '').trim()}\n`
       )
     )
+    // Headings round-trip back to #/##/### so the editor textarea shows
+    // the same markdown the user originally typed.
+    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '# $1\n\n')
+    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '## $1\n\n')
+    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '### $1\n\n')
     .replace(/<(?:strong|b)>([\s\S]*?)<\/(?:strong|b)>/gi, '**$1**')
     .replace(/<(?:em|i)>([\s\S]*?)<\/(?:em|i)>/gi, '*$1*')
     .replace(/<br\s*\/?>/gi, '\n')
@@ -103,3 +119,11 @@ export function htmlToPlainText(html: string): string {
 export function looksLikeHtml(s: string): boolean {
   return /<(p|div|br|ul|ol|li|strong|em|a|h[1-6]|table|tr|td)\b/i.test(s)
 }
+
+// Public list of supported markdown syntax — shown verbatim in the
+// template editor hint so the syntax stays in sync with what
+// plainTextToHtml actually parses.
+export const SUPPORTED_MARKDOWN_HINT =
+  'Plain text by default — use the toolbar for bold, italic, links, or lists. ' +
+  '# / ## / ### at the start of a line become headings. Blank line = new paragraph. ' +
+  'URLs and {{...}} tokens become clickable automatically.'
