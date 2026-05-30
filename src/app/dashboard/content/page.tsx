@@ -612,15 +612,10 @@ export default function ContentPage() {
 
       {/* Email Preview */}
       {previewEmail && (
-        <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50" onClick={() => setPreviewEmail(null)}>
-          <div className="bg-white rounded-[12px] shadow-2xl w-full max-w-[600px] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <div className="p-6 border-b border-surface-border flex items-center justify-between">
-              <div><h3 className="font-semibold text-grey-15">{previewEmail.name}</h3><p className="text-sm text-grey-40 mt-0.5">Subject: {previewEmail.subject}</p></div>
-              <button onClick={() => setPreviewEmail(null)} className="text-grey-40 hover:text-grey-15 text-xl">&times;</button>
-            </div>
-            <div className="p-6"><div className="bg-surface rounded-[8px] p-6 border border-surface-border" dangerouslySetInnerHTML={{ __html: previewEmail.bodyHtml }} /></div>
-          </div>
-        </div>
+        <EmailPreviewModal
+          template={previewEmail}
+          onClose={() => setPreviewEmail(null)}
+        />
       )}
 
       {/* Ad Preview */}
@@ -741,6 +736,97 @@ export default function ContentPage() {
           </div>
         </div>
       )}
+      </div>
+    </div>
+  )
+}
+
+// Email template preview, with an inline "Send test" row so the recruiter
+// can drop the rendered email into their inbox to confirm formatting
+// (Gmail / Outlook / Apple Mail behave differently than the in-browser
+// preview pane). Test recipient is sticky across opens so subsequent
+// tests don't require retyping.
+const TEMPLATE_TEST_EMAIL_KEY = 'hiringflow:template-test-email'
+function EmailPreviewModal({ template, onClose }: {
+  template: EmailTemplate
+  onClose: () => void
+}) {
+  const [testTo, setTestTo] = useState<string>(() => {
+    if (typeof window === 'undefined') return ''
+    try { return window.localStorage.getItem(TEMPLATE_TEST_EMAIL_KEY) ?? '' } catch { return '' }
+  })
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null)
+
+  const canSend = /.+@.+\..+/.test(testTo.trim()) && !sending
+
+  const sendTest = async () => {
+    const to = testTo.trim()
+    if (!to || !to.includes('@')) { setResult({ kind: 'err', message: 'Enter a valid email address' }); return }
+    setSending(true)
+    setResult(null)
+    try {
+      const res = await fetch(`/api/email-templates/${template.id}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        try { window.localStorage.setItem(TEMPLATE_TEST_EMAIL_KEY, to) } catch {}
+        setResult({ kind: 'ok', message: `Sent to ${data.sentTo}. Check inbox + spam.` })
+      } else {
+        setResult({ kind: 'err', message: data.error || 'Send failed' })
+      }
+    } catch (err) {
+      setResult({ kind: 'err', message: err instanceof Error ? err.message : 'Send failed' })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-[12px] shadow-2xl w-full max-w-[600px] max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-6 border-b border-surface-border flex items-center justify-between shrink-0">
+          <div>
+            <h3 className="font-semibold text-grey-15">{template.name}</h3>
+            <p className="text-sm text-grey-40 mt-0.5">Subject: {template.subject}</p>
+          </div>
+          <button onClick={onClose} className="text-grey-40 hover:text-grey-15 text-xl">&times;</button>
+        </div>
+        <div className="p-6 overflow-y-auto flex-1 min-h-0">
+          <div className="bg-surface rounded-[8px] p-6 border border-surface-border" dangerouslySetInnerHTML={{ __html: template.bodyHtml }} />
+        </div>
+        <div className="p-4 border-t border-surface-border bg-surface-light/40 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono uppercase text-grey-40 shrink-0" style={{ letterSpacing: '0.08em' }}>Send test</span>
+            <input
+              type="email"
+              value={testTo}
+              onChange={(e) => setTestTo(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && canSend) sendTest() }}
+              placeholder="you@example.com"
+              className="flex-1 px-3 py-1.5 border border-surface-border rounded-[8px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            />
+            <button
+              type="button"
+              onClick={sendTest}
+              disabled={!canSend}
+              className="px-3 py-1.5 rounded-[8px] bg-brand-500 text-white text-[13px] font-medium hover:bg-brand-600 disabled:opacity-50 transition-colors"
+            >
+              {sending ? 'Sending…' : 'Send'}
+            </button>
+          </div>
+          {result && (
+            <div className={`mt-2 text-[12px] px-3 py-1.5 rounded-[6px] ${result.kind === 'ok' ? 'bg-green-50 text-green-700' : 'bg-[color:var(--danger-bg)] text-[color:var(--danger-fg)]'}`}>
+              {result.message}
+            </div>
+          )}
+          <p className="mt-2 text-[11px] text-grey-40">
+            Tokens render with sample values ({'{{candidate_name}}'} → &ldquo;Alex Sample&rdquo;, meeting tokens use tomorrow at 2:00 PM). Sub-tokens like {'{{schedule_link:…}}'} resolve to the real workspace URL.
+          </p>
+        </div>
       </div>
     </div>
   )
