@@ -15,7 +15,18 @@ interface EmailTemplate { id: string; name: string; subject: string; bodyHtml: s
 interface SmsTemplate { id: string; name: string; body: string; isActive: boolean; updatedAt: string }
 interface AdTemplate { id: string; name: string; source: string; headline: string; bodyText: string; requirements: string | null; benefits: string | null; callToAction: string | null; isActive: boolean; updatedAt: string }
 
-const EMAIL_VARIABLES = ['{{candidate_name}}', '{{flow_name}}', '{{training_link}}', '{{schedule_link}}', '{{meeting_time}}', '{{meeting_link}}', '{{source}}', '{{ad_name}}']
+// Source of truth for the "Variables — click to copy" pill bank in the
+// email/SMS template editor. Must stay in sync with the variables map
+// built in src/lib/automation.ts executeStep — when adding a new merge
+// token, add it both there (so it resolves at send time) and here (so
+// users know it exists).
+const EMAIL_VARIABLES = [
+  '{{candidate_name}}', '{{candidate_email}}', '{{candidate_phone}}',
+  '{{flow_name}}', '{{source}}', '{{ad_name}}',
+  '{{meeting_date}}', '{{meeting_clock}}', '{{meeting_time}}', '{{meeting_link}}',
+  '{{reschedule_link}}', '{{cancel_link}}',
+  '{{training_link}}', '{{schedule_link}}',
+]
 const SMS_VARIABLES = EMAIL_VARIABLES
 const SOURCES = ['general', 'indeed', 'facebook', 'craigslist', 'google', 'linkedin', 'instagram', 'tiktok', 'other']
 

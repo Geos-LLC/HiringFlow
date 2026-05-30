@@ -8,7 +8,16 @@ import { MANUAL_MEETING_NUDGE_TEMPLATE_NAME } from '@/lib/email-templates-seed'
 interface EmailTemplate { id: string; name: string; subject: string; bodyHtml: string; bodyText: string | null; isActive: boolean; updatedAt: string }
 interface SmsTemplate { id: string; name: string; body: string; isActive: boolean; updatedAt: string }
 
-const VARIABLES = ['{{candidate_name}}', '{{flow_name}}', '{{training_link}}', '{{schedule_link}}', '{{meeting_link}}', '{{meeting_time}}', '{{source}}', '{{ad_name}}']
+// Source of truth: src/lib/automation.ts executeStep — when adding a
+// new merge token in the variables map there, mirror it here so the
+// "click to copy" pill bank stays accurate.
+const VARIABLES = [
+  '{{candidate_name}}', '{{candidate_email}}', '{{candidate_phone}}',
+  '{{flow_name}}', '{{source}}', '{{ad_name}}',
+  '{{meeting_date}}', '{{meeting_clock}}', '{{meeting_time}}', '{{meeting_link}}',
+  '{{reschedule_link}}', '{{cancel_link}}',
+  '{{training_link}}', '{{schedule_link}}',
+]
 
 type Tab = 'email' | 'sms'
 
