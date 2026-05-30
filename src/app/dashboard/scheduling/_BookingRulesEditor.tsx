@@ -63,36 +63,39 @@ export function BookingRulesEditor({ value, onChange, configId }: Props) {
   const previewAbortRef = useRef<AbortController | null>(null)
   const rulesKey = useMemo(() => JSON.stringify(rules), [rules])
 
-  useEffect(() => {
-    const handle = setTimeout(async () => {
-      if (previewAbortRef.current) previewAbortRef.current.abort()
-      const ac = new AbortController()
-      previewAbortRef.current = ac
-      setPreviewLoading(true)
-      setPreviewError(null)
-      try {
-        const r = await fetch('/api/scheduling/preview-conflicts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bookingRules: rules, configId }),
-          signal: ac.signal,
-        })
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) {
-          setPreviewError(d.message || d.error || 'Preview failed')
-          setPreview(null)
-        } else {
-          setPreview(d as PreviewResponse)
-        }
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') return
-        setPreviewError((err as Error).message)
+  const fetchPreview = async (bustCache: boolean) => {
+    if (previewAbortRef.current) previewAbortRef.current.abort()
+    const ac = new AbortController()
+    previewAbortRef.current = ac
+    setPreviewLoading(true)
+    setPreviewError(null)
+    try {
+      const r = await fetch('/api/scheduling/preview-conflicts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bookingRules: rules, configId, bustCache }),
+        signal: ac.signal,
+      })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) {
+        setPreviewError(d.message || d.error || 'Preview failed')
         setPreview(null)
-      } finally {
-        setPreviewLoading(false)
+      } else {
+        setPreview(d as PreviewResponse)
       }
-    }, 350)
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return
+      setPreviewError((err as Error).message)
+      setPreview(null)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const handle = setTimeout(() => { fetchPreview(false) }, 350)
     return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rulesKey, configId])
 
   const update = (patch: Partial<BookingRules>) => {
@@ -253,18 +256,36 @@ export function BookingRulesEditor({ value, onChange, configId }: Props) {
         </div>
       </div>
 
-      <PreviewPanel preview={preview} loading={previewLoading} error={previewError} />
+      <PreviewPanel
+        preview={preview}
+        loading={previewLoading}
+        error={previewError}
+        onRefresh={() => fetchPreview(true)}
+      />
     </div>
   )
 }
 
-function PreviewPanel({ preview, loading, error }: { preview: PreviewResponse | null; loading: boolean; error: string | null }) {
+function PreviewPanel({ preview, loading, error, onRefresh }: {
+  preview: PreviewResponse | null
+  loading: boolean
+  error: string | null
+  onRefresh: () => void
+}) {
   return (
     <div className="border-t border-surface-divider pt-4">
       <div className="eyebrow mb-2 flex items-center gap-1.5">
         Preview — next {preview ? Math.min(preview.previewDayCap, preview.days.length || preview.previewDayCap) : 14} days
         <InfoIcon tooltip="Live check against your connected Google Calendar. Shows how many slots candidates will see on each day and which existing events are blocking empty days." />
-        {loading && <span className="ml-1 text-grey-50 normal-case font-normal tracking-normal text-[11px]">checking…</span>}
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="ml-auto text-[11px] text-grey-35 hover:text-[color:var(--brand-primary)] disabled:opacity-50 normal-case font-normal tracking-normal"
+          title="Re-query Google Calendar, bypassing the 60s cache"
+        >
+          {loading ? 'refreshing…' : 'refresh'}
+        </button>
       </div>
 
       {error && (

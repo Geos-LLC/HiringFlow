@@ -71,6 +71,7 @@ export async function POST(request: NextRequest) {
   if (!ws) return unauthorized()
 
   const body = await request.json().catch(() => ({}))
+  const bustCache = body.bustCache === true
 
   let rules
   try {
@@ -137,6 +138,7 @@ export async function POST(request: NextRequest) {
           calendarId: calId,
           fromUtc: nowUtc,
           toUtc,
+          bustCache,
         })
         busyChunks.push(chunk)
       } catch (err) {
@@ -180,8 +182,10 @@ export async function POST(request: NextRequest) {
 
   const earliestStartMs = nowUtc.getTime() + rules.minNoticeHours * 60 * 60 * 1000
   const latestEndMs = nowUtc.getTime() + rules.maxDaysOut * 24 * 60 * 60 * 1000
-  const totalMeetingFootprintMs =
-    (rules.durationMinutes + rules.bufferBeforeMinutes + rules.bufferAfterMinutes) * 60 * 1000
+  // A slot fits inside a working range when range_length >= durationMinutes.
+  // bufferBefore/After expand busy intervals, not the working window — so they
+  // don't enter the "is the window big enough?" check.
+  const durationMs = rules.durationMinutes * 60 * 1000
 
   // Walk each day in workspace tz, build the per-day report.
   const startDay = zonedFromUtc(nowUtc, recruiterTimezone)
@@ -241,7 +245,7 @@ export async function POST(request: NextRequest) {
     if (count === 0) {
       // Diagnose. Priority: window-too-short > past-max-days > min-notice > calendar.
       const longestRangeMs = Math.max(...ranges.map(rangeMinutes)) * 60 * 1000
-      if (longestRangeMs < totalMeetingFootprintMs) {
+      if (longestRangeMs < durationMs) {
         reason = 'window_too_short'
       } else {
         // Does this day's earliest working range start fall past latestEndMs?
@@ -258,7 +262,7 @@ export async function POST(request: NextRequest) {
           // Earliest possible slot start in this day = max(earliest, range start)
           // If even that can't fit a full duration into the range, blame min-notice.
           const effectiveStart = Math.max(firstStartUtc.getTime(), earliestStartMs)
-          if (effectiveStart + totalMeetingFootprintMs > lastEndUtc.getTime()) {
+          if (effectiveStart + durationMs > lastEndUtc.getTime()) {
             reason = 'min_notice'
           } else if (dedupedBusy.length > 0) {
             reason = 'calendar_conflict'
