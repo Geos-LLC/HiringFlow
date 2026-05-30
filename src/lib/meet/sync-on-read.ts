@@ -156,9 +156,6 @@ export async function syncMeetingFromMeetApi(meeting: SyncableMeeting): Promise<
           windowEnd: meeting.scheduledEnd,
           folderId,
           candidateName: session?.candidateName ?? null,
-          candidateEmail: session?.candidateEmail ?? null,
-          extensionEnabled: false,
-          sheetsScopeGranted: false,
         }).catch((err) => {
           console.warn('[meet-sync] attendance fallback failed:', (err as Error).message)
           return null
