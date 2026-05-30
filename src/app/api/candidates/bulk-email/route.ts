@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { sendEmail, renderTemplate } from '@/lib/email'
+import { plainTextToHtml, looksLikeHtml } from '@/lib/markdown'
 
 // Bulk email to a manually-picked set of candidates from the candidates
 // page. Distinct from the automation engine — this is a one-shot recruiter
@@ -40,6 +41,17 @@ export async function POST(request: NextRequest) {
   if (!subject) return NextResponse.json({ error: 'subject required' }, { status: 400 })
   if (!bodyHtml.trim()) return NextResponse.json({ error: 'bodyHtml required' }, { status: 400 })
 
+  // The modal posts the textarea content as `bodyHtml`, but recruiters
+  // type markdown there (** bold, * italic, [text](url), - bullets). If
+  // we hand SendGrid the raw markdown, email clients show the asterisks
+  // literally. Convert here unless the caller actually sent rendered
+  // HTML already (e.g. a future rich-text editor).
+  const bodyHtmlRendered = looksLikeHtml(bodyHtml) ? bodyHtml : plainTextToHtml(bodyHtml)
+  // Keep the plain-text version too — email clients without HTML support
+  // fall back to it, and storing both round-trips cleanly through the
+  // template editor's open-edit flow.
+  const bodyPlain = bodyText ?? bodyHtml
+
   // Optional: persist the composed message as a reusable EmailTemplate
   // before the sends fan out.
   let savedTemplateId: string | null = null
@@ -50,8 +62,12 @@ export async function POST(request: NextRequest) {
         createdById: ws.userId,
         name: saveTemplateName,
         subject,
-        bodyHtml,
-        bodyText,
+        // Save the rendered HTML so the template plays nicely with the
+        // automation send path (which expects HTML in bodyHtml) and with
+        // the template editor's open-edit flow (which round-trips via
+        // htmlToPlainText).
+        bodyHtml: bodyHtmlRendered,
+        bodyText: bodyPlain,
       },
     })
     savedTemplateId = template.id
@@ -181,8 +197,8 @@ export async function POST(request: NextRequest) {
       meeting_link: mLink,
     }
     const renderedSubject = renderTemplate(subject, variables)
-    const renderedHtml = renderTemplate(bodyHtml, variables)
-    const renderedText = bodyText ? renderTemplate(bodyText, variables) : undefined
+    const renderedHtml = renderTemplate(bodyHtmlRendered, variables)
+    const renderedText = renderTemplate(bodyPlain, variables)
 
     const res = await sendEmail({
       to: s.candidateEmail,
