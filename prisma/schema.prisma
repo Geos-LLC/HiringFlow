@@ -67,12 +67,24 @@ model Workspace {
   // behavior until the recruiter opts in.
   pipelineTransitionsV2Enabled Boolean   @default(false) @map("pipeline_transitions_v2_enabled")
   // Recall.ai bot integration — when on, every booked InterviewMeeting gets a
-  // recording bot scheduled at scheduledStart-1m. The bot replaces both the
-  // chrome-extension attendance signal and the Meet native auto-record path
-  // (which silently auto-stops when the host is alone — see
-  // project_meet_premature_noshow). Off by default; enabled per workspace via
-  // /api/integrations/recall/connect once RECALL_API_KEY is set in env.
+  // recording bot scheduled at scheduledStart-1m. The bot replaces the Meet
+  // native auto-record path (which silently auto-stops when the host is alone)
+  // and supplies its own attendance signal. Off by default; enabled per
+  // workspace via /api/integrations/recall/connect once RECALL_API_KEY is set
+  // in env.
   recallBotEnabled             Boolean   @default(false) @map("recall_bot_enabled")
+  // ---- Stripe Billing (per-workspace subscription) ----
+  // Stripe is the source of truth; these mirror state via webhooks so we can
+  // gate features without a Stripe round-trip. `plan` (above) is set from the
+  // active price ID at webhook time. `subscriptionStatus` follows Stripe's
+  // enum: trialing | active | past_due | canceled | incomplete | incomplete_expired | unpaid | paused.
+  stripeCustomerId             String?   @unique @map("stripe_customer_id")
+  stripeSubscriptionId         String?   @unique @map("stripe_subscription_id")
+  stripePriceId                String?   @map("stripe_price_id")
+  subscriptionStatus           String?   @map("subscription_status")
+  currentPeriodEnd             DateTime? @map("current_period_end")
+  cancelAtPeriodEnd            Boolean   @default(false) @map("cancel_at_period_end")
+  trialEndsAt                  DateTime? @map("trial_ends_at")
   createdAt                    DateTime  @default(now()) @map("created_at")
   updatedAt                    DateTime  @updatedAt @map("updated_at")
 
@@ -94,13 +106,29 @@ model Workspace {
   interviewMeetings InterviewMeeting[]
   certnIntegration  CertnIntegration?
   backgroundChecks  BackgroundCheck[]
-  extensionTokens   ExtensionToken[]
   captureResponses  CaptureResponse[]
   pipelines         Pipeline[]
   transitionRules   PipelineTransitionRule[]
   stageEntries      StageEntry[]
+  billingEvents     BillingEvent[]
 
   @@map("workspaces")
+}
+
+// Audit log of every Stripe webhook event we process. Lets us debug
+// "why is my workspace stuck on past_due" and replay if needed. Dedup'd by
+// Stripe event id (unique) so retries can't double-apply.
+model BillingEvent {
+  id            String     @id @default(uuid())
+  workspaceId   String?    @map("workspace_id")
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  stripeEventId String     @unique @map("stripe_event_id")
+  type          String // e.g. customer.subscription.updated
+  payload       Json // raw event for forensic replay
+  processedAt   DateTime   @default(now()) @map("processed_at")
+
+  @@index([workspaceId, processedAt])
+  @@map("billing_events")
 }
 
 // A named funnel stage list. Each workspace can have many pipelines so roles
@@ -282,10 +310,6 @@ model GoogleIntegration {
   transcriptionCapable             Boolean?  @map("transcription_capable")
   transcriptionCapabilityCheckedAt DateTime? @map("transcription_capability_checked_at")
   transcriptionCapabilityReason    String?   @map("transcription_capability_reason")
-  // True if the workspace owner has confirmed the "Meet Attendance" Chrome
-  // extension is installed and the integration should scan Drive for its
-  // exported spreadsheets to derive attendance for personal Gmail tenants.
-  attendanceExtensionEnabled       Boolean   @default(false) @map("attendance_extension_enabled")
   // Auth-error tracking. When a Google API call returns invalid_grant (the
   // workspace's refresh token has been revoked, most commonly because the
   // OAuth consent screen is still in "Testing" mode and Google rotates
@@ -353,15 +377,12 @@ model InterviewMeeting {
   // (when present). Personal Gmail tenants get attendance from this artifact's
   // existence even when conferenceRecords is empty.
   driveGeminiNotesFileId      String?                    @map("drive_gemini_notes_file_id")
-  // Drive file id of the attendance-extension spreadsheet matched to this
-  // meeting (when present + enabled).
-  attendanceSheetFileId       String?                    @map("attendance_sheet_file_id")
-  // Full history of every Drive artifact (recording, transcript, gemini notes,
-  // attendance sheet) we've discovered for this meeting. Reschedules that swap
-  // the Meet URL and second sessions on the same link both produce extra
-  // recordings; the legacy single-fileId columns above only point at one of
-  // them and the rest used to be orphaned. The child rows preserve full
-  // history including the meetSpaceName at the time of capture.
+  // Full history of every Drive artifact (recording, transcript, gemini notes)
+  // we've discovered for this meeting. Reschedules that swap the Meet URL and
+  // second sessions on the same link both produce extra recordings; the legacy
+  // single-fileId columns above only point at one of them and the rest used to
+  // be orphaned. The child rows preserve full history including the
+  // meetSpaceName at the time of capture.
   artifacts                   InterviewMeetingArtifact[]
   // Set when the candidate replies YES/CONFIRM to a before_meeting SMS
   // reminder (or any future channel that lands on this row). Null until
@@ -381,13 +402,11 @@ model InterviewMeeting {
   // change or vendor sunset.
   recallRecordingId           String?                    @map("recall_recording_id")
   // Which signal currently owns attendance + recording for this meeting:
-  //   'meet'      — Meet REST API (Workspace tenants) + chrome extension
-  //                 (personal Gmail). Default for back-compat.
-  //   'recall'    — Recall.ai bot. Lifecycle events (meeting_started/ended/
-  //                 no_show), participants[], recording artifact all come
-  //                 from Recall webhooks. The legacy paths ignore this row.
-  //   'extension' — Reserved for future per-meeting forcing of the chrome-
-  //                 extension path even on a Recall-enabled workspace.
+  //   'meet'   — Workspace Events Meet API (Workspace tenants) or
+  //              sync-on-read Drive fallback (personal Gmail). Default.
+  //   'recall' — Recall.ai bot. Lifecycle events (meeting_started/ended/
+  //              no_show), participants[], recording artifact all come
+  //              from Recall webhooks. The Meet path ignores this row.
   attendanceSource            String                     @default("meet") @map("attendance_source")
   createdAt                   DateTime                   @default(now()) @map("created_at")
   updatedAt                   DateTime                   @updatedAt @map("updated_at")
@@ -397,8 +416,8 @@ model InterviewMeeting {
   @@map("interview_meetings")
 }
 
-// Every Drive artifact (recording / transcript / Gemini Notes / attendance
-// sheet) ever discovered for a meeting. One InterviewMeeting can accumulate
+// Every Drive artifact (recording / transcript / Gemini Notes) ever
+// discovered for a meeting. One InterviewMeeting can accumulate
 // many rows here over its lifetime:
 //   - Calendar regenerating the Meet URL mid-reschedule (artifacts get tagged
 //     with the *old* meetSpaceName and remain reachable in the UI).
@@ -413,7 +432,7 @@ model InterviewMeetingArtifact {
   id                 String           @id @default(uuid())
   interviewMeetingId String           @map("interview_meeting_id")
   meeting            InterviewMeeting @relation(fields: [interviewMeetingId], references: [id], onDelete: Cascade)
-  // 'recording' | 'transcript' | 'gemini_notes' | 'attendance_sheet'
+  // 'recording' | 'transcript' | 'gemini_notes'
   kind               String
   driveFileId        String           @map("drive_file_id")
   fileName           String?          @map("file_name")
@@ -442,31 +461,6 @@ model ProcessedWorkspaceEvent {
   @@unique([meetSpaceName, cloudEventId])
   @@index([processedAt])
   @@map("processed_workspace_events")
-}
-
-// Workspace-scoped bearer tokens used by the HireFunnel Meet Tracker Chrome
-// extension. Each token authenticates POSTs to /api/google-meet/attendance
-// and pins the request to a single workspace — meetingCode lookups are
-// scoped by workspaceId so a token from workspace A cannot post attendance
-// for a meeting in workspace B. Token plaintext is shown to the dashboard
-// once at creation, sent to the extension via chrome.runtime.sendMessage,
-// and never persisted in either the dashboard or the DB — only the SHA-256
-// hash is stored.
-model ExtensionToken {
-  id          String    @id @default(uuid())
-  workspaceId String    @map("workspace_id")
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  tokenHash   String    @unique @map("token_hash") // SHA-256 hex of the bearer token
-  prefix      String // First 12 chars of the plaintext, for revoke UI ("hfme_abc1...")
-  label       String? // Optional human label; defaults to the user agent at creation
-  createdById String?   @map("created_by_id")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  lastUsedAt  DateTime? @map("last_used_at")
-  revokedAt   DateTime? @map("revoked_at")
-
-  @@index([workspaceId])
-  @@index([revokedAt])
-  @@map("extension_tokens")
 }
 
 model WorkspaceMember {
@@ -1203,52 +1197,52 @@ model AutomationStep {
 }
 
 model AutomationExecution {
-  id                String          @id @default(uuid())
-  automationRuleId  String          @map("automation_rule_id")
-  automationRule    AutomationRule  @relation(fields: [automationRuleId], references: [id], onDelete: Cascade)
+  id                   String          @id @default(uuid())
+  automationRuleId     String          @map("automation_rule_id")
+  automationRule       AutomationRule  @relation(fields: [automationRuleId], references: [id], onDelete: Cascade)
   // Nullable for back-compat with pre-migration executions that predate the
   // step model. New rows MUST set stepId — backfilled for legacy rows.
-  stepId            String?         @map("step_id")
+  stepId               String?         @map("step_id")
   // SetNull (not Cascade) so editing a rule and replacing its steps doesn't
   // wipe the execution history. Orphan rows keep their ruleId, sessionId,
   // status, providerMessageId, sentAt — stepId becomes null, which is fine
   // since the unique constraint allows nulls.
-  step              AutomationStep? @relation(fields: [stepId], references: [id], onDelete: SetNull)
-  sessionId         String?         @map("session_id")
-  status            String          @default("pending")
-  errorMessage      String?         @map("error_message")
+  step                 AutomationStep? @relation(fields: [stepId], references: [id], onDelete: SetNull)
+  sessionId            String?         @map("session_id")
+  status               String          @default("pending")
+  errorMessage         String?         @map("error_message")
   // 'sendgrid' for email, 'sigcore' for SMS via the Sigcore platform API.
-  provider          String          @default("sendgrid")
-  providerMessageId String?         @map("provider_message_id")
+  provider             String          @default("sendgrid")
+  providerMessageId    String?         @map("provider_message_id")
   // Mirror of the step's channel at execution time. Lets the timeline UI
   // show which channel actually ran without joining to the step (its channel
   // could change after execution). For step.channel='both', each channel
   // gets its own execution row with channel='email' or 'sms'.
-  channel           String          @default("email")
+  channel              String          @default("email")
   // QStash messageId — captured when a delayed rule is queued so we can
   // cancel/delete the scheduled job (e.g. when a meeting is cancelled or
   // rescheduled and pending reminders need to be voided).
-  qstashMessageId   String?         @map("qstash_message_id")
-  sentAt            DateTime?       @map("sent_at")
-  scheduledFor      DateTime?       @map("scheduled_for")
-  createdAt         DateTime        @default(now()) @map("created_at")
+  qstashMessageId      String?         @map("qstash_message_id")
+  sentAt               DateTime?       @map("sent_at")
+  scheduledFor         DateTime?       @map("scheduled_for")
+  createdAt            DateTime        @default(now()) @map("created_at")
   // ─── Guard audit fields (src/lib/automation-guard.ts) ──────────────────
   // status uses 'skipped_wrong_status' | 'skipped_wrong_stage' |
   // 'skipped_missing_prerequisite' | 'skipped_duplicate' | 'skipped_cancelled' |
   // 'skipped_ineligible' for guard rejections. These fields capture WHY
   // and what state the guard evaluated against, so the run history is
   // queryable without re-deriving from logs.
-  skipReason        String?         @map("skip_reason")
-  evaluatedStage    String?         @map("evaluated_stage")
-  evaluatedStatus   String?         @map("evaluated_status")
-  expectedStage     String?         @map("expected_stage")
+  skipReason           String?         @map("skip_reason")
+  evaluatedStage       String?         @map("evaluated_stage")
+  evaluatedStatus      String?         @map("evaluated_status")
+  expectedStage        String?         @map("expected_stage")
   // 'immediate' | 'delayed_callback' | 'chained' | 'manual_rerun' | 'cron' |
   // 'public_trigger' | 'debug'. Identifies which entry point produced this
   // execution; lets us trace skipped sends by source.
-  executionMode     String?         @map("execution_mode")
+  executionMode        String?         @map("execution_mode")
   // User id when the execution was produced by a manual_rerun or debug path.
   // Null for automatic paths.
-  triggeredByUserId String?         @map("triggered_by_user_id")
+  triggeredByUserId    String?         @map("triggered_by_user_id")
   // ─── Pipeline Transitions v2 ──────────────────────────────────────────
   // Pins a stage_entered execution to one specific StageEntry. Null for
   // raw-event executions (flow_completed, meeting_*, etc.) which key off
@@ -1261,8 +1255,8 @@ model AutomationExecution {
   // those (it already runs and was the de-facto dedup gate even before V2).
   // For stage_entered execs, every re-entry mints a fresh StageEntry, so a
   // candidate looping back into a stage triggers the automation again.
-  stageEntryId      String?         @map("stage_entry_id")
-  stageEntry        StageEntry?     @relation(fields: [stageEntryId], references: [id], onDelete: SetNull)
+  stageEntryId         String?         @map("stage_entry_id")
+  stageEntry           StageEntry?     @relation(fields: [stageEntryId], references: [id], onDelete: SetNull)
   // ─── SendGrid delivery telemetry (src/app/api/webhooks/sendgrid) ───────
   // Reflects the most-progressed SendGrid Event Webhook event for this
   // execution's email send. Updated async after the row reaches status='sent'.
@@ -1270,19 +1264,19 @@ model AutomationExecution {
   //   processed < deferred < delivered < blocked < bounce < dropped
   // Webhook handler never downgrades a terminal failure back to processed.
   // SMS executions never populate this — it's email-only.
-  deliveryStatus     String?  @map("delivery_status")
-  deliveryStatusAt   DateTime? @map("delivery_status_at")
-  deliveryErrorMessage String? @map("delivery_error_message")
+  deliveryStatus       String?         @map("delivery_status")
+  deliveryStatusAt     DateTime?       @map("delivery_status_at")
+  deliveryErrorMessage String?         @map("delivery_error_message")
   // sg_message_id is SendGrid's canonical id format (different from the
   // x-message-id header we capture at send time on providerMessageId — the
   // webhook events surface the longer "<msgid>.filter…" form). Kept separate
   // so both can be used for SendGrid Activity API lookups.
-  sendgridMessageId  String?  @map("sendgrid_message_id")
+  sendgridMessageId    String?         @map("sendgrid_message_id")
   // sg_event_id is SendGrid's per-event id, used for de-dup on webhook
   // retries (the same delivered event may arrive multiple times).
-  sendgridEventId    String?  @map("sendgrid_event_id")
+  sendgridEventId      String?         @map("sendgrid_event_id")
   // Raw event payload from SendGrid, for admin debugging. Trimmed on write.
-  deliveryRaw        Json?    @map("delivery_raw")
+  deliveryRaw          Json?           @map("delivery_raw")
 
   @@unique([stepId, sessionId, channel, stageEntryId])
   @@index([sessionId, status])

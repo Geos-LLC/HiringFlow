@@ -53,12 +53,12 @@ export default withAuth(
           if (path.startsWith('/api/webhooks/sendgrid')) return true
           // Recall.ai bot lifecycle webhook — Svix signature verification inside the handler
           if (path.startsWith('/api/webhooks/recall')) return true
+          // Stripe billing webhook — Stripe-Signature HMAC verification inside the handler
+          if (path.startsWith('/api/webhooks/stripe')) return true
           // Vercel Cron jobs — CRON_SECRET verification inside the handler
           if (path.startsWith('/api/cron/')) return true
           // Meet integration v2 artifact proxy — signed artifact token or session auth inside the handler
           if (path.startsWith('/api/interview-meetings/')) return true
-          // Chrome extension attendance ingest — Bearer-token auth inside the handler
-          if (path.startsWith('/api/google-meet/attendance')) return true
           // R2/HLS transcoder Lambda callback — HMAC-SHA256 signature
           // verification inside the handler.
           if (path.match(/^\/api\/videos\/[^/]+\/transcode-complete$/)) return true

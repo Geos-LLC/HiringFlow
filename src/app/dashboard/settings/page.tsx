@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { GoogleIntegrationCard } from './_GoogleIntegrationCard'
-import { AttendanceTrackerCard } from './_AttendanceTrackerCard'
 import { CertnIntegrationCard } from './_CertnIntegrationCard'
 import { SenderVerificationCard } from './_SenderVerificationCard'
 import { Badge, PageHeader, type BadgeTone } from '@/components/design'
@@ -137,6 +136,12 @@ export default function SettingsPage() {
             {t.label}
           </button>
         ))}
+        <a
+          href="/dashboard/settings/billing"
+          className="px-4 py-2.5 text-[13px] font-medium border-b-2 -mb-px transition-colors border-transparent text-grey-35 hover:text-ink"
+        >
+          Billing
+        </a>
       </div>
 
       {/* BUSINESS TAB */}
@@ -301,7 +306,6 @@ export default function SettingsPage() {
       {tab === 'integrations' && (
         <div className="space-y-4 max-w-2xl">
           <GoogleIntegrationCard />
-          <AttendanceTrackerCard />
           <CertnIntegrationCard />
         </div>
       )}
