@@ -38,6 +38,19 @@ export async function processCalendarEvent(
   const meetingUrl = event.hangoutLink || extractMeetingLink(event.location) || extractMeetingLink(event.description)
 
   if (event.status === 'cancelled') {
+    // Soft-delete the InterviewMeeting row so it stops blocking FreeBusy
+    // queries. Without this, a cancelled meeting kept tying up the slot
+    // (see project_meeting_cancelled_phantom_busy memory).
+    await prisma.interviewMeeting.updateMany({
+      where: {
+        workspaceId,
+        googleCalendarEventId: event.id,
+        cancelledAt: null,
+      },
+      data: { cancelledAt: new Date() },
+    }).catch((err) => {
+      console.error('[GCal] InterviewMeeting cancelledAt update failed:', err)
+    })
     await logSchedulingEvent({
       sessionId,
       eventType: 'meeting_cancelled',

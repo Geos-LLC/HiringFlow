@@ -185,11 +185,14 @@ export async function POST(request: NextRequest) {
   )
 
   // InterviewMeeting rows as a backstop — same as availability route.
+  // `cancelledAt: null` excludes soft-deleted rows where the candidate
+  // cancelled or the host deleted the GCal event.
   const meetings = await prisma.interviewMeeting.findMany({
     where: {
       workspaceId: ws.workspaceId,
       scheduledEnd: { gt: nowUtc },
       scheduledStart: { lt: toUtc },
+      cancelledAt: null,
     },
     select: { scheduledStart: true, scheduledEnd: true },
   })

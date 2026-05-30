@@ -408,6 +408,14 @@ model InterviewMeeting {
   //              no_show), participants[], recording artifact all come
   //              from Recall webhooks. The Meet path ignores this row.
   attendanceSource            String                     @default("meet") @map("attendance_source")
+  // Set when the meeting is cancelled (candidate clicked "Cancel" on a
+  // booking link, or the host deleted the Google Calendar event). Used to
+  // exclude the row from FreeBusy backstop queries in availability/
+  // preview-conflicts — without this, a cancelled meeting kept blocking
+  // the slot indefinitely. Kept as a soft delete (null = active) instead
+  // of hard delete so SchedulingEvent rows referencing this meeting
+  // remain auditable.
+  cancelledAt                 DateTime?                  @map("cancelled_at")
   createdAt                   DateTime                   @default(now()) @map("created_at")
   updatedAt                   DateTime                   @updatedAt @map("updated_at")
 

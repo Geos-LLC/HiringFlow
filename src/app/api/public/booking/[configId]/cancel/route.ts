@@ -63,6 +63,15 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     }
   }
 
+  // Soft-delete the row so the slot frees up immediately in
+  // availability/preview-conflicts. If we relied only on the GCal webhook
+  // path to set cancelledAt, a Google failure above would leave the row
+  // active forever.
+  await prisma.interviewMeeting.update({
+    where: { id: meeting.id },
+    data: { cancelledAt: new Date() },
+  }).catch((err) => console.error('[cancel] InterviewMeeting cancelledAt update failed:', err))
+
   await logSchedulingEvent({
     sessionId: verified.payload.sessionId,
     schedulingConfigId: params.configId,

@@ -187,11 +187,14 @@ export async function GET(request: NextRequest, { params }: { params: { configId
 
   // Existing meetings as a backstop. Includes the workspace's own bookings
   // through any config, even ones we couldn't pull from Google Calendar.
+  // `cancelledAt: null` excludes soft-deleted rows where the candidate
+  // cancelled via the booking link or the host deleted the GCal event.
   const meetings = await prisma.interviewMeeting.findMany({
     where: {
       workspaceId: config.workspaceId,
       scheduledEnd: { gt: fromUtc },
       scheduledStart: { lt: toUtc },
+      cancelledAt: null,
     },
     select: { scheduledStart: true, scheduledEnd: true },
   })
