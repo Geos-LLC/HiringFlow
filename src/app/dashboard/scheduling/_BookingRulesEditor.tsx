@@ -69,14 +69,17 @@ export function BookingRulesEditor({ value, onChange, configId }: Props) {
     previewAbortRef.current = ac
     setPreviewLoading(true)
     setPreviewError(null)
+    const reqBody = { bookingRules: rules, configId, bustCache }
+    console.log('[preview-conflicts] POST request →', reqBody)
     try {
       const r = await fetch('/api/scheduling/preview-conflicts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bookingRules: rules, configId, bustCache }),
+        body: JSON.stringify(reqBody),
         signal: ac.signal,
       })
       const d = await r.json().catch(() => ({}))
+      console.log(`[preview-conflicts] response ← status=${r.status}`, d)
       if (!r.ok) {
         setPreviewError(d.message || d.error || 'Preview failed')
         setPreview(null)
@@ -87,6 +90,7 @@ export function BookingRulesEditor({ value, onChange, configId }: Props) {
       if ((err as Error).name === 'AbortError') return
       setPreviewError((err as Error).message)
       setPreview(null)
+      console.error('[preview-conflicts] fetch error', err)
     } finally {
       setPreviewLoading(false)
     }

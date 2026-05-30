@@ -10,6 +10,8 @@ export async function GET() {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
 
+  console.log(`[integrations/google] GET workspaceId=${ws.workspaceId}`)
+
   const integration = await prisma.googleIntegration.findUnique({
     where: { workspaceId: ws.workspaceId },
     select: {
@@ -51,6 +53,18 @@ export async function GET() {
         transcriptionCapabilityCheckedAt: integration.transcriptionCapabilityCheckedAt,
       }
     : null
+
+  console.log('[integrations/google] result', JSON.stringify({
+    workspaceId: ws.workspaceId,
+    configured,
+    connected: !!integration,
+    googleEmail: integration?.googleEmail || null,
+    calendarId: integration?.calendarId || null,
+    lastSyncedAt: integration?.lastSyncedAt,
+    grantedScopes: integration?.grantedScopes,
+    meetV2_flagEnabled: meetV2?.flagEnabled || false,
+    meetV2_scopesGranted: meetV2?.scopesGranted || false,
+  }))
 
   return NextResponse.json({
     configured,

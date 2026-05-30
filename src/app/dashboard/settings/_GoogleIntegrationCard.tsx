@@ -53,6 +53,7 @@ export function GoogleIntegrationCard() {
         window.history.replaceState({}, '', window.location.pathname + '?tab=integrations')
       }
     }
+    console.log('[google-integration] GET /api/integrations/google')
     fetch('/api/integrations/google')
       .then(async (r) => {
         if (!r.ok) {
@@ -61,8 +62,13 @@ export function GoogleIntegrationCard() {
         }
         return r.json()
       })
-      .then((d) => { setStatus(d); setLoading(false) })
+      .then((d) => {
+        console.log('[google-integration] response ←', d)
+        setStatus(d)
+        setLoading(false)
+      })
       .catch((err) => {
+        console.error('[google-integration] fetch failed', err)
         setLoading(false)
         setBanner({ type: 'error', text: `Couldn't load Google integration status: ${err instanceof Error ? err.message : String(err)}` })
       })

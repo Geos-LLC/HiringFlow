@@ -127,11 +127,43 @@ export async function POST(request: NextRequest) {
   // day N still sees its overlapping busy events.
   const toUtc = new Date(nowUtc.getTime() + (effectiveDays + 1) * 24 * 60 * 60 * 1000)
 
+  // ── DEBUG ──
+  // Diagnostic envelope so we can correlate frontend ↔ backend behavior when
+  // the recruiter says "HF doesn't see this calendar event". Logged here +
+  // attached to the response (only when ?debug=1 is sent) so the editor can
+  // surface it in the browser console.
+  const debug: Record<string, unknown> = {
+    workspaceId: ws.workspaceId,
+    configId: configId ?? null,
+    primaryCalendarId,
+    otherCalendarIds: otherConfigs.map((c) => c.calendarId),
+    queriedCalendars: Array.from(calendarIds).map((c) => c ?? '(workspace default)'),
+    fromUtc: nowUtc.toISOString(),
+    toUtc: toUtc.toISOString(),
+    bustCache,
+    perCalendarBusy: [] as Array<{ calendarId: string; busy: { start: string; end: string }[] }>,
+    workspaceMeetings: [] as { start: string; end: string }[],
+  }
+  console.log('[preview-conflicts] start', JSON.stringify({
+    workspaceId: ws.workspaceId,
+    configId,
+    queriedCalendars: debug.queriedCalendars,
+    fromUtc: nowUtc.toISOString(),
+    toUtc: toUtc.toISOString(),
+    bustCache,
+    rules: {
+      durationMinutes: rules.durationMinutes,
+      maxDaysOut: rules.maxDaysOut,
+      minNoticeHours: rules.minNoticeHours,
+    },
+  }))
+
   const busyChunks: BusyInterval[][] = []
   let failedCalendars = 0
   let calendarError: string | null = null
   await Promise.all(
     Array.from(calendarIds).map(async (calId) => {
+      const label = calId ?? '(workspace default)'
       try {
         const chunk = await getBusyIntervals({
           workspaceId: ws.workspaceId,
@@ -141,9 +173,13 @@ export async function POST(request: NextRequest) {
           bustCache,
         })
         busyChunks.push(chunk)
+        const formatted = chunk.map((b) => ({ start: b.start.toISOString(), end: b.end.toISOString() }))
+        ;(debug.perCalendarBusy as Array<{ calendarId: string; busy: { start: string; end: string }[] }>).push({ calendarId: label, busy: formatted })
+        console.log(`[preview-conflicts] freebusy ok calendarId=${label} count=${chunk.length}`, JSON.stringify(formatted))
       } catch (err) {
         failedCalendars++
         calendarError = (err as Error).message
+        console.error(`[preview-conflicts] freebusy FAILED calendarId=${label}`, calendarError)
       }
     }),
   )
@@ -158,6 +194,8 @@ export async function POST(request: NextRequest) {
     select: { scheduledStart: true, scheduledEnd: true },
   })
   busyChunks.push(meetings.map((m) => ({ start: m.scheduledStart, end: m.scheduledEnd })))
+  debug.workspaceMeetings = meetings.map((m) => ({ start: m.scheduledStart.toISOString(), end: m.scheduledEnd.toISOString() }))
+  console.log(`[preview-conflicts] InterviewMeeting rows count=${meetings.length}`, JSON.stringify(debug.workspaceMeetings))
 
   const busy = busyChunks.flat()
 
@@ -171,6 +209,8 @@ export async function POST(request: NextRequest) {
     toUtc,
     maxSlots: 1000,
   })
+
+  console.log(`[preview-conflicts] result slotsTotal=${slots.length} busyTotal=${busy.length} failedCalendars=${failedCalendars}/${calendarIds.size}`)
 
   // Bucket slot count per workspace-local date.
   const slotCountByDate = new Map<string, number>()
@@ -294,5 +334,6 @@ export async function POST(request: NextRequest) {
     previewDayCap: PREVIEW_DAY_CAP,
     truncated: rules.maxDaysOut > PREVIEW_DAY_CAP,
     calendarError: failedCalendars === calendarIds.size && calendarIds.size > 0 ? calendarError : null,
+    debug,
   })
 }

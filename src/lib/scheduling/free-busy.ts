@@ -44,7 +44,10 @@ export interface GetBusyIntervalsOpts {
 
 export async function getBusyIntervals(opts: GetBusyIntervalsOpts): Promise<BusyInterval[]> {
   const authed = await getAuthedClientForWorkspace(opts.workspaceId)
-  if (!authed) throw new Error('Workspace has no connected Google integration')
+  if (!authed) {
+    console.error(`[free-busy] no authed client for workspaceId=${opts.workspaceId}`)
+    throw new Error('Workspace has no connected Google integration')
+  }
 
   const calendarId = opts.calendarId || authed.integration.calendarId
   const key = cacheKey(opts.workspaceId, calendarId, opts.fromUtc, opts.toUtc)
@@ -53,10 +56,14 @@ export async function getBusyIntervals(opts: GetBusyIntervalsOpts): Promise<Busy
   if (!opts.bustCache) {
     const hit = cache.get(key)
     if (hit && now - hit.fetchedAt < CACHE_TTL_MS) {
+      console.log(`[free-busy] CACHE HIT workspaceId=${opts.workspaceId} calendarId=${calendarId} ageMs=${now - hit.fetchedAt} count=${hit.busy.length}`)
       return hit.busy
     }
+  } else {
+    console.log(`[free-busy] cache bypassed (bustCache) workspaceId=${opts.workspaceId} calendarId=${calendarId}`)
   }
 
+  console.log(`[free-busy] calling Google freebusy.query workspaceId=${opts.workspaceId} calendarId=${calendarId} from=${opts.fromUtc.toISOString()} to=${opts.toUtc.toISOString()}`)
   const calendar = google.calendar({ version: 'v3', auth: authed.client })
   const res = await calendar.freebusy.query({
     requestBody: {
@@ -70,12 +77,15 @@ export async function getBusyIntervals(opts: GetBusyIntervalsOpts): Promise<Busy
   if (entry?.errors?.length) {
     // Most common: calendar not found / no permission. Surface as empty so
     // the picker still renders; recruiter can debug from settings.
-    console.error('[free-busy] calendar errors:', entry.errors)
+    console.error(`[free-busy] calendar errors workspaceId=${opts.workspaceId} calendarId=${calendarId}:`, entry.errors)
     return []
   }
+  const rawBusyCount = entry?.busy?.length || 0
   const busy: BusyInterval[] = (entry?.busy || [])
     .filter((b): b is { start: string; end: string } => Boolean(b.start) && Boolean(b.end))
     .map((b) => ({ start: new Date(b.start), end: new Date(b.end) }))
+
+  console.log(`[free-busy] Google returned workspaceId=${opts.workspaceId} calendarId=${calendarId} rawCount=${rawBusyCount} validCount=${busy.length}`, JSON.stringify(busy.map((b) => ({ start: b.start.toISOString(), end: b.end.toISOString() }))))
 
   cache.set(key, { fetchedAt: now, busy })
   return busy
