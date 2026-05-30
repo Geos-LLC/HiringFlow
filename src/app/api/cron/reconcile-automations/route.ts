@@ -37,10 +37,10 @@ interface SweepCounts {
   errors: number
 }
 
-// Give the Chrome extension this much time after scheduledEnd to flush an
-// `isFinal=true` snapshot before we declare it stuck and finalize server-side.
-// 30 min covers the long-tail of meetings that ran over their booked window
-// AND a heartbeat or two that may land just after scheduledEnd.
+// Wait this long after scheduledEnd before declaring a meeting stuck and
+// finalizing server-side. 30 min covers the long-tail of meetings that ran
+// over their booked window AND any late-arriving lifecycle signal from
+// Workspace Events / Recall.
 const MEETING_ENDED_RECOVERY_GRACE_MS = 30 * 60 * 1000
 
 export async function GET(request: NextRequest) {
@@ -211,12 +211,13 @@ export async function GET(request: NextRequest) {
 
   // -- Rule 4: InterviewMeeting started but never ended --------------------
   //
-  // The Chrome Meet Tracker extension is supposed to upload an `isFinal=true`
-  // snapshot when the host leaves the tracked Meet tab, which is what fires
-  // `meeting_ended`. In practice, the final beacon often fails to deliver —
-  // tab force-close, OS sleep, network drop. The result is a meeting that
-  // sat in actualStart-without-actualEnd limbo, and any post-meeting
-  // automations (next-step email, follow-up SMS) never fire.
+  // A live attendance source (Workspace Events conference.ended, Recall.ai
+  // bot.call_ended, sync-on-read Drive-recording fallback) is supposed to
+  // fire `meeting_ended`. In practice the signal occasionally fails to
+  // land — webhook subscription suspended, bot crashed, Drive artifact not
+  // yet finalized. The result is a meeting stuck in
+  // actualStart-without-actualEnd limbo, and any post-meeting automations
+  // (next-step email, follow-up SMS) never fire.
   //
   // Recovery: find meetings whose scheduledEnd elapsed by the grace window,
   // have an actualStart (so we know the candidate did attend), have no
@@ -250,8 +251,8 @@ export async function GET(request: NextRequest) {
       })
       if (alreadyEnded) continue
 
-      // Best-effort actualEnd: scheduledEnd is a reasonable proxy when the
-      // extension didn't tell us when the candidate left.
+      // Best-effort actualEnd: scheduledEnd is a reasonable proxy when no
+      // live signal told us when the candidate left.
       const endAt = m.scheduledEnd
       await prisma.interviewMeeting.update({
         where: { id: m.id },

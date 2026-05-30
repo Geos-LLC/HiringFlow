@@ -28,18 +28,10 @@ const MEET_SCOPES = [
 
 const DRIVE_READONLY_FALLBACK = 'https://www.googleapis.com/auth/drive.readonly'
 
-// Sheets API readonly scope — requested only when the workspace opts into the
-// "Meet Attendance" Chrome extension fallback or manual Google Sheet import.
-// Most workspaces won't need it; it's added on demand and triggers re-OAuth.
-export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly'
-
-export function getScopes(opts: { includeSheets?: boolean } = {}): string[] {
+export function getScopes(): string[] {
   const scopes = [...BASE_SCOPES, ...MEET_SCOPES]
   if (process.env.DRIVE_ARTIFACT_SCOPE_ESCALATION === '1') {
     scopes.push(DRIVE_READONLY_FALLBACK)
-  }
-  if (opts.includeSheets) {
-    scopes.push(SHEETS_READONLY_SCOPE)
   }
   return scopes
 }
@@ -55,11 +47,6 @@ export function hasMeetScopes(grantedScopes: string | null | undefined): boolean
   if (!grantedScopes) return false
   const granted = new Set(grantedScopes.split(/\s+/).filter(Boolean))
   return REQUIRED_MEET_SCOPES.every((s) => granted.has(s))
-}
-
-export function hasSheetsScope(grantedScopes: string | null | undefined): boolean {
-  if (!grantedScopes) return false
-  return grantedScopes.split(/\s+/).includes(SHEETS_READONLY_SCOPE)
 }
 
 export function getAppUrl(): string {
@@ -82,11 +69,11 @@ export function getOAuthClient() {
   return new google.auth.OAuth2(clientId, clientSecret, getRedirectUri())
 }
 
-export function buildConsentUrl(stateToken: string, opts: { includeSheets?: boolean } = {}): string {
+export function buildConsentUrl(stateToken: string): string {
   return getOAuthClient().generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: getScopes(opts),
+    scope: getScopes(),
     state: stateToken,
     include_granted_scopes: true,
   })

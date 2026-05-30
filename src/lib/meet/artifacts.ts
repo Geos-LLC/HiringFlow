@@ -1,7 +1,6 @@
 /**
  * Helpers for recording every Drive artifact ever associated with an
- * InterviewMeeting (recordings, transcripts, Gemini Notes docs, attendance
- * sheets).
+ * InterviewMeeting (recordings, transcripts, Gemini Notes docs).
  *
  * Why this exists:
  *
@@ -14,10 +13,10 @@
  *          after the scheduled window, producing a second mp4 in Drive.
  *
  *   2. The legacy denormalized columns on InterviewMeeting (driveRecordingFileId,
- *      driveGeminiNotesFileId, driveTranscriptFileId, attendanceSheetFileId)
- *      can only point at one of them. The child table is the canonical
- *      history; the columns remain as "primary" pointers for backward compat
- *      with existing UI/queries — they get updated to the newest artifact.
+ *      driveGeminiNotesFileId, driveTranscriptFileId) can only point at one of
+ *      them. The child table is the canonical history; the columns remain as
+ *      "primary" pointers for backward compat with existing UI/queries — they
+ *      get updated to the newest artifact.
  *
  * Upserts are idempotent on (interviewMeetingId, driveFileId), so calling
  * recordArtifact for the same file twice is safe.
@@ -25,7 +24,7 @@
 
 import { prisma } from '../prisma'
 
-export type ArtifactKind = 'recording' | 'transcript' | 'gemini_notes' | 'attendance_sheet'
+export type ArtifactKind = 'recording' | 'transcript' | 'gemini_notes'
 
 export interface ArtifactInput {
   driveFileId: string
@@ -98,7 +97,6 @@ export async function archivePrimaryArtifacts(
     driveRecordingFileId: string | null
     driveTranscriptFileId: string | null
     driveGeminiNotesFileId: string | null
-    attendanceSheetFileId: string | null
     meetSpaceName: string | null
   },
 ): Promise<void> {
@@ -107,7 +105,6 @@ export async function archivePrimaryArtifacts(
     ['recording', pointers.driveRecordingFileId],
     ['transcript', pointers.driveTranscriptFileId],
     ['gemini_notes', pointers.driveGeminiNotesFileId],
-    ['attendance_sheet', pointers.attendanceSheetFileId],
   ]
   for (const [kind, fileId] of pairs) {
     if (!fileId) continue

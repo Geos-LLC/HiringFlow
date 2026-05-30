@@ -352,12 +352,12 @@ export default function PipelinesPage() {
                 </div>
 
                 {/*
-                  Pipeline Transitions v2 toggle. When on, candidates moving
-                  through this pipeline are driven by PipelineTransitionRule
-                  rows (edited inside the Stages drawer, per stage) instead
-                  of V1's embedded stage.triggers[] + completion-pair
-                  auto-advance + legacy fallback. Off by default — pipelines
-                  with no V2 rules MUST stay off or candidates get stuck.
+                  Rule-based movement (V2 internally). When on, candidates
+                  moving through this pipeline are driven by explicit
+                  movement rules (PipelineTransitionRule) defined per stage
+                  in the Stages drawer, instead of the legacy auto-move
+                  config. Off by default — pipelines with no movement rules
+                  MUST stay off or candidates get stuck.
                 */}
                 <div className="flex items-center justify-between gap-2 mb-3 px-3 py-2 rounded-[10px] bg-surface-light border border-surface-divider">
                   <div className="min-w-0">

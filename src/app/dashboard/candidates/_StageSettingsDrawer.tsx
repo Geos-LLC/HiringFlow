@@ -118,14 +118,30 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
     byStage: Record<string, number>
   }>(null)
   const [applying, setApplying] = useState(false)
-  // ── V2 transition rules state ──────────────────────────────────────────
-  // Loaded once per drawer open when V2 is enabled. Empty array means
-  // "fetched and no rules exist yet" (used by the empty-state warning);
-  // null means "not yet fetched".
+  // ── V2 movement rules state ────────────────────────────────────────────
+  // Loaded once per drawer open when rule-based movement is enabled. Empty
+  // array means "fetched and no rules exist yet" (used by the empty-state
+  // warning); null means "not yet fetched".
   const [v2Rules, setV2Rules] = useState<TransitionRule[] | null>(null)
   const [v2Loading, setV2Loading] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, DraftRule>>({})
   const [v2Busy, setV2Busy] = useState<string | null>(null)  // ruleId or `add:${stageId}`
+  // Per-stage "Show legacy auto-move rules" disclosure. When rule-based
+  // movement is on, V1 triggers are collapsed by default so the recruiter
+  // edits one model at a time — but they can still inspect what's there
+  // during migration. Keyed by stageId.
+  const [legacyShown, setLegacyShown] = useState<Record<string, boolean>>({})
+  // stage_entered automations for the current pipeline. Drives the "What
+  // happens after they arrive" section on each stage card. Fetched once per
+  // drawer open via /api/automations?pipelineId=... and filtered client-side
+  // (no new API surface — see decision 1 in the UX scope).
+  const [stageActions, setStageActions] = useState<Array<{
+    id: string
+    name: string
+    stageId: string | null
+    channel: string
+    isActive: boolean
+  }> | null>(null)
 
   useEffect(() => {
     if (!open || !transitionsV2Enabled || !pipelineId) { setV2Rules(null); return }
@@ -136,6 +152,25 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
       .then((rules: TransitionRule[]) => { if (!cancelled) setV2Rules(rules) })
       .catch(() => { if (!cancelled) setV2Rules([]) })
       .finally(() => { if (!cancelled) setV2Loading(false) })
+    return () => { cancelled = true }
+  }, [open, transitionsV2Enabled, pipelineId])
+
+  // Load stage_entered automations once per drawer open (only when V2 is on
+  // — V1 doesn't use the stage_entered trigger). Fetch all automations for
+  // the pipeline, then filter client-side to triggerType==='stage_entered'.
+  useEffect(() => {
+    if (!open || !transitionsV2Enabled || !pipelineId) { setStageActions(null); return }
+    let cancelled = false
+    fetch(`/api/automations?pipelineId=${encodeURIComponent(pipelineId)}`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rules: Array<{ id: string; name: string; triggerType: string; stageId: string | null; channel: string; isActive: boolean }>) => {
+        if (cancelled) return
+        const actions = rules
+          .filter((r) => r.triggerType === 'stage_entered')
+          .map((r) => ({ id: r.id, name: r.name, stageId: r.stageId, channel: r.channel, isActive: r.isActive }))
+        setStageActions(actions)
+      })
+      .catch(() => { if (!cancelled) setStageActions([]) })
     return () => { cancelled = true }
   }, [open, transitionsV2Enabled, pipelineId])
 
@@ -455,26 +490,42 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-2">
+          {/* Pipeline setup guide — compact 4-step strip that teaches the
+              model recruiters are working in (Stages → Movement → Actions →
+              Status). Drawer is where the confusion happens, so the guide
+              lives here rather than on the pipelines list page. */}
+          <div className="mb-3 rounded-[10px] border border-surface-divider bg-surface-light px-3 py-2">
+            <div className="font-mono text-[9px] uppercase text-grey-50 mb-1.5" style={{ letterSpacing: '0.1em' }}>
+              Pipeline setup
+            </div>
+            <ol className="text-[11px] text-grey-15 leading-snug space-y-0.5">
+              <li><strong>1. Stages</strong> &middot; <span className="text-grey-40">columns candidates move through.</span></li>
+              <li><strong>2. Movement rules</strong> &middot; <span className="text-grey-40">when candidates automatically move.</span></li>
+              <li><strong>3. Actions</strong> &middot; <span className="text-grey-40">messages, links, trainings, notifications after stage entry.</span></li>
+              <li><strong>4. Status rules</strong> &middot; <span className="text-grey-40">stalled / lost / hired tracking (edited from the Statuses drawer).</span></li>
+            </ol>
+          </div>
           {transitionsV2Enabled && (
             <div className="mb-3 px-3 py-2.5 rounded-[10px] bg-brand-50 border border-brand-100 text-brand-900 text-[12px] leading-snug">
-              <div className="font-medium mb-0.5">This pipeline uses V2 rule-driven transitions</div>
+              <div className="font-medium mb-0.5">Rule-based movement is on for this pipeline</div>
               <div className="text-brand-800">
-                V1 triggers are read-only below. Edit movement using the &ldquo;Rule-based transitions (V2)&rdquo; section on each stage.
-                Toggle V2 off from <a href="/dashboard/pipelines" className="underline">Pipelines</a> to return to V1.
+                Candidates move only when a movement rule matches. If no rule matches, they stay put.
+                Turn off from <a href="/dashboard/pipelines" className="underline">Pipelines</a> to return to legacy auto-move.
               </div>
               {v2RulesEmpty && (
                 <div className="mt-2 pt-2 border-t border-brand-100/70 text-amber-900 bg-amber-50/40 -mx-3 -mb-2.5 px-3 py-2 rounded-b-[10px]">
-                  <div className="font-medium">No transition rules yet</div>
+                  <div className="font-medium">No movement rules yet</div>
                   <div className="text-amber-800 mt-0.5">
-                    V2 is enabled but no rules exist. Candidates will <strong>not</strong> automatically move between stages until you add rules below.
+                    Rule-based movement is enabled but this pipeline has no movement rules.
+                    Candidates will <strong>not</strong> automatically move between stages until you add some below.
                     {hasV1Triggers && (
-                      <span> Your existing legacy triggers can be converted later via the backfill script.</span>
+                      <span> Existing legacy rules can be converted later via the backfill script.</span>
                     )}
                   </div>
                 </div>
               )}
               {v2Loading && (
-                <div className="mt-1.5 text-[11px] text-brand-700">Loading V2 rules…</div>
+                <div className="mt-1.5 text-[11px] text-brand-700">Loading movement rules…</div>
               )}
             </div>
           )}
@@ -531,52 +582,53 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
                   </div>
                 </div>
 
-                {/* Legacy V1 triggers — system events that auto-place candidates here.
-                    When V2 is enabled, this section is disabled in-place (visible
-                    for context but not editable) so users don't accidentally edit
-                    two systems at once. */}
-                <div className={`mt-3 pt-3 border-t border-surface-divider ${transitionsV2Enabled ? 'opacity-50 pointer-events-none select-none' : ''}`}>
-                  <div className="font-mono text-[9px] uppercase text-grey-50 mb-2 flex items-center gap-2" style={{ letterSpacing: '0.1em' }}>
-                    {transitionsV2Enabled ? 'Legacy triggers (V1) — disabled' : 'Auto-move when…'}
-                  </div>
-                  {(s.triggers ?? []).length === 0 ? (
-                    <div className="text-[11px] text-grey-50 mb-2">No triggers — only manual moves.</div>
-                  ) : (
-                    <div className="space-y-1 mb-2">
-                      {(s.triggers ?? []).map((t, i) => (
-                        <div key={i} className="flex items-center justify-between gap-2 bg-surface-light rounded-md px-2 py-1">
-                          <span className="text-[11px] text-ink truncate">{describeTrigger(t, catalog)}</span>
-                          <button
-                            onClick={() => removeTrigger(s.id, i)}
-                            className="shrink-0 text-grey-35 hover:text-[color:var(--danger-fg)] text-[12px] w-5 h-5 flex items-center justify-center"
-                            title="Remove trigger"
-                          >×</button>
-                        </div>
-                      ))}
+                {/* ── How candidates reach this stage (V1 mode) ──
+                    Plain rename of the legacy "Auto-move when…" section.
+                    Only shown when rule-based movement is OFF for this
+                    pipeline; under V2, the section below this owns it. */}
+                {!transitionsV2Enabled && (
+                  <div className="mt-3 pt-3 border-t border-surface-divider">
+                    <div className="font-mono text-[9px] uppercase text-grey-50 mb-2" style={{ letterSpacing: '0.1em' }}>
+                      How candidates reach this stage
                     </div>
-                  )}
-                  <button
-                    onClick={() => openPicker(s.id)}
-                    className="text-[11px] text-grey-35 hover:text-ink underline-offset-2 hover:underline"
-                  >
-                    + Add trigger
-                  </button>
-                </div>
+                    {(s.triggers ?? []).length === 0 ? (
+                      <div className="text-[11px] text-grey-50 mb-2">No movement rules — candidates only move here manually.</div>
+                    ) : (
+                      <div className="space-y-1 mb-2">
+                        {(s.triggers ?? []).map((t, i) => (
+                          <div key={i} className="flex items-center justify-between gap-2 bg-surface-light rounded-md px-2 py-1">
+                            <span className="text-[11px] text-ink truncate">{describeTrigger(t, catalog)}</span>
+                            <button
+                              onClick={() => removeTrigger(s.id, i)}
+                              className="shrink-0 text-grey-35 hover:text-[color:var(--danger-fg)] text-[12px] w-5 h-5 flex items-center justify-center"
+                              title="Remove movement rule"
+                            >×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => openPicker(s.id)}
+                      className="text-[11px] text-grey-35 hover:text-ink underline-offset-2 hover:underline"
+                    >
+                      + Add movement rule
+                    </button>
+                  </div>
+                )}
 
-                {/* Rule-based transitions (V2) — replaces V1 when the pipeline
-                    flag is on. Each row is a PipelineTransitionRule whose
-                    toStageId points at this stage. Persisted via separate
-                    /api/pipelines/[id]/transition-rules endpoints (independent
-                    of the stages save below). */}
+                {/* ── How candidates reach this stage (V2 mode) ──
+                    Lists PipelineTransitionRule rows whose toStageId points
+                    at this stage. Persisted via /api/pipelines/[id]/transition-rules
+                    independently of the stages save below. */}
                 {transitionsV2Enabled && (
                   <div className="mt-3 pt-3 border-t border-surface-divider">
                     <div className="font-mono text-[9px] uppercase text-grey-50 mb-2" style={{ letterSpacing: '0.1em' }}>
-                      Rule-based transitions (V2) — move candidates here when…
+                      How candidates reach this stage
                     </div>
                     {(() => {
                       const stageRules = (v2Rules ?? []).filter((r) => r.toStageId === s.id)
                       if (stageRules.length === 0) {
-                        return <div className="text-[11px] text-grey-50 mb-2">No rules — only manual moves into this stage.</div>
+                        return <div className="text-[11px] text-grey-50 mb-2">No movement rules — candidates only move here manually.</div>
                       }
                       return (
                         <div className="space-y-1 mb-2">
@@ -606,7 +658,7 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
                                     onClick={() => deleteV2Rule(r.id)}
                                     disabled={v2Busy === r.id}
                                     className="text-grey-35 hover:text-[color:var(--danger-fg)] w-5 h-5 flex items-center justify-center"
-                                    title="Delete rule"
+                                    title="Delete movement rule"
                                   >×</button>
                                 </div>
                               </div>
@@ -620,7 +672,7 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
                                     onChange={(e) => patchV2Rule(r.id, { allowBackward: e.target.checked })}
                                     className="h-3 w-3"
                                   />
-                                  allow backward
+                                  allow backward movement
                                 </label>
                               </div>
                             </div>
@@ -631,56 +683,64 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
 
                     {/* Add-rule inline form. Wildcard target is the default;
                         the recruiter can opt into a Specific target via the
-                        dropdown (raw UUID input, no pickers in this pass per
-                        scope). */}
+                        dropdown (raw id input — no entity picker in this
+                        pass per UX scope). */}
                     {(() => {
                       const draft = drafts[s.id] ?? emptyDraft
                       const adding = v2Busy === `add:${s.id}`
                       return (
                         <div className="mt-2 p-2 bg-white border border-dashed border-surface-border rounded-md space-y-1.5 text-[11px]">
+                          <div className="text-[10px] text-grey-40 mb-0.5">Move candidate here when:</div>
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <select
-                              value={draft.eventType}
-                              onChange={(e) => setDraft(s.id, { eventType: e.target.value as StageTriggerEvent })}
-                              className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
-                            >
-                              {(Object.keys(EVENT_LABELS) as StageTriggerEvent[]).map((ev) => (
-                                <option key={ev} value={ev}>{EVENT_LABELS[ev]}</option>
-                              ))}
-                            </select>
-                            <select
-                              value={draft.fromStageId}
-                              onChange={(e) => setDraft(s.id, { fromStageId: e.target.value })}
-                              className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
-                              title="From stage (Any = wildcard)"
-                            >
-                              <option value="">From: Any stage</option>
-                              {stages.filter((x) => x.id !== s.id).map((x) => (
-                                <option key={x.id} value={x.id}>From: {x.label}</option>
-                              ))}
-                            </select>
+                            <label className="inline-flex items-center gap-1 text-grey-50">
+                              Event
+                              <select
+                                value={draft.eventType}
+                                onChange={(e) => setDraft(s.id, { eventType: e.target.value as StageTriggerEvent })}
+                                className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                              >
+                                {(Object.keys(EVENT_LABELS) as StageTriggerEvent[]).map((ev) => (
+                                  <option key={ev} value={ev}>{EVENT_LABELS[ev]}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="inline-flex items-center gap-1 text-grey-50">
+                              From
+                              <select
+                                value={draft.fromStageId}
+                                onChange={(e) => setDraft(s.id, { fromStageId: e.target.value })}
+                                className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                              >
+                                <option value="">Any stage</option>
+                                {stages.filter((x) => x.id !== s.id).map((x) => (
+                                  <option key={x.id} value={x.id}>{x.label}</option>
+                                ))}
+                              </select>
+                            </label>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <select
-                              value={draft.targetMode}
-                              onChange={(e) => setDraft(s.id, { targetMode: e.target.value as 'any' | 'specific', targetId: '' })}
-                              className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
-                              title="Target: Any (wildcard) or specific id"
-                            >
-                              <option value="any">Target: Any</option>
-                              <option value="specific">Target: Specific</option>
-                            </select>
+                            <label className="inline-flex items-center gap-1 text-grey-50">
+                              Target
+                              <select
+                                value={draft.targetMode}
+                                onChange={(e) => setDraft(s.id, { targetMode: e.target.value as 'any' | 'specific', targetId: '' })}
+                                className="px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                              >
+                                <option value="any">Any</option>
+                                <option value="specific">Specific</option>
+                              </select>
+                            </label>
                             {draft.targetMode === 'specific' && (
                               <input
                                 type="text"
                                 placeholder="Flow / training / config id"
                                 value={draft.targetId}
                                 onChange={(e) => setDraft(s.id, { targetId: e.target.value })}
-                                className="flex-1 min-w-[160px] px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
+                                className="flex-1 min-w-[140px] px-1.5 py-1 border border-surface-border rounded text-[11px] bg-white"
                               />
                             )}
                             <label className="inline-flex items-center gap-1 text-grey-50">
-                              priority
+                              Priority
                               <input
                                 type="number"
                                 value={draft.priority}
@@ -695,7 +755,7 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
                                 onChange={(e) => setDraft(s.id, { allowBackward: e.target.checked })}
                                 className="h-3 w-3"
                               />
-                              allow backward
+                              Allow backward movement
                             </label>
                             <label className="inline-flex items-center gap-1 text-grey-50">
                               <input
@@ -704,7 +764,7 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
                                 onChange={(e) => setDraft(s.id, { enabled: e.target.checked })}
                                 className="h-3 w-3"
                               />
-                              enabled
+                              Enabled
                             </label>
                           </div>
                           <button
@@ -712,11 +772,88 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
                             disabled={adding || (draft.targetMode === 'specific' && !draft.targetId.trim())}
                             className="text-[11px] text-brand-700 hover:text-brand-900 underline-offset-2 hover:underline disabled:text-grey-40 disabled:no-underline disabled:cursor-not-allowed"
                           >
-                            {adding ? 'Adding…' : '+ Add rule'}
+                            {adding ? 'Adding…' : '+ Add movement rule'}
                           </button>
                         </div>
                       )
                     })()}
+                  </div>
+                )}
+
+                {/* ── What happens after they arrive (V2 only) ──
+                    Surfaces stage_entered AutomationRule rows pinned to
+                    this (pipeline, stage). "+ Add action" deep-links to
+                    /dashboard/automations with prefill params; the
+                    automations page auto-opens the new-rule modal with
+                    triggerType/pipelineId/stageId set. */}
+                {transitionsV2Enabled && (
+                  <div className="mt-3 pt-3 border-t border-surface-divider">
+                    <div className="font-mono text-[9px] uppercase text-grey-50 mb-2" style={{ letterSpacing: '0.1em' }}>
+                      What happens after they arrive
+                    </div>
+                    {stageActions === null ? (
+                      <div className="text-[11px] text-grey-50 mb-2">Loading actions…</div>
+                    ) : (() => {
+                      const actions = stageActions.filter((a) => a.stageId === s.id)
+                      if (actions.length === 0) {
+                        return <div className="text-[11px] text-grey-50 mb-2">No actions yet — nothing happens automatically when candidates land here.</div>
+                      }
+                      return (
+                        <div className="space-y-1 mb-2">
+                          {actions.map((a) => (
+                            <div key={a.id} className="flex items-center justify-between gap-2 bg-surface-light rounded-md px-2 py-1 text-[11px]">
+                              <span className="text-ink truncate">
+                                {a.name}
+                                <span className="text-grey-50"> · {a.channel}</span>
+                                {!a.isActive && <span className="ml-1 text-amber-700">(paused)</span>}
+                              </span>
+                              <a
+                                href={`/dashboard/automations?ruleId=${a.id}`}
+                                className="shrink-0 text-grey-35 hover:text-ink underline-offset-2 hover:underline text-[10px]"
+                              >
+                                Edit
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+                    {pipelineId && (
+                      <a
+                        href={`/dashboard/automations?triggerType=stage_entered&pipelineId=${encodeURIComponent(pipelineId)}&stageId=${encodeURIComponent(s.id)}`}
+                        className="text-[11px] text-brand-700 hover:text-brand-900 underline-offset-2 hover:underline"
+                      >
+                        + Add action
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Legacy auto-move (V2 only, collapsed) ──
+                    Read-only view of V1 stage.triggers[] kept around during
+                    migration so the recruiter can see what the legacy system
+                    would have done. Hidden by default; expanded per-stage
+                    via legacyShown state. */}
+                {transitionsV2Enabled && (s.triggers?.length ?? 0) > 0 && (
+                  <div className="mt-3 pt-3 border-t border-surface-divider">
+                    <button
+                      onClick={() => setLegacyShown((prev) => ({ ...prev, [s.id]: !prev[s.id] }))}
+                      className="text-[10px] text-grey-50 hover:text-grey-15 underline-offset-2 hover:underline"
+                    >
+                      {legacyShown[s.id] ? '− Hide' : '+ Show'} legacy auto-move rules ({s.triggers?.length ?? 0})
+                    </button>
+                    {legacyShown[s.id] && (
+                      <div className="mt-2 space-y-1 opacity-70">
+                        {(s.triggers ?? []).map((t, i) => (
+                          <div key={i} className="bg-surface-light rounded-md px-2 py-1 text-[11px] text-ink">
+                            {describeTrigger(t, catalog)}
+                          </div>
+                        ))}
+                        <div className="text-[10px] text-grey-50 italic mt-1">
+                          Read-only while rule-based movement is on. Use the movement rules above to control how candidates reach this stage.
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -743,7 +880,7 @@ export function StageSettingsDrawer({ open, onClose, pipelineId, pipelineName, t
           return (
             <div className="absolute inset-0 bg-black/40 flex items-center justify-center p-5">
               <div className="bg-white rounded-[12px] shadow-xl w-full max-w-[400px] p-5">
-                <h3 className="font-semibold text-[15px] text-ink mb-3">Add trigger</h3>
+                <h3 className="font-semibold text-[15px] text-ink mb-3">Add movement rule</h3>
                 <label className="block text-[11px] font-mono uppercase text-grey-50 mb-1.5" style={{ letterSpacing: '0.08em' }}>Event</label>
                 <select
                   value={pickerEvent}

@@ -14,8 +14,6 @@ interface MeetV2 {
   transcriptionCapabilityReason: string | null
   transcriptionCapabilityMessage: string
   transcriptionCapabilityCheckedAt: string | null
-  attendanceExtensionEnabled: boolean
-  sheetsScopeGranted?: boolean
 }
 
 interface Status {
@@ -55,7 +53,19 @@ export function GoogleIntegrationCard() {
         window.history.replaceState({}, '', window.location.pathname + '?tab=integrations')
       }
     }
-    fetch('/api/integrations/google').then(r => r.json()).then(d => { setStatus(d); setLoading(false) })
+    fetch('/api/integrations/google')
+      .then(async (r) => {
+        if (!r.ok) {
+          const txt = await r.text().catch(() => '')
+          throw new Error(`HTTP ${r.status} ${r.statusText}${txt ? ` — ${txt.slice(0, 200)}` : ''}`)
+        }
+        return r.json()
+      })
+      .then((d) => { setStatus(d); setLoading(false) })
+      .catch((err) => {
+        setLoading(false)
+        setBanner({ type: 'error', text: `Couldn't load Google integration status: ${err instanceof Error ? err.message : String(err)}` })
+      })
   }, [])
 
   const disconnect = async () => {
@@ -377,17 +387,6 @@ export function GoogleIntegrationCard() {
         </div>
       )}
 
-      {status?.connected && meetV2 && !meetV2.hostedDomain && (
-        <AttendanceFallbackPanel
-          meetV2={meetV2}
-          onChange={async () => {
-            const fresh = await fetch('/api/integrations/google').then(r => r.json())
-            setStatus(fresh)
-          }}
-          onBanner={setBanner}
-        />
-      )}
-
       <div className="mt-5 flex gap-3">
         {status?.connected ? (
           <>
@@ -412,134 +411,5 @@ export function GoogleIntegrationCard() {
         )}
       </div>
     </div>
-  )
-}
-
-/**
- * Attendance-fallback panel for personal-Gmail / Workspace Individual tenants.
- * Renders one of four states based on the workspace's
- * `attendanceExtensionEnabled` flag and whether the spreadsheets.readonly scope
- * has been granted. Always closes with the "manual upload" affordance, since
- * that route is available regardless of extension state.
- */
-function AttendanceFallbackPanel({
-  meetV2,
-  onChange,
-  onBanner,
-}: {
-  meetV2: MeetV2
-  onChange: () => Promise<void> | void
-  onBanner: (b: { type: 'success' | 'error'; text: string }) => void
-}) {
-  const [busy, setBusy] = useState(false)
-  const enabled = meetV2.attendanceExtensionEnabled
-  const sheetsScopeGranted = !!meetV2.sheetsScopeGranted
-
-  const toggle = async (next: boolean) => {
-    setBusy(true)
-    try {
-      const r = await fetch('/api/integrations/google/attendance-extension', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: next }),
-      })
-      const d = await r.json()
-      if (!r.ok) {
-        onBanner({ type: 'error', text: d.error || 'Failed to update extension fallback' })
-      } else if (d.needsReconnect) {
-        onBanner({
-          type: 'success',
-          text: 'Attendance-extension fallback enabled. Reconnect Google to grant Sheets read access so we can parse exported attendance sheets.',
-        })
-      } else {
-        onBanner({ type: 'success', text: next ? 'Attendance-extension fallback enabled.' : 'Attendance-extension fallback disabled.' })
-      }
-      await onChange()
-    } catch (e) {
-      onBanner({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update extension fallback' })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <details className="mt-4 rounded-lg border border-surface-border bg-surface-weak p-4 text-sm">
-      <summary className="cursor-pointer select-none">
-        <span className="font-medium text-grey-15">Other attendance options</span>
-        <span className="ml-2 text-xs text-grey-40">
-          Drive scan for third-party exports · Manual upload · Workspace Business+ Meet API
-        </span>
-      </summary>
-
-      <p className="mt-3 text-xs text-grey-40">
-        These are alternatives to the live HireFunnel Meet Tracker extension above. Use them if you can&apos;t
-        install the Chrome extension or if you want a backup signal source.
-      </p>
-
-      <div className="mt-3 rounded-md bg-white border border-surface-border p-3">
-        <label className="flex items-start justify-between gap-3 cursor-pointer">
-          <span>
-            <span className="font-medium text-grey-15">Third-party Drive export fallback</span>
-            <span className="block text-xs text-grey-40 mt-0.5">
-              Look in your connected Google Drive for attendance sheets exported by third-party extensions like
-              &ldquo;Google Meet Attendance List&rdquo; and parse them to flag attendance + no-shows. Off by
-              default — only useful if you already use one of those extensions.
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={busy}
-            onChange={(e) => toggle(e.target.checked)}
-            className="h-4 w-4 mt-0.5 shrink-0"
-          />
-        </label>
-
-        {enabled && !sheetsScopeGranted && (
-          <div className="mt-3 rounded-md bg-amber-50 border border-amber-200 p-3 text-xs">
-            <p className="text-amber-900 font-medium">Reconnect Google to grant Sheets read access</p>
-            <p className="text-amber-800 mt-1">
-              The fallback is enabled but we don&apos;t yet have permission to read Google Sheets. Reconnecting will
-              add the <span className="font-mono">spreadsheets.readonly</span> scope; nothing else you&apos;ve set
-              up will change.
-            </p>
-            <a
-              href="/api/integrations/google/connect"
-              className="inline-block mt-2 underline hover:no-underline text-amber-900"
-            >
-              Reconnect Google →
-            </a>
-          </div>
-        )}
-
-        {enabled && sheetsScopeGranted && (
-          <p className="mt-3 text-xs text-grey-40">
-            We scan your Drive around each meeting&apos;s scheduled window for attendance sheets. If the third-party
-            extension exports to a different Google account or to local Downloads, that scan won&apos;t see
-            anything — fall back to manual upload below in that case.
-          </p>
-        )}
-      </div>
-
-      <div className="mt-3 rounded-md bg-white border border-surface-border p-3 text-xs text-grey-40">
-        <p className="font-medium text-grey-15">Manual attendance upload</p>
-        <p className="mt-1">
-          Open a candidate&apos;s detail page → past interview → &ldquo;Upload attendance file&rdquo; to import a
-          CSV or Google Sheets-exported file. Always available.
-        </p>
-      </div>
-
-      <p className="mt-3 text-xs text-grey-40">
-        Workspace Business+ unlocks Google Meet API attendance natively and removes the need for any of these.{' '}
-        <a
-          href="https://workspace.google.com/pricing.html"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline hover:no-underline"
-        >
-          See Workspace pricing →
-        </a>
-      </p>
-    </details>
   )
 }

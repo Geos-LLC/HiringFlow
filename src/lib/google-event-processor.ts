@@ -424,7 +424,6 @@ async function reconcileExternalMeetReschedule(
     driveRecordingFileId: existing.driveRecordingFileId,
     driveTranscriptFileId: existing.driveTranscriptFileId,
     driveGeminiNotesFileId: existing.driveGeminiNotesFileId,
-    attendanceSheetFileId: existing.attendanceSheetFileId,
     meetSpaceName: existing.meetSpaceName,
   }).catch((err) => {
     console.warn('[ReconcileReschedule] archivePrimaryArtifacts failed (non-fatal):', (err as Error).message)
@@ -435,7 +434,7 @@ async function reconcileExternalMeetReschedule(
   // 20-min lobby timer in the dead space (see project_recall_reschedule_orphan).
   // We delete the old bot best-effort and schedule a fresh one; on any
   // failure we fall the row back to the 'meet' attendance source so the
-  // chrome-ext / Meet-native paths still produce a recording.
+  // Meet-native auto-record path still produces a recording.
   let nextRecallBotId: string | null = null
   let nextAttendanceSource: 'meet' | 'recall' = 'meet'
   let nextRecordingProvider: 'google_meet' | 'recall' | null = recordingTurnedOn ? 'google_meet' : null
@@ -488,7 +487,6 @@ async function reconcileExternalMeetReschedule(
       driveRecordingFileId: null,
       driveTranscriptFileId: null,
       driveGeminiNotesFileId: null,
-      attendanceSheetFileId: null,
       recallRecordingId: null,
       meetApiSyncedAt: null,
       actualStart: null,

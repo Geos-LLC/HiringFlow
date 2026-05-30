@@ -182,6 +182,18 @@ export function StatusSettingsDrawer({ open, onClose, initialCustomStatuses, onS
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-7">
+          {/* Disambiguation note — recruiters routinely confuse status (Active /
+              Stalled / Hired / Lost / Nurture) with pipeline stage (kanban
+              column). Surfacing the difference up-front prevents people from
+              hunting for movement settings here. */}
+          <div className="rounded-[10px] bg-amber-50 border border-amber-100 px-3 py-2.5 text-[12px] leading-snug text-amber-900">
+            <div className="font-medium">Status rules don&apos;t move candidates between stages.</div>
+            <div className="text-amber-800 mt-0.5">
+              They only mark the candidate&apos;s lifecycle state — Active, Stalled, Nurture, Hired, or Lost —
+              based on inactivity or a recruiter action. For stage movement (kanban columns) use the
+              <strong> Stages</strong> drawer.
+            </div>
+          </div>
           {/* Section A — Stalled detection conditions */}
           <section>
             <div className="text-[13px] font-semibold text-ink mb-1">Stalled detection rules</div>

@@ -4,7 +4,7 @@
  * Receives Recall.ai bot lifecycle events. Verifies Svix signature against
  * RECALL_WEBHOOK_SECRET, resolves the InterviewMeeting via the bot id, and
  * dispatches into src/lib/recall/sync.ts which writes the same lifecycle
- * SchedulingEvents the Meet + chrome-extension paths emit.
+ * SchedulingEvents the Workspace Events Meet API path emits.
  *
  * Auth: Svix HMAC-SHA256 signature in `svix-signature` header (see
  * src/lib/recall/webhook-verify.ts). 401 on missing/bad signature; 503 when

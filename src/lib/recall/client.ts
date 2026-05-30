@@ -3,19 +3,19 @@
  *
  * Recall.ai sends a recording bot into a Google Meet call as a regular
  * participant. The bot receives audio/video + participant signaling via Meet's
- * normal WebRTC channels — no chrome extension required, no Meet
- * auto-record dependency. We use it to replace both attendance tracking
- * (Workspace Events + chrome ext scraping) and meeting recording (Meet
- * native auto-record, which silently stops when the host is alone — see
- * project_meet_premature_noshow).
+ * normal WebRTC channels — no Meet auto-record dependency. We use it for
+ * both attendance tracking (replacing the Workspace Events Meet API on
+ * personal-Gmail tenants where it doesn't fire) and meeting recording
+ * (replacing Meet native auto-record, which silently stops when the host
+ * is alone).
  *
  * Auth: `Authorization: Token <RECALL_API_KEY>` header. API key is per
  * region; the region is fixed at the env level since each region has its
  * own base URL. Default us-east-1.
  *
  * All functions throw RecallApiError on non-2xx, so callers can treat Recall
- * failures uniformly (typically: log + fall back to legacy attendance path
- * for that meeting, never fail the booking).
+ * failures uniformly (typically: log + fall back to the Workspace Events /
+ * sync-on-read path for that meeting, never fail the booking).
  */
 
 const REGION_BASE_URLS: Record<string, string> = {

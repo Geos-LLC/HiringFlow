@@ -220,16 +220,6 @@ function collectText(rule: WarnableRule): string {
   return parts.join('\n').toLowerCase()
 }
 
-// Triggers that are emitted by the Meet Tracker extension's attendance
-// path (or the equivalent Workspace Events / sync-on-read fallback).
-// Mentioning the extension only makes sense for these — for lifecycle
-// triggers like flow_completed/training_completed the extension isn't
-// involved at all.
-const MEET_TRACKER_TRIGGERS = new Set<WarnableTriggerType>([
-  'meeting_scheduled', 'meeting_rescheduled', 'before_meeting',
-  'meeting_started', 'meeting_ended', 'meeting_no_show',
-])
-
 export function detectAutomationWarnings(rule: WarnableRule): string[] {
   const text = collectText(rule)
   if (!text.trim()) return []
@@ -246,11 +236,8 @@ export function detectAutomationWarnings(rule: WarnableRule): string[] {
     if (features && p.requiresFeature && !features[p.requiresFeature]) continue
     if (seen.has(p.topic)) continue
     seen.add(p.topic)
-    const hint = MEET_TRACKER_TRIGGERS.has(p.suggestedTrigger)
-      ? `Use the "${p.suggestedTrigger}" trigger so the Meet Tracker fires this at the right moment.`
-      : `Use the "${p.suggestedTrigger}" trigger so this fires at the right point in the candidate's journey.`
     out.push(
-      `This message mentions ${p.topic}, but the trigger is "${rule.triggerType}". ${hint}`,
+      `This message mentions ${p.topic}, but the trigger is "${rule.triggerType}". Use the "${p.suggestedTrigger}" trigger so this fires at the right point in the candidate's journey.`,
     )
   }
   return out
