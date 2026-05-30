@@ -80,9 +80,11 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
 // Template variable replacement. Tolerates whitespace inside the braces
 // (`{{ name }}` is treated the same as `{{name}}`) — recruiters paste
 // templates from docs/emails where the formatting tool sometimes adds
-// invisible spaces. Unknown keys render as empty strings.
+// invisible spaces. Sub-token form `{{name:id}}` (e.g.
+// `{{schedule_link:<configId>}}`) is also accepted — id chars allow
+// hyphens for UUIDs. Unknown keys render as empty strings.
 export function renderTemplate(template: string, variables: Record<string, string>): string {
-  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, key: string) => {
+  return template.replace(/\{\{\s*([A-Za-z_][\w:.-]*)\s*\}\}/g, (_match, key: string) => {
     return variables[key] ?? ''
   })
 }

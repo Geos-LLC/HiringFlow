@@ -3,6 +3,7 @@ import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { sendEmail, renderTemplate } from '@/lib/email'
 import { plainTextToHtml, looksLikeHtml } from '@/lib/markdown'
+import { resolveDynamicLinks } from '@/lib/template-link-resolver'
 
 // Bulk email to a manually-picked set of candidates from the candidates
 // page. Distinct from the automation engine — this is a one-shot recruiter
@@ -218,6 +219,25 @@ export async function POST(request: NextRequest) {
       meeting_clock: mClock,
       meeting_link: mLink,
     }
+    // Resolve sub-token links the recruiter may have wired with
+    // [[button|…|{{schedule_link:id}}]] etc. before substituting. The
+    // composite scan is cheap; resolution only fires when those tokens
+    // are actually present in the body.
+    const composite = `${subject}\n${bodyHtmlRendered}\n${bodyPlain}`
+    if (/\{\{\s*(schedule_link|training_link):/.test(composite)) {
+      try {
+        const dynamic = await resolveDynamicLinks({
+          text: composite,
+          sessionId: s.id,
+          workspaceId: ws.workspaceId,
+          sourceRefId: `bulk_email:${ws.userId}`,
+        })
+        Object.assign(variables, dynamic)
+      } catch (err) {
+        console.error('[bulk-email] resolveDynamicLinks failed:', err)
+      }
+    }
+
     const renderedSubject = renderTemplate(subject, variables)
     const renderedHtml = renderTemplate(bodyHtmlRendered, variables)
     const renderedText = renderTemplate(bodyPlain, variables)

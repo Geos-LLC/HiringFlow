@@ -10,10 +10,25 @@
 //
 // Pure string transforms (no DOM); safe to import from server routes.
 
+// Inline style for button-styled anchor tags. Kept consistent with the
+// recruiter's brand (orange like the dashboard primary). Email-safe:
+// inline styles only, no external CSS, padding/border-radius supported
+// across modern clients.
+const BUTTON_STYLE = 'display:inline-block;padding:12px 28px;background:#FF9500;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;font-size:15px;margin:8px 0'
+
 export function applyInlineMarkdown(text: string): string {
+  // 0. Button syntax: [[button|LABEL|URL]] → styled <a>. Inserted by the
+  //    template editor's "Button" tool. Done before the markdown-link
+  //    pass so its `[` characters don't get re-parsed as a link. URL may
+  //    be a literal http(s) URL or a merge token like {{schedule_link:id}}
+  //    — renderTemplate substitutes at send time.
+  let out = text.replace(/\[\[button\|([^|\]\n]+)\|([^\]\n]+)\]\]/g, (_m, label, url) =>
+    `<a href="${url}" style="${BUTTON_STYLE}" data-button="1">${label}</a>`
+  )
+
   // 1. Markdown links [text](url) → <a href="url">text</a>. Done first so
   //    the URL inside isn't re-linked by the bare-URL pass below.
-  let out = text.replace(/\[([^\]\n]+)\]\(([^)\n\s]+)\)/g, (_m, t, u) => `<a href="${u}">${t}</a>`)
+  out = out.replace(/\[([^\]\n]+)\]\(([^)\n\s]+)\)/g, (_m, t, u) => `<a href="${u}">${t}</a>`)
 
   // 2. Bare URLs and {{*_link}} tokens — only outside existing <a>...</a>
   //    blocks so we don't double-wrap. Split keeps the delimiters.
@@ -73,6 +88,20 @@ export function plainTextToHtml(text: string): string {
 
 export function htmlToPlainText(html: string): string {
   return html
+    // Button anchors (data-button="1") round-trip back to [[button|...|...]]
+    // so the editor textarea shows the same syntax the toolbar inserted.
+    // Run before the generic <a> handler so they don't get rewritten as
+    // plain markdown links.
+    .replace(/<a\s+[^>]*data-button=["']1["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href, text) => {
+      const clean = String(text).replace(/<[^>]+>/g, '').trim()
+      return `[[button|${clean}|${href}]]`
+    })
+    // Same as above but for <a href=... data-button=...> ordering — browsers
+    // and HTML-escape passes don't guarantee attribute order.
+    .replace(/<a\s+[^>]*href=["']([^"']+)["'][^>]*data-button=["']1["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href, text) => {
+      const clean = String(text).replace(/<[^>]+>/g, '').trim()
+      return `[[button|${clean}|${href}]]`
+    })
     // <a href="X">text</a> → [text](X) so the link round-trips. When the
     // visible text is the same as the URL (auto-linked), collapse to bare URL.
     .replace(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href, text) => {

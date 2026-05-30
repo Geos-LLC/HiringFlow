@@ -1569,6 +1569,34 @@ export async function executeStep(
     ad_name: session.ad?.name || '',
   }
 
+  // Resolve template-author-supplied {{schedule_link:<id>}} /
+  // {{training_link:<id>}} sub-tokens, scanning across the subject + body
+  // strings the recruiter authored. These are the ids the template
+  // editor's "Insert button" tool wrote in — independent of whatever
+  // nextStepType the rule's step happens to have (those still drive the
+  // bare {{schedule_link}} / {{training_link}} above).
+  try {
+    const { resolveDynamicLinks } = await import('./template-link-resolver')
+    const composite = [
+      step.emailTemplate?.subject ?? '',
+      step.emailTemplate?.bodyHtml ?? '',
+      step.emailTemplate?.bodyText ?? '',
+      step.smsTemplate?.body ?? '',
+      step.smsBody ?? '',
+    ].join('\n')
+    if (/\{\{\s*(schedule_link|training_link):/.test(composite)) {
+      const dynamic = await resolveDynamicLinks({
+        text: composite,
+        sessionId,
+        workspaceId: session.workspaceId,
+        sourceRefId: rule.id,
+      })
+      Object.assign(variables, dynamic)
+    }
+  } catch (err) {
+    console.error('[Automation] resolveDynamicLinks failed:', err)
+  }
+
   // ─── Send on the requested channel ─────────────────────────────────
   let result: { success: boolean; error?: string; messageId?: string }
   let provider: 'sendgrid' | 'sigcore' = 'sendgrid'

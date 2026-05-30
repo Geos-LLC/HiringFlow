@@ -38,14 +38,23 @@ const SOURCES = ['general', 'indeed', 'facebook', 'craigslist', 'google', 'linke
 // seeded defaults (e.g. orange button-styled `<a>`) flattens to a plain link
 // on edit — recruiters can re-pick the default if they want the button back.
 
+// Workspace targets the "Insert button" picker offers. Empty arrays are
+// fine — the picker just hides the relevant destination type.
+interface LinkTargets {
+  schedulingConfigs: { id: string; name: string }[]
+  trainings: { id: string; title: string }[]
+}
+
 // Small markdown toolbar bound to a textarea ref. Buttons wrap the current
 // selection (or insert a placeholder at the caret) with markdown markers and
 // restore focus + selection so typing can continue.
-function MarkdownToolbar({ textareaRef, value, onChange }: {
+function MarkdownToolbar({ textareaRef, value, onChange, linkTargets }: {
   textareaRef: React.RefObject<HTMLTextAreaElement>
   value: string
   onChange: (next: string) => void
+  linkTargets?: LinkTargets
 }) {
+  const [buttonPickerOpen, setButtonPickerOpen] = useState(false)
   const wrap = (before: string, after: string, placeholder: string) => {
     const ta = textareaRef.current
     if (!ta) return
@@ -99,15 +108,196 @@ function MarkdownToolbar({ textareaRef, value, onChange }: {
     })
   }
 
+  // Insert a button marker at the caret. Markup is [[button|LABEL|URL]];
+  // the markdown converter emits a styled <a data-button="1"> for it.
+  const insertButtonMarker = (label: string, url: string) => {
+    const ta = textareaRef.current
+    if (!ta) return
+    const insert = `[[button|${label}|${url}]]`
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    const next = value.slice(0, start) + insert + value.slice(end)
+    onChange(next)
+    requestAnimationFrame(() => {
+      ta.focus()
+      const cursor = start + insert.length
+      ta.setSelectionRange(cursor, cursor)
+    })
+  }
+
   const btn = 'px-2 py-1 text-xs text-grey-15 hover:bg-white rounded transition-colors'
   return (
-    <div className="flex items-center gap-0.5 px-2 py-1.5 border border-surface-border border-b-0 rounded-t-[8px] bg-surface">
-      <button type="button" onClick={() => wrap('**', '**', 'bold text')} title="Bold (**text**)" className={`${btn} font-bold`}>B</button>
-      <button type="button" onClick={() => wrap('*', '*', 'italic text')} title="Italic (*text*)" className={`${btn} italic`}>I</button>
-      <button type="button" onClick={insertLink} title="Insert link [text](url)" className={btn}>Link</button>
-      <span className="w-px h-4 bg-surface-border mx-1" aria-hidden />
-      <button type="button" onClick={() => prefixLines(() => '- ')} title="Bulleted list" className={btn}>• List</button>
-      <button type="button" onClick={() => prefixLines((i) => `${i + 1}. `)} title="Numbered list" className={btn}>1. List</button>
+    <div className="relative">
+      <div className="flex items-center gap-0.5 px-2 py-1.5 border border-surface-border border-b-0 rounded-t-[8px] bg-surface">
+        <button type="button" onClick={() => wrap('**', '**', 'bold text')} title="Bold (**text**)" className={`${btn} font-bold`}>B</button>
+        <button type="button" onClick={() => wrap('*', '*', 'italic text')} title="Italic (*text*)" className={`${btn} italic`}>I</button>
+        <button type="button" onClick={insertLink} title="Insert link [text](url)" className={btn}>Link</button>
+        <button
+          type="button"
+          onClick={() => setButtonPickerOpen(true)}
+          title="Insert a styled button linking to a scheduling page, training, or any URL"
+          className={`${btn} text-[color:var(--brand-primary)] font-semibold`}
+        >
+          + Button
+        </button>
+        <span className="w-px h-4 bg-surface-border mx-1" aria-hidden />
+        <button type="button" onClick={() => prefixLines(() => '- ')} title="Bulleted list" className={btn}>• List</button>
+        <button type="button" onClick={() => prefixLines((i) => `${i + 1}. `)} title="Numbered list" className={btn}>1. List</button>
+      </div>
+      {buttonPickerOpen && (
+        <ButtonInsertPicker
+          linkTargets={linkTargets ?? { schedulingConfigs: [], trainings: [] }}
+          onClose={() => setButtonPickerOpen(false)}
+          onInsert={(label, url) => { insertButtonMarker(label, url); setButtonPickerOpen(false) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Inserted into the editor by the toolbar's "+ Button" tool. Lets the
+// recruiter pick a destination (a workspace scheduling config, training,
+// or any external URL) and a label, then writes a [[button|...|...]]
+// marker at the caret. The marker becomes a styled <a> at save time
+// (plainTextToHtml) and the token portion gets resolved per-candidate at
+// send time (resolveDynamicLinks).
+function ButtonInsertPicker({ linkTargets, onClose, onInsert }: {
+  linkTargets: LinkTargets
+  onClose: () => void
+  onInsert: (label: string, url: string) => void
+}) {
+  const [label, setLabel] = useState('Click here')
+  const [destType, setDestType] = useState<'scheduling' | 'training' | 'url'>('scheduling')
+  const [targetId, setTargetId] = useState('')
+  const [externalUrl, setExternalUrl] = useState('')
+
+  // Auto-pick the first available target when switching type so the
+  // primary button isn't disabled on a clean switch.
+  useEffect(() => {
+    if (destType === 'scheduling') setTargetId(linkTargets.schedulingConfigs[0]?.id ?? '')
+    else if (destType === 'training') setTargetId(linkTargets.trainings[0]?.id ?? '')
+    else setTargetId('')
+  }, [destType, linkTargets])
+
+  const resolvedUrl = destType === 'scheduling' && targetId
+    ? `{{schedule_link:${targetId}}}`
+    : destType === 'training' && targetId
+      ? `{{training_link:${targetId}}}`
+      : destType === 'url'
+        ? externalUrl.trim()
+        : ''
+
+  const canInsert = !!label.trim() && !!resolvedUrl
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="w-full max-w-[420px] rounded-[12px] bg-white border border-surface-border shadow-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-[15px] font-semibold text-ink">Insert button</h3>
+          <button type="button" onClick={onClose} className="w-6 h-6 flex items-center justify-center rounded text-grey-50 hover:text-ink hover:bg-surface-light">×</button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[12px] font-medium text-ink mb-1">Button label</label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. Book your shadowing session"
+              autoFocus
+              className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[12px] font-medium text-ink mb-1.5">Links to</label>
+            <div className="flex gap-1.5">
+              {(['scheduling', 'training', 'url'] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setDestType(t)}
+                  className={`flex-1 px-3 py-1.5 rounded-[8px] text-[12px] font-medium border transition-colors ${
+                    destType === t
+                      ? 'bg-ink text-white border-ink'
+                      : 'bg-white text-grey-35 border-surface-border hover:border-grey-50 hover:text-ink'
+                  }`}
+                >
+                  {t === 'scheduling' ? 'Calendar' : t === 'training' ? 'Training' : 'URL'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {destType === 'scheduling' && (
+            <div>
+              <label className="block text-[12px] font-medium text-ink mb-1">Scheduling config</label>
+              {linkTargets.schedulingConfigs.length === 0 ? (
+                <p className="text-[12px] text-grey-40">No scheduling configs in this workspace yet. Create one in Settings → Scheduling.</p>
+              ) : (
+                <select
+                  value={targetId}
+                  onChange={(e) => setTargetId(e.target.value)}
+                  className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                >
+                  {linkTargets.schedulingConfigs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              )}
+            </div>
+          )}
+
+          {destType === 'training' && (
+            <div>
+              <label className="block text-[12px] font-medium text-ink mb-1">Training</label>
+              {linkTargets.trainings.length === 0 ? (
+                <p className="text-[12px] text-grey-40">No trainings in this workspace yet. Create one under Trainings.</p>
+              ) : (
+                <select
+                  value={targetId}
+                  onChange={(e) => setTargetId(e.target.value)}
+                  className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                >
+                  {linkTargets.trainings.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+                </select>
+              )}
+              <p className="mt-1 text-[11px] text-grey-40">Each candidate gets a unique, single-use access token in their button URL.</p>
+            </div>
+          )}
+
+          {destType === 'url' && (
+            <div>
+              <label className="block text-[12px] font-medium text-ink mb-1">URL</label>
+              <input
+                type="url"
+                value={externalUrl}
+                onChange={(e) => setExternalUrl(e.target.value)}
+                placeholder="https://…"
+                className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              />
+              <p className="mt-1 text-[11px] text-grey-40">Static URL — same for every recipient.</p>
+            </div>
+          )}
+
+          {/* Preview of what gets inserted into the textarea. */}
+          {canInsert && (
+            <div className="mt-2 px-3 py-2 rounded-[8px] bg-surface-light border border-surface-divider">
+              <div className="font-mono text-[10px] uppercase text-grey-40 mb-1" style={{ letterSpacing: '0.08em' }}>Inserts</div>
+              <code className="text-[11px] text-grey-15 break-all">{`[[button|${label}|${resolvedUrl}]]`}</code>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <Button type="button" variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
+          <Button type="button" size="sm" disabled={!canInsert} onClick={() => onInsert(label.trim(), resolvedUrl)}>
+            Insert button
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -162,12 +352,25 @@ export default function ContentPage() {
   const [previewAd, setPreviewAd] = useState<AdTemplate | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
+  // Workspace link targets for the "Insert button" tool — populated once,
+  // reused across every email template open/edit. Empty arrays are fine;
+  // the button picker just skips the relevant destination type.
+  const [linkTargets, setLinkTargets] = useState<LinkTargets>({ schedulingConfigs: [], trainings: [] })
+
   useEffect(() => {
     Promise.all([
       fetch('/api/email-templates').then(r => r.json()),
       fetch('/api/sms-templates').then(r => r.ok ? r.json() : []).catch(() => []),
       fetch('/api/ad-templates').then(r => r.json()).catch(() => []),
-    ]).then(([e, s, a]) => { setEmailTemplates(e); setSmsTemplates(s); setAdTemplates(a); setLoading(false) })
+      fetch('/api/scheduling').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/trainings').then(r => r.ok ? r.json() : []).catch(() => []),
+    ]).then(([e, s, a, sc, tr]) => {
+      setEmailTemplates(e); setSmsTemplates(s); setAdTemplates(a); setLoading(false)
+      setLinkTargets({
+        schedulingConfigs: Array.isArray(sc) ? sc.map((c: { id: string; name: string }) => ({ id: c.id, name: c.name })) : [],
+        trainings: Array.isArray(tr) ? tr.map((t: { id: string; title: string }) => ({ id: t.id, title: t.title })) : [],
+      })
+    })
   }, [])
 
   const refreshEmails = async () => { const r = await fetch('/api/email-templates'); if (r.ok) setEmailTemplates(await r.json()) }
@@ -498,7 +701,7 @@ export default function ContentPage() {
               <div><label className="block text-sm font-medium text-grey-20 mb-1.5">Subject</label><input type="text" value={emailSubject} onChange={e => setEmailSubject(e.target.value)} placeholder="e.g. Your training is ready!" className="w-full px-4 py-3 border border-surface-border rounded-[8px] text-grey-15 focus:outline-none focus:ring-2 focus:ring-brand-500" /></div>
               <div>
                 <label className="block text-sm font-medium text-grey-20 mb-1.5">Body</label>
-                <MarkdownToolbar textareaRef={emailBodyRef} value={emailBody} onChange={setEmailBody} />
+                <MarkdownToolbar textareaRef={emailBodyRef} value={emailBody} onChange={setEmailBody} linkTargets={linkTargets} />
                 <textarea
                   ref={emailBodyRef}
                   value={emailBody}
