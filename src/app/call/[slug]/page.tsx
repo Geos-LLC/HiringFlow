@@ -443,7 +443,18 @@ export default function CandidateCallPage() {
                             )}
                           </div>
 
-                          {/* 2. CALL SUMMARY */}
+                          {/* 2. RECORDING */}
+                          <div className="bg-white rounded-[12px] border border-[#F1F1F3] p-5">
+                            <h3 className="text-sm font-semibold text-[#262626] mb-3">Recording</h3>
+                            <audio
+                              controls
+                              preload="metadata"
+                              src={`/api/public/ai-calls/${agentId}/audio?id=${selectedConv.conversation_id}&name=${encodeURIComponent(candidateName)}`}
+                              className="w-full"
+                            />
+                          </div>
+
+                          {/* 3. CALL SUMMARY */}
                           {selectedConv.analysis?.transcript_summary && (
                             <div className="bg-white rounded-[12px] border border-[#F1F1F3] p-5">
                               <h3 className="text-sm font-semibold text-[#262626] mb-2">Call Summary</h3>

@@ -603,7 +603,18 @@ export default function AICallsPage() {
                             )}
                           </div>
 
-                          {/* 2. CALL SUMMARY */}
+                          {/* 2. RECORDING */}
+                          <div className="bg-white rounded-[12px] border border-surface-border p-5">
+                            <h3 className="text-sm font-semibold text-grey-15 mb-3">Recording</h3>
+                            <audio
+                              controls
+                              preload="metadata"
+                              src={`/api/ai-calls/conversations/${conv.conversation_id}/audio`}
+                              className="w-full"
+                            />
+                          </div>
+
+                          {/* 3. CALL SUMMARY */}
                           {conv.analysis?.transcript_summary && (
                             <div className="bg-white rounded-[12px] border border-surface-border p-5">
                               <h3 className="text-sm font-semibold text-grey-15 mb-2">Call Summary</h3>
