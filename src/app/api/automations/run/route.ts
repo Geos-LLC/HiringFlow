@@ -45,6 +45,13 @@ async function handler(request: NextRequest) {
           // StageEntry as the enqueue-time decision. Missing/null in the
           // payload for raw-event triggers; required for stage_entered.
           stageEntryId: typeof payload.stageEntryId === 'string' ? payload.stageEntryId : null,
+          // Rehydrate the pre-applyStageTrigger pipelineStatus snapshot.
+          // Without this, a rule pinned to the candidate's stage-at-trigger-
+          // time fails the guard's delayed-callback stage check whenever the
+          // trigger event auto-advanced them off that stage.
+          triggerStageSnapshot: typeof payload.triggerStageSnapshot === 'string'
+            ? payload.triggerStageSnapshot
+            : null,
         },
       })
       trace.push('executeStep returned')

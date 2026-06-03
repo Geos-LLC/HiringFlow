@@ -84,6 +84,25 @@ export type GuardCtx = {
    * tuple cannot collide with the previous entry's row).
    */
   stageEntryId?: string | null
+  /**
+   * Snapshot of `Session.pipelineStatus` taken in the `fire*` helper BEFORE
+   * `applyStageTrigger` runs — i.e. the candidate's stage at the moment the
+   * trigger event fired, prior to any auto-advance the same event causes.
+   *
+   * Used by the delayed-callback stage check: a rule pinned to the
+   * pre-advance stage is still considered a match even if the trigger event
+   * itself moved the candidate to a later stage. Without this, a rule like
+   * `triggerType=training_completed, stageId=stage_5, delay=2m` is
+   * unsendable on any pipeline where stage_5 auto-advances on
+   * `training_completed` — the candidate is no longer at stage_5 by the
+   * time the 2m delay elapses (Stephan Harrison case, 2026-06-03).
+   *
+   * Threaded end-to-end: fire* → dispatchRulesForTrigger → dispatchRule →
+   * dispatchStep → queueStepAtDelay → QStash payload body → /api/automations/run
+   * callback → executeStep → guard. Null/undefined when no snapshot was
+   * captured (legacy callers, manual reruns, the test endpoint).
+   */
+  triggerStageSnapshot?: string | null
 }
 
 export type GuardResult =
@@ -411,15 +430,28 @@ export async function canExecuteAutomationStep(ctx: GuardCtx): Promise<GuardResu
   //    fire. Without this carve-out, rules wired to a stage that the
   //    candidate's pipeline never auto-advances them into (e.g. Dispatcher
   //    pipeline with no entry triggers configured) silently skip every send.
+  //
+  //    The match passes if EITHER the current pipelineStatus matches OR the
+  //    pre-applyStageTrigger snapshot does. The snapshot accommodates rules
+  //    pinned to a stage that the trigger event itself auto-advances out of:
+  //    e.g. `training_completed` with `stageId=stage_5` where stage_5 has
+  //    `training_started` as its entry trigger, so the completion-pair
+  //    runtime moves the candidate to the next stage before the delayed
+  //    send fires. The rule WAS valid at trigger time — the snapshot
+  //    captures that. See ctx.triggerStageSnapshot for the full motivation.
   if (
     rule.stageId &&
     executionMode === 'delayed_callback' &&
-    session.pipelineStatus !== rule.stageId
+    session.pipelineStatus !== rule.stageId &&
+    (ctx.triggerStageSnapshot ?? null) !== rule.stageId
   ) {
     return {
       allowed: false,
       reason: 'skipped_wrong_stage',
-      currentState: { pipelineStatus: session.pipelineStatus ?? null },
+      currentState: {
+        pipelineStatus: session.pipelineStatus ?? null,
+        triggerStageSnapshot: ctx.triggerStageSnapshot ?? null,
+      },
       requiredState: { pipelineStatus: rule.stageId },
     }
   }

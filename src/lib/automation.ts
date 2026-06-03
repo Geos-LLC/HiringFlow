@@ -55,6 +55,10 @@ export async function fireAutomations(sessionId: string, outcome: string, opts?:
     const triggerType = outcome === 'passed' ? 'flow_passed' : outcome === 'completed' ? 'flow_completed' : null
     if (!triggerType) return
 
+    // Snapshot pipelineStatus BEFORE applyStageTrigger so delayed sends pinned
+    // to the pre-advance stage still match at QStash callback time.
+    const triggerStageSnapshot = session.pipelineStatus ?? null
+
     const legacyStatus = outcome === 'passed' ? 'passed' : 'completed_flow'
     await applyStageTrigger({
       sessionId,
@@ -67,6 +71,7 @@ export async function fireAutomations(sessionId: string, outcome: string, opts?:
     await dispatchRulesForTrigger(sessionId, triggerType, session, {
       executionMode: opts?.executionMode,
       actorUserId: opts?.actorUserId,
+      triggerStageSnapshot,
     })
   } catch (error) {
     console.error('[Automation] Error firing automations for session', sessionId, ':', error)
@@ -95,6 +100,7 @@ export async function fireFlowRecordingReadyAutomations(
       include: { flow: true, ad: true },
     })
     if (!session) return
+    const triggerStageSnapshot = session.pipelineStatus ?? null
     await applyStageTrigger({
       sessionId,
       workspaceId: session.workspaceId,
@@ -104,6 +110,7 @@ export async function fireFlowRecordingReadyAutomations(
     await dispatchRulesForTrigger(sessionId, 'recording_ready', session, {
       executionMode: opts?.executionMode,
       actorUserId: opts?.actorUserId,
+      triggerStageSnapshot,
     })
   } catch (error) {
     console.error('[Automation] Error firing flow recording_ready automations for session', sessionId, ':', error)
@@ -121,6 +128,7 @@ export async function fireTrainingCompletedAutomations(
       include: { flow: true, ad: true },
     })
     if (!session) return
+    const triggerStageSnapshot = session.pipelineStatus ?? null
     await applyStageTrigger({
       sessionId,
       workspaceId: session.workspaceId,
@@ -143,6 +151,7 @@ export async function fireTrainingCompletedAutomations(
       trainingId,
       executionMode: opts?.executionMode,
       actorUserId: opts?.actorUserId,
+      triggerStageSnapshot,
     })
   } catch (error) {
     console.error('[Automation] Error firing training_completed automations for session', sessionId, ':', error)
@@ -160,6 +169,7 @@ export async function fireTrainingStartedAutomations(
       include: { flow: true, ad: true },
     })
     if (!session) return
+    const triggerStageSnapshot = session.pipelineStatus ?? null
     await applyStageTrigger({
       sessionId,
       workspaceId: session.workspaceId,
@@ -179,6 +189,7 @@ export async function fireTrainingStartedAutomations(
       trainingId,
       executionMode: opts?.executionMode,
       actorUserId: opts?.actorUserId,
+      triggerStageSnapshot,
     })
   } catch (error) {
     console.error('[Automation] Error firing training_started for session', sessionId, ':', error)
@@ -192,6 +203,7 @@ export async function fireMeetingScheduledAutomations(sessionId: string, opts?: 
       include: { flow: true, ad: true },
     })
     if (!session) return
+    const triggerStageSnapshot = session.pipelineStatus ?? null
     await applyStageTrigger({
       sessionId,
       workspaceId: session.workspaceId,
@@ -208,6 +220,7 @@ export async function fireMeetingScheduledAutomations(sessionId: string, opts?: 
     await dispatchRulesForTrigger(sessionId, 'meeting_scheduled', session, {
       executionMode: opts?.executionMode,
       actorUserId: opts?.actorUserId,
+      triggerStageSnapshot,
     })
 
     const upcoming = await prisma.interviewMeeting.findFirst({
@@ -241,6 +254,7 @@ export async function fireMeetingRescheduledAutomations(sessionId: string) {
       include: { flow: true, ad: true },
     })
     if (!session) return
+    const triggerStageSnapshot = session.pipelineStatus ?? null
     // Stage move is opt-in: only fires if the workspace wired a stage to
     // `meeting_rescheduled`. The furthest-wins guard inside applyStageTrigger
     // protects against regressing a candidate who has already advanced past
@@ -252,7 +266,9 @@ export async function fireMeetingRescheduledAutomations(sessionId: string) {
       event: 'meeting_rescheduled',
       flowId: session.flowId,
     }).catch(() => {})
-    await dispatchRulesForTrigger(sessionId, 'meeting_rescheduled', session)
+    await dispatchRulesForTrigger(sessionId, 'meeting_rescheduled', session, {
+      triggerStageSnapshot,
+    })
   } catch (error) {
     console.error('[Automation] Error firing meeting_rescheduled automations for session', sessionId, ':', error)
   }
@@ -456,6 +472,7 @@ export async function fireBackgroundCheckAutomations(
     })
     if (!session) return
     const triggerType = `background_check_${outcome}` as const
+    const triggerStageSnapshot = session.pipelineStatus ?? null
 
     const legacyStatus = outcome === 'failed' ? 'rejected' : undefined
     await applyStageTrigger({
@@ -466,7 +483,7 @@ export async function fireBackgroundCheckAutomations(
       legacyStatus,
     }).catch(() => {})
 
-    await dispatchRulesForTrigger(sessionId, triggerType, session)
+    await dispatchRulesForTrigger(sessionId, triggerType, session, { triggerStageSnapshot })
   } catch (error) {
     console.error(`[Automation] Error firing background_check_${outcome} for session`, sessionId, ':', error)
   }
@@ -486,6 +503,7 @@ export async function fireMeetingLifecycleAutomations(
       include: { flow: true, ad: true },
     })
     if (!session) return
+    const triggerStageSnapshot = session.pipelineStatus ?? null
 
     if (trigger === 'meeting_started' || trigger === 'meeting_ended' || trigger === 'meeting_no_show') {
       const legacyStatus = trigger === 'meeting_no_show' ? 'rejected' : undefined
@@ -546,7 +564,11 @@ export async function fireMeetingLifecycleAutomations(
       for (const e of pending) {
         if (!e.stepId) continue
         await executeStep(e.stepId, sessionId, e.channel as 'email' | 'sms', {
-          dispatchCtx: { triggerType: 'recording_ready', executionMode: 'delayed_callback' },
+          dispatchCtx: {
+            triggerType: 'recording_ready',
+            executionMode: 'delayed_callback',
+            triggerStageSnapshot,
+          },
         }).catch((err) =>
           console.error('[Automation] waiting release failed', e.id, err))
       }
@@ -579,6 +601,7 @@ export async function fireMeetingLifecycleAutomations(
       const meetingEndedCtx: DispatchContext = {
         triggerType: 'meeting_ended',
         executionMode: 'immediate',
+        triggerStageSnapshot,
       }
       for (const rule of rules) {
         if (rule.steps.length === 0) continue
@@ -608,7 +631,7 @@ export async function fireMeetingLifecycleAutomations(
       return
     }
 
-    await dispatchRulesForTrigger(sessionId, trigger, session)
+    await dispatchRulesForTrigger(sessionId, trigger, session, { triggerStageSnapshot })
   } catch (error) {
     console.error(`[Automation] Error firing ${trigger} automations for session`, sessionId, ':', error)
   }
@@ -842,13 +865,29 @@ type DispatchContext = {
    * semantics (`[stepId, sessionId, channel, NULL]`).
    */
   stageEntryId?: string | null
+  /**
+   * Snapshot of `Session.pipelineStatus` taken in the `fire*` helper BEFORE
+   * `applyStageTrigger` mutates the candidate's stage. Threaded through
+   * dispatch → queue → QStash payload → callback → guard so a delayed step
+   * pinned to the pre-advance stage still fires after the trigger event
+   * auto-advances the candidate (the rule WAS valid at trigger time; the
+   * advance is a natural consequence of the same trigger). See
+   * `GuardCtx.triggerStageSnapshot` for the full motivation.
+   */
+  triggerStageSnapshot?: string | null
 }
 
 async function dispatchRulesForTrigger(
   sessionId: string,
   triggerType: string,
   session: SessionCtx,
-  ctx: { trainingId?: string | null; executionMode?: ExecutionMode; actorUserId?: string | null } = {},
+  ctx: {
+    trainingId?: string | null
+    executionMode?: ExecutionMode
+    actorUserId?: string | null
+    /** Pre-applyStageTrigger pipelineStatus snapshot; see DispatchContext.triggerStageSnapshot. */
+    triggerStageSnapshot?: string | null
+  } = {},
 ) {
   // Rules can be scoped by flowId AND by trainingId (each nullable on the
   // rule for "any"). For training-* triggers, we must filter on trainingId
@@ -889,6 +928,7 @@ async function dispatchRulesForTrigger(
     executionMode: ctx.executionMode ?? 'immediate',
     triggerContext: ctx.trainingId ? { trainingId: ctx.trainingId } : undefined,
     actorUserId: ctx.actorUserId ?? null,
+    triggerStageSnapshot: ctx.triggerStageSnapshot ?? null,
   }
   for (const rule of rules) {
     await dispatchRule(rule.id, sessionId, dispatchCtx)
@@ -1158,6 +1198,11 @@ async function queueStepAtDelay(
         // step would land on the callback path with stageEntryId=null and
         // dedupe against the wrong key.
         stageEntryId: ctx.stageEntryId ?? null,
+        // Carry the pre-applyStageTrigger stage snapshot so the delayed
+        // callback's guard accepts rules pinned to the candidate's
+        // stage-at-trigger-time even if the trigger event itself
+        // auto-advanced them off it.
+        triggerStageSnapshot: ctx.triggerStageSnapshot ?? null,
       },
       delay: delaySeconds,
     })
@@ -1354,6 +1399,7 @@ export async function executeStep(
       force: options?.force ?? dispatchCtx?.force,
       actorUserId: dispatchCtx?.actorUserId,
       stageEntryId: dispatchCtx?.stageEntryId,
+      triggerStageSnapshot: dispatchCtx?.triggerStageSnapshot,
     })
     if (!guard.allowed) {
       console.log(`[Automation] Step ${stepId} BLOCKED by guard: ${guard.reason} (session ${sessionId})`)

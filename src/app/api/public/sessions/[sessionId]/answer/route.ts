@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { fireAutomations } from '@/lib/automation'
+
+// `flow_completed` automations are fired by the Prisma `$use` lifecycle
+// middleware (src/lib/lifecycle-middleware.ts) when this route writes
+// `finishedAt` + `outcome` to Session. Calling `fireAutomations` explicitly
+// here was racing the middleware path through `executeStep` (the guard's
+// idempotency check only blocks `status='sent'` rows, so two near-simultaneous
+// pending rows both pass and both send). Same pattern as the
+// `training_completed` race fix in /api/public/trainings/[slug]/progress.
 
 export async function POST(
   request: NextRequest,
@@ -49,7 +56,8 @@ export async function POST(
 
     // Save form data to session if provided
     if (formData) {
-      const updateData: Record<string, unknown> = { formData, lastActivityAt: new Date() }
+      const now = new Date()
+      const updateData: Record<string, unknown> = { formData, lastActivityAt: now, lastProgressAt: now }
       if (formData.name) updateData.candidateName = formData.name
       if (formData.email) updateData.candidateEmail = formData.email
       if (formData.phone) updateData.candidatePhone = formData.phone
@@ -64,12 +72,12 @@ export async function POST(
         orderBy: { stepOrder: 'asc' },
       })
       if (nextStep) {
-        await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStep.id, lastActivityAt: new Date() } })
+        const now = new Date()
+        await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStep.id, lastActivityAt: now, lastProgressAt: now } })
         return NextResponse.json({ nextStepId: nextStep.id })
       } else {
         const now = new Date()
-        await prisma.session.update({ where: { id: params.sessionId }, data: { finishedAt: now, outcome: 'completed', lastActivityAt: now } })
-        await fireAutomations(params.sessionId, 'completed')
+        await prisma.session.update({ where: { id: params.sessionId }, data: { finishedAt: now, outcome: 'completed', lastActivityAt: now, lastProgressAt: now } })
         return NextResponse.json({ finished: true })
       }
     }
@@ -112,7 +120,8 @@ export async function POST(
       const nextStepId = firstOption?.nextStepId
 
       if (nextStepId) {
-        await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStepId, lastActivityAt: new Date() } })
+        const now = new Date()
+        await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStepId, lastActivityAt: now, lastProgressAt: now } })
         return NextResponse.json({ nextStepId })
       }
     }
@@ -123,7 +132,8 @@ export async function POST(
       orderBy: { stepOrder: 'asc' },
     })
     if (nextStep) {
-      await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStep.id, lastActivityAt: new Date() } })
+      const now = new Date()
+      await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStep.id, lastActivityAt: now, lastProgressAt: now } })
       return NextResponse.json({ nextStepId: nextStep.id })
     }
 
@@ -131,9 +141,8 @@ export async function POST(
     const now = new Date()
     await prisma.session.update({
       where: { id: params.sessionId },
-      data: { finishedAt: now, outcome: 'completed', lastActivityAt: now },
+      data: { finishedAt: now, outcome: 'completed', lastActivityAt: now, lastProgressAt: now },
     })
-    await fireAutomations(params.sessionId, 'completed')
     return NextResponse.json({ finished: true })
   } catch (error) {
     console.error('Submit answer error:', error)

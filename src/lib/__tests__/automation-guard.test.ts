@@ -378,6 +378,133 @@ describe('canExecuteAutomationStep — stage match', () => {
       await prisma.automationRule.update({ where: { id: ruleId }, data: { stageId: null } })
     },
   )
+
+  // triggerStageSnapshot carves out the auto-advance foot-gun: a rule pinned
+  // to "the candidate's stage when the trigger fired" is unsendable on a
+  // pipeline where the trigger event itself moves them off that stage. The
+  // snapshot is captured pre-applyStageTrigger in the fire* helpers and
+  // threaded through dispatch → QStash → callback so the delayed guard can
+  // honour the rule's original intent.
+  it('allows delayed_callback when triggerStageSnapshot matches rule.stageId even if current pipelineStatus has advanced', async () => {
+    // Stephan Harrison case: trigger=training_completed, rule.stageId=stage_5
+    // (Orientation training), candidate auto-advanced to stage_7
+    // (Interview scheduled) by the completion-pair runtime before the 2m
+    // delayed callback fires.
+    await prisma.automationRule.update({
+      where: { id: ruleId },
+      data: { stageId: 'stage_5' },
+    })
+    const session = await prisma.session.create({
+      data: { workspaceId, flowId, candidateName: 'StageSnapshotMatch', status: 'active', pipelineStatus: 'stage_7' },
+    })
+    await prisma.trainingEnrollment.create({
+      data: { trainingId, sessionId: session.id, userEmail: 'snapshot-match@test.com', completedAt: new Date() },
+    })
+
+    const { session: s, rule, step } = await loadFixture(session.id)
+    const result = await canExecuteAutomationStep({
+      session: s, rule, step, channel: 'email',
+      triggerType: 'training_completed',
+      triggerContext: { trainingId },
+      executionMode: 'delayed_callback',
+      triggerStageSnapshot: 'stage_5',
+    })
+    expect(result.allowed).toBe(true)
+
+    await prisma.automationRule.update({ where: { id: ruleId }, data: { stageId: null } })
+  })
+
+  it('still blocks delayed_callback when triggerStageSnapshot does NOT match rule.stageId (genuine staleness)', async () => {
+    // A rule pinned to a stage the candidate never occupied — neither at
+    // trigger time nor at callback — must still be skipped. The snapshot
+    // carve-out only relaxes the gate for the auto-advance case, not for
+    // arbitrary stage mismatches.
+    await prisma.automationRule.update({
+      where: { id: ruleId },
+      data: { stageId: 'stage_unrelated' },
+    })
+    const session = await prisma.session.create({
+      data: { workspaceId, flowId, candidateName: 'StageSnapshotMismatch', status: 'active', pipelineStatus: 'stage_7' },
+    })
+    await prisma.trainingEnrollment.create({
+      data: { trainingId, sessionId: session.id, userEmail: 'snapshot-mismatch@test.com', completedAt: new Date() },
+    })
+
+    const { session: s, rule, step } = await loadFixture(session.id)
+    const result = await canExecuteAutomationStep({
+      session: s, rule, step, channel: 'email',
+      triggerType: 'training_completed',
+      triggerContext: { trainingId },
+      executionMode: 'delayed_callback',
+      triggerStageSnapshot: 'stage_5',
+    })
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) expect(result.reason).toBe('skipped_wrong_stage')
+
+    await prisma.automationRule.update({ where: { id: ruleId }, data: { stageId: null } })
+  })
+
+  it('preserves legacy blocking when triggerStageSnapshot is omitted (no caller supplied a snapshot)', async () => {
+    // Backwards-compat: a delayed callback whose enqueue path predates the
+    // snapshot threading (e.g. an in-flight QStash msg published before the
+    // deploy) lands with snapshot=null. The guard must keep blocking those
+    // — the carve-out is opt-in via the snapshot.
+    await prisma.automationRule.update({
+      where: { id: ruleId },
+      data: { stageId: 'stage_5' },
+    })
+    const session = await prisma.session.create({
+      data: { workspaceId, flowId, candidateName: 'StageSnapshotMissing', status: 'active', pipelineStatus: 'stage_7' },
+    })
+    await prisma.trainingEnrollment.create({
+      data: { trainingId, sessionId: session.id, userEmail: 'snapshot-missing@test.com', completedAt: new Date() },
+    })
+
+    const { session: s, rule, step } = await loadFixture(session.id)
+    const result = await canExecuteAutomationStep({
+      session: s, rule, step, channel: 'email',
+      triggerType: 'training_completed',
+      triggerContext: { trainingId },
+      executionMode: 'delayed_callback',
+      // triggerStageSnapshot intentionally omitted
+    })
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) expect(result.reason).toBe('skipped_wrong_stage')
+
+    await prisma.automationRule.update({ where: { id: ruleId }, data: { stageId: null } })
+  })
+
+  it.each(['immediate', 'chained', 'cron', 'public_trigger', 'debug'] as ExecutionMode[])(
+    'snapshot has no effect on non-delayed mode %s (stage gate already off)',
+    async (mode) => {
+      // Same-tick paths don't consult the gate, snapshot or otherwise. This
+      // documents that adding a snapshot doesn't change behaviour for
+      // immediate-style modes — they continue to fire regardless of
+      // rule.stageId vs current pipelineStatus.
+      await prisma.automationRule.update({
+        where: { id: ruleId },
+        data: { stageId: 'stage_unrelated' },
+      })
+      const session = await prisma.session.create({
+        data: { workspaceId, flowId, candidateName: `SnapshotImmediate-${mode}`, status: 'active', pipelineStatus: 'stage_7' },
+      })
+      await prisma.trainingEnrollment.create({
+        data: { trainingId, sessionId: session.id, userEmail: `snapshot-imm-${mode}@test.com`, completedAt: new Date() },
+      })
+
+      const { session: s, rule, step } = await loadFixture(session.id)
+      const result = await canExecuteAutomationStep({
+        session: s, rule, step, channel: 'email',
+        triggerType: 'training_completed',
+        triggerContext: { trainingId },
+        executionMode: mode,
+        triggerStageSnapshot: 'stage_5',
+      })
+      expect(result.allowed, `mode=${mode}`).toBe(true)
+
+      await prisma.automationRule.update({ where: { id: ruleId }, data: { stageId: null } })
+    },
+  )
 })
 
 describe('canExecuteAutomationStep — idempotency', () => {
