@@ -17,6 +17,7 @@ import {
   resolveClient,
 } from './client'
 import { fireBackgroundCheckAutomations } from '../automation'
+import { emitAutomationEvent, eventKeys } from '../automation-emit'
 
 export interface SyncResult {
   backgroundCheckId: string
@@ -103,9 +104,24 @@ export async function syncBackgroundCheck(
   })
 
   if (outcome) {
-    await fireBackgroundCheckAutomations(bc.sessionId, outcome).catch((err) => {
-      console.error('[Certn] fireBackgroundCheckAutomations failed:', err)
+    await emitAutomationEvent({
+      workspaceId: bc.workspaceId,
+      sessionId: bc.sessionId,
+      triggerType: 'background_check',
+      eventKey: eventKeys.backgroundCheck(bc.id, outcome),
+      source: 'webhook',
+      payload: { backgroundCheckId: bc.id, outcome },
+      dispatch: () => fireBackgroundCheckAutomations(bc.sessionId, outcome),
+    }).catch((err) => {
+      console.error('[Certn] background_check emit failed:', err)
     })
+    // The candidate cleared the background-check checkpoint — bump the stale
+    // clock so a candidate who took 6 days to do Certn isn't immediately
+    // stalled the next morning.
+    await prisma.session.update({
+      where: { id: bc.sessionId },
+      data: { lastProgressAt: new Date(), lastActivityAt: new Date() },
+    }).catch(() => {})
   }
 
   return {

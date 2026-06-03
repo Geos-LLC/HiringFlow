@@ -12,6 +12,7 @@ import type { calendar_v3 } from 'googleapis'
 import { prisma } from './prisma'
 import { logSchedulingEvent, updatePipelineStatus } from './scheduling'
 import { fireMeetingScheduledAutomations, fireMeetingRescheduledAutomations, cancelBeforeMeetingReminders, cancelMeetingDependentFollowups, rescheduleBeforeMeetingReminders } from './automation'
+import { emitAutomationEvent, eventKeys } from './automation-emit'
 import { meetIntegrationEnabled } from './meet/feature-flag'
 import { getSpaceByMeetingCode, parseMeetingCodeFromUrl, updateSpaceSettings } from './meet/google-meet'
 import { subscribeSpace, deleteSubscription } from './meet/workspace-events'
@@ -133,9 +134,32 @@ export async function processCalendarEvent(
     await adoptExternalMeet(workspaceId, sessionId, event, start, end, meetingUrl).catch((err) => {
       console.error('[GCal] adoptExternalMeet failed (non-fatal):', (err as Error).message)
     })
-    await fireMeetingScheduledAutomations(sessionId).catch((err) => {
-      console.error('[GCal] fireMeetingScheduledAutomations failed:', err)
-    })
+    // The InterviewMeeting row that adoptExternalMeet just created/found is
+    // the stable identity for dedup. Look it up by googleEventId (most
+    // reliable across calendar updates).
+    const meetingId = event.id
+      ? (await prisma.interviewMeeting.findFirst({
+          where: { workspaceId, sessionId, googleCalendarEventId: event.id },
+          select: { id: true },
+        }))?.id ?? null
+      : null
+    if (meetingId) {
+      await emitAutomationEvent({
+        workspaceId,
+        sessionId,
+        triggerType: 'meeting_scheduled',
+        eventKey: eventKeys.meetingScheduled(meetingId),
+        source: 'webhook',
+        payload: { interviewMeetingId: meetingId, googleEventId: event.id, source: 'google_calendar' },
+        dispatch: () => fireMeetingScheduledAutomations(sessionId),
+      }).catch((err) => {
+        console.error('[GCal] meeting_scheduled emit failed:', err)
+      })
+    } else {
+      await fireMeetingScheduledAutomations(sessionId).catch((err) => {
+        console.error('[GCal] fireMeetingScheduledAutomations failed:', err)
+      })
+    }
   } else if (eventType === 'meeting_rescheduled' && start) {
     // Re-key any pending before_meeting reminders to the new scheduledStart.
     await rescheduleBeforeMeetingReminders(sessionId, new Date(start)).catch((err) => {
@@ -149,10 +173,32 @@ export async function processCalendarEvent(
     await reconcileExternalMeetReschedule(workspaceId, event, start, end, meetingUrl).catch((err) => {
       console.error('[GCal] reconcileExternalMeetReschedule failed (non-fatal):', (err as Error).message)
     })
-    // Notify the candidate that their interview moved.
-    await fireMeetingRescheduledAutomations(sessionId).catch((err) => {
-      console.error('[GCal] fireMeetingRescheduledAutomations failed:', err)
-    })
+    // Look up the now-rebound InterviewMeeting for the dedup key. Same
+    // (meetingId, newScheduledStartIso) shape — re-receiving the same
+    // calendar update is a no-op, but a new time produces a new event.
+    const meetingId = event.id
+      ? (await prisma.interviewMeeting.findFirst({
+          where: { workspaceId, sessionId, googleCalendarEventId: event.id },
+          select: { id: true },
+        }))?.id ?? null
+      : null
+    if (meetingId) {
+      await emitAutomationEvent({
+        workspaceId,
+        sessionId,
+        triggerType: 'meeting_rescheduled',
+        eventKey: eventKeys.meetingRescheduled(meetingId, new Date(start).toISOString()),
+        source: 'webhook',
+        payload: { interviewMeetingId: meetingId, newScheduledStart: new Date(start).toISOString() },
+        dispatch: () => fireMeetingRescheduledAutomations(sessionId),
+      }).catch((err) => {
+        console.error('[GCal] meeting_rescheduled emit failed:', err)
+      })
+    } else {
+      await fireMeetingRescheduledAutomations(sessionId).catch((err) => {
+        console.error('[GCal] fireMeetingRescheduledAutomations failed:', err)
+      })
+    }
   }
 
   return { matched: true, eventType, sessionId }

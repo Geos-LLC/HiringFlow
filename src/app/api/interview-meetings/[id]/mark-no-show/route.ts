@@ -20,6 +20,7 @@ import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { fireMeetingLifecycleAutomations } from '@/lib/automation'
+import { emitAutomationEvent, eventKeys } from '@/lib/automation-emit'
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
@@ -27,7 +28,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   const meeting = await prisma.interviewMeeting.findFirst({
     where: { id: params.id, workspaceId: ws.workspaceId },
-    select: { id: true, sessionId: true },
+    select: { id: true, sessionId: true, workspaceId: true },
   })
   if (!meeting) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
@@ -52,8 +53,16 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
       source: 'manual',
     },
   })
-  await fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_no_show').catch((err) =>
-    console.error('[mark-no-show] automation dispatch failed:', err),
+  await emitAutomationEvent({
+    workspaceId: meeting.workspaceId,
+    sessionId: meeting.sessionId,
+    triggerType: 'meeting_no_show',
+    eventKey: eventKeys.meetingNoShow(meeting.id),
+    source: 'manual',
+    payload: { interviewMeetingId: meeting.id, source: 'manual' },
+    dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_no_show'),
+  }).catch((err) =>
+    console.error('[mark-no-show] automation emit failed:', err),
   )
 
   return NextResponse.json({ ok: true, alreadyMarked: false })

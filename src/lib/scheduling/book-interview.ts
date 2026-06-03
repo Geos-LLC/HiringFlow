@@ -36,6 +36,7 @@ import type {
 import { selectRecorder } from '../meet/meeting-recorder'
 import { logSchedulingEvent, updatePipelineStatus } from '../scheduling'
 import { fireMeetingScheduledAutomations } from '../automation'
+import { emitAutomationEvent, eventKeys } from '../automation-emit'
 import { scheduleBot, RecallApiError } from '../recall/client'
 import { sendMeetingConfirmation } from './meeting-confirmation'
 
@@ -272,6 +273,14 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
     },
   })
 
+  // Booking a meeting is real forward progress — reset the stale clock so a
+  // candidate who picks a slot 6 days after the invite isn't immediately
+  // stalled the next morning. Best-effort.
+  await prisma.session.update({
+    where: { id: session.id },
+    data: { lastProgressAt: new Date(), lastActivityAt: new Date() },
+  }).catch(() => {})
+
   // 9b. Recall.ai bot (best-effort) — when the workspace has opted into
   // bot-based attendance + recording, schedule a bot to join the call. On
   // success we flip attendanceSource='recall' so the Meet auto-record path
@@ -337,14 +346,22 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   })
 
   await updatePipelineStatus(session.id, 'scheduled').catch(() => {})
-  await fireMeetingScheduledAutomations(session.id, {
+  await emitAutomationEvent({
+    workspaceId: meeting.workspaceId,
+    sessionId: session.id,
+    triggerType: 'meeting_scheduled',
+    eventKey: eventKeys.meetingScheduled(meeting.id),
+    source: opts.source === 'public' ? 'public_endpoint' : 'internal',
+    payload: { interviewMeetingId: meeting.id, bookingSource: opts.source },
     // public bookings come from the candidate-facing flow link; operator
     // bookings are recruiter-initiated. Both tag the downstream executions
     // for the audit trail; lifecycle/prereq/stage guards apply identically.
-    executionMode: opts.source === 'public' ? 'public_trigger' : 'immediate',
-    actorUserId: opts.loggedBy ?? null,
+    dispatch: () => fireMeetingScheduledAutomations(session.id, {
+      executionMode: opts.source === 'public' ? 'public_trigger' : 'immediate',
+      actorUserId: opts.loggedBy ?? null,
+    }),
   }).catch((err) => {
-    console.error('[bookInterview] fireMeetingScheduledAutomations failed:', err)
+    console.error('[bookInterview] meeting_scheduled emit failed:', err)
   })
 
   return {

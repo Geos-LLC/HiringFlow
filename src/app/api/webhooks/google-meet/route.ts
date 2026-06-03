@@ -33,8 +33,9 @@ import {
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { renewSubscription } from '@/lib/meet/workspace-events'
 import { getFileMeta } from '@/lib/meet/google-drive'
-import { bumpSessionActivity } from '@/lib/session-activity'
+import { bumpSessionProgress } from '@/lib/session-activity'
 import { fireMeetingLifecycleAutomations } from '@/lib/automation'
+import { emitAutomationEvent, eventKeys } from '@/lib/automation-emit'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -185,28 +186,49 @@ export async function POST(request: NextRequest) {
       case 'google.workspace.meet.conference.v2.started': {
         const at = new Date(envelope.data?.conferenceRecord?.startTime || envelope.time || Date.now())
         await markConferenceStarted(meeting.id, at)
-        await bumpSessionActivity(meeting.sessionId)
+        await bumpSessionProgress(meeting.sessionId)
         await logSchedulingEvent({
           sessionId: meeting.sessionId,
           eventType: 'meeting_started',
           metadata: { interviewMeetingId: meeting.id, at: at.toISOString() },
         })
-        await fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_started').catch((err) => {
-          console.error('[Meet webhook] meeting_started automations failed:', err)
+        // Race protection: the lifecycle middleware also fires on
+        // markConferenceStarted's actualStart write. Both paths emit through
+        // AutomationEvent — first INSERT wins, the loser deduplicates.
+        await emitAutomationEvent({
+          workspaceId: meeting.workspaceId,
+          sessionId: meeting.sessionId,
+          triggerType: 'meeting_started',
+          eventKey: eventKeys.meetingStarted(meeting.id),
+          source: 'webhook',
+          payload: { interviewMeetingId: meeting.id, at: at.toISOString() },
+          dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_started'),
+        }).catch((err) => {
+          console.error('[Meet webhook] meeting_started emit failed:', err)
         })
         break
       }
       case 'google.workspace.meet.conference.v2.ended': {
         const at = new Date(envelope.data?.conferenceRecord?.endTime || envelope.time || Date.now())
         await markConferenceEnded(meeting.id, at)
-        await bumpSessionActivity(meeting.sessionId)
+        await bumpSessionProgress(meeting.sessionId)
         await logSchedulingEvent({
           sessionId: meeting.sessionId,
           eventType: 'meeting_ended',
           metadata: { interviewMeetingId: meeting.id, at: at.toISOString() },
         })
-        await fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_ended').catch((err) => {
-          console.error('[Meet webhook] meeting_ended automations failed:', err)
+        // Race protection: see meeting_started comment above. Lifecycle
+        // middleware also fires on markConferenceEnded's actualEnd write.
+        await emitAutomationEvent({
+          workspaceId: meeting.workspaceId,
+          sessionId: meeting.sessionId,
+          triggerType: 'meeting_ended',
+          eventKey: eventKeys.meetingEnded(meeting.id),
+          source: 'webhook',
+          payload: { interviewMeetingId: meeting.id, at: at.toISOString() },
+          dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_ended'),
+        }).catch((err) => {
+          console.error('[Meet webhook] meeting_ended emit failed:', err)
         })
 
         // No-show detection: if no participant other than the workspace host
@@ -253,8 +275,16 @@ export async function POST(request: NextRequest) {
                   eventType: 'meeting_no_show',
                   metadata: { interviewMeetingId: meeting.id, at: at.toISOString(), nonHostCount },
                 })
-                await fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_no_show').catch((err) => {
-                  console.error('[Meet webhook] meeting_no_show automations failed:', err)
+                await emitAutomationEvent({
+                  workspaceId: meeting.workspaceId,
+                  sessionId: meeting.sessionId,
+                  triggerType: 'meeting_no_show',
+                  eventKey: eventKeys.meetingNoShow(meeting.id),
+                  source: 'webhook',
+                  payload: { interviewMeetingId: meeting.id, at: at.toISOString(), nonHostCount },
+                  dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_no_show'),
+                }).catch((err) => {
+                  console.error('[Meet webhook] meeting_no_show emit failed:', err)
                 })
                 console.log('[Meet webhook] no-show detected for meeting', meeting.id)
               }
@@ -279,8 +309,16 @@ export async function POST(request: NextRequest) {
             eventType: 'recording_ready',
             metadata: { interviewMeetingId: meeting.id, driveFileId },
           })
-          await fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready').catch((err) => {
-            console.error('[Meet webhook] recording_ready automations failed:', err)
+          await emitAutomationEvent({
+            workspaceId: meeting.workspaceId,
+            sessionId: meeting.sessionId,
+            triggerType: 'recording_ready',
+            eventKey: eventKeys.recordingReadyMeet(meeting.id),
+            source: 'webhook',
+            payload: { interviewMeetingId: meeting.id, driveFileId },
+            dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready'),
+          }).catch((err) => {
+            console.error('[Meet webhook] recording_ready emit failed:', err)
           })
         }
         break
@@ -294,8 +332,16 @@ export async function POST(request: NextRequest) {
             eventType: 'transcript_ready',
             metadata: { interviewMeetingId: meeting.id, driveFileId: docId },
           })
-          await fireMeetingLifecycleAutomations(meeting.sessionId, 'transcript_ready').catch((err) => {
-            console.error('[Meet webhook] transcript_ready automations failed:', err)
+          await emitAutomationEvent({
+            workspaceId: meeting.workspaceId,
+            sessionId: meeting.sessionId,
+            triggerType: 'transcript_ready',
+            eventKey: eventKeys.transcriptReadyMeet(meeting.id),
+            source: 'webhook',
+            payload: { interviewMeetingId: meeting.id, transcriptDocId: docId },
+            dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'transcript_ready'),
+          }).catch((err) => {
+            console.error('[Meet webhook] transcript_ready emit failed:', err)
           })
         }
         break

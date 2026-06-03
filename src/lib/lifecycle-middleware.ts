@@ -130,6 +130,8 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
 
   // Lazy import to break the circular dep (automation.ts → prisma → this).
   const auto = await import('./automation')
+  const { emitAutomationEvent, eventKeys } = await import('./automation-emit')
+  const { prisma } = await import('./prisma')
 
   switch (params.model) {
     case 'Session': {
@@ -140,18 +142,30 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
         const sessionId = id ?? resultId(result)
         if (!sessionId) return
         // Test sessions (source='test', created by /api/automations/[id]/test)
-        // synthesise finishedAt + outcome to position the session at the
-        // trigger's pipeline stage. They are dispatched explicitly by the
-        // test endpoint via executeRule — letting the middleware also fire
-        // would race the explicit call through executeStep (whose guard only
-        // blocks on status='sent', not 'pending'), producing a duplicate send.
+        // are dispatched explicitly by the test endpoint via executeRule.
+        // Letting the middleware also fire would produce a duplicate. With
+        // AutomationEvent dedup this is now belt-and-suspenders — the
+        // explicit dispatch in the test endpoint doesn't go through
+        // emitAutomationEvent, so the constraint wouldn't catch it.
         if (await isTestSession(sessionId)) return
         const outcomeInData = (data as Record<string, unknown>).outcome
         const outcome =
           typeof outcomeInData === 'string'
             ? outcomeInData
             : ((result as Record<string, unknown> | null)?.outcome as string | undefined) ?? 'completed'
-        await auto.fireAutomations(sessionId, outcome, { executionMode: 'public_trigger' })
+        const session = await prisma.session.findUnique({ where: { id: sessionId }, select: { workspaceId: true } })
+        if (!session) return
+        const triggerType = outcome === 'passed' ? 'flow_passed' : 'flow_completed'
+        const eventKey = triggerType === 'flow_passed' ? eventKeys.flowPassed(sessionId) : eventKeys.flowCompleted(sessionId)
+        await emitAutomationEvent({
+          workspaceId: session.workspaceId,
+          sessionId,
+          triggerType,
+          eventKey,
+          source: 'lifecycle',
+          payload: { outcome },
+          dispatch: () => auto.fireAutomations(sessionId, outcome, { executionMode: 'public_trigger' }),
+        })
       }
       break
     }
@@ -165,16 +179,25 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
       if ((data as Record<string, unknown>).status === 'processed') {
         const captureId = id ?? resultId(result)
         if (!captureId) return
-        const r = result as { sessionId?: string } | null
+        const r = result as { sessionId?: string; workspaceId?: string } | null
         let sessionId = r?.sessionId
-        if (!sessionId) {
-          const { prisma } = await import('./prisma')
-          const row = await prisma.captureResponse.findUnique({ where: { id: captureId }, select: { sessionId: true } })
-          sessionId = row?.sessionId
+        let workspaceId = r?.workspaceId
+        if (!sessionId || !workspaceId) {
+          const row = await prisma.captureResponse.findUnique({ where: { id: captureId }, select: { sessionId: true, workspaceId: true } })
+          sessionId = sessionId ?? row?.sessionId
+          workspaceId = workspaceId ?? row?.workspaceId
         }
-        if (!sessionId) return
+        if (!sessionId || !workspaceId) return
         if (await isTestSession(sessionId)) return
-        await auto.fireFlowRecordingReadyAutomations(sessionId, { executionMode: 'public_trigger' })
+        await emitAutomationEvent({
+          workspaceId,
+          sessionId,
+          triggerType: 'recording_ready',
+          eventKey: eventKeys.recordingReadyCapture(captureId),
+          source: 'lifecycle',
+          payload: { captureResponseId: captureId },
+          dispatch: () => auto.fireFlowRecordingReadyAutomations(sessionId!, { executionMode: 'public_trigger' }),
+        })
       }
       break
     }
@@ -185,11 +208,11 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
       // bulk-complete flows.
       if (isSet((data as Record<string, unknown>).completedAt)) {
         const enrollmentId = id ?? resultId(result)
+        if (!enrollmentId) return
         const r = result as { sessionId?: string; trainingId?: string } | null
         let sessionId = r?.sessionId
         let trainingId = r?.trainingId
-        if ((!sessionId || !trainingId) && enrollmentId) {
-          const { prisma } = await import('./prisma')
+        if (!sessionId || !trainingId) {
           const row = await prisma.trainingEnrollment.findUnique({
             where: { id: enrollmentId },
             select: { sessionId: true, trainingId: true },
@@ -199,7 +222,17 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
         }
         if (!sessionId) return
         if (await isTestSession(sessionId)) return
-        await auto.fireTrainingCompletedAutomations(sessionId, trainingId ?? undefined, { executionMode: 'public_trigger' })
+        const session = await prisma.session.findUnique({ where: { id: sessionId }, select: { workspaceId: true } })
+        if (!session) return
+        await emitAutomationEvent({
+          workspaceId: session.workspaceId,
+          sessionId,
+          triggerType: 'training_completed',
+          eventKey: eventKeys.trainingCompleted(enrollmentId),
+          source: 'lifecycle',
+          payload: { trainingEnrollmentId: enrollmentId, trainingId: trainingId ?? null },
+          dispatch: () => auto.fireTrainingCompletedAutomations(sessionId!, trainingId ?? undefined, { executionMode: 'public_trigger' }),
+        })
       }
       break
     }
@@ -210,19 +243,37 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
       // directly (it has the artifact context), so we don't double-fire
       // recording_ready here.
       const meetingId = id ?? resultId(result)
-      const r = result as { sessionId?: string } | null
+      if (!meetingId) return
+      const r = result as { sessionId?: string; workspaceId?: string } | null
       let sessionId = r?.sessionId
-      if (!sessionId && meetingId) {
-        const { prisma } = await import('./prisma')
-        const row = await prisma.interviewMeeting.findUnique({ where: { id: meetingId }, select: { sessionId: true } })
-        sessionId = row?.sessionId
+      let workspaceId = r?.workspaceId
+      if (!sessionId || !workspaceId) {
+        const row = await prisma.interviewMeeting.findUnique({ where: { id: meetingId }, select: { sessionId: true, workspaceId: true } })
+        sessionId = sessionId ?? row?.sessionId
+        workspaceId = workspaceId ?? row?.workspaceId
       }
-      if (!sessionId) return
+      if (!sessionId || !workspaceId) return
       if (await isTestSession(sessionId)) return
       if (isSet((data as Record<string, unknown>).actualEnd)) {
-        await auto.fireMeetingLifecycleAutomations(sessionId, 'meeting_ended')
+        await emitAutomationEvent({
+          workspaceId,
+          sessionId,
+          triggerType: 'meeting_ended',
+          eventKey: eventKeys.meetingEnded(meetingId),
+          source: 'lifecycle',
+          payload: { interviewMeetingId: meetingId },
+          dispatch: () => auto.fireMeetingLifecycleAutomations(sessionId!, 'meeting_ended'),
+        })
       } else if (isSet((data as Record<string, unknown>).actualStart)) {
-        await auto.fireMeetingLifecycleAutomations(sessionId, 'meeting_started')
+        await emitAutomationEvent({
+          workspaceId,
+          sessionId,
+          triggerType: 'meeting_started',
+          eventKey: eventKeys.meetingStarted(meetingId),
+          source: 'lifecycle',
+          payload: { interviewMeetingId: meetingId },
+          dispatch: () => auto.fireMeetingLifecycleAutomations(sessionId!, 'meeting_started'),
+        })
       }
       break
     }

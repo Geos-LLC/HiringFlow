@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { saveCandidateVideoFile } from '@/lib/storage'
-import { fireAutomations, fireFlowRecordingReadyAutomations } from '@/lib/automation'
+import { fireFlowRecordingReadyAutomations } from '@/lib/automation'
+import { emitAutomationEvent, eventKeys } from '@/lib/automation-emit'
+
+// `flow_completed` automations are fired by the Prisma `$use` lifecycle
+// middleware (src/lib/lifecycle-middleware.ts) when this route writes
+// `finishedAt` + `outcome` to Session. Calling `fireAutomations` explicitly
+// here was racing the middleware path through `executeStep` (the guard's
+// idempotency check only blocks `status='sent'` rows, so two near-simultaneous
+// pending rows both pass and both send). `recording_ready` stays explicit
+// because the middleware only tracks CaptureResponse, not CandidateSubmission.
 
 export async function POST(
   request: NextRequest,
@@ -76,8 +85,11 @@ export async function POST(
       }
     }
 
-    // Upsert the submission (allows re-submission)
-    await prisma.candidateSubmission.upsert({
+    // Upsert the submission (allows re-submission). Capture the id so the
+    // recording_ready event below has a stable, non-nullable key component
+    // — re-submitting against the same step keeps the same id, so the
+    // AutomationEvent insert dedups instead of producing a second send.
+    const submission = await prisma.candidateSubmission.upsert({
       where: {
         sessionId_stepId: {
           sessionId: params.sessionId,
@@ -94,34 +106,42 @@ export async function POST(
         textMessage: textMessage || null,
         ...(videoData || {}),
       },
+      select: { id: true },
     })
 
-    // Mark session as finished (submission step ends the flow). Stamp
-    // `outcome: 'completed'` so fireAutomations and downstream guards see
-    // the same shape they get from the answer/route.ts path.
-    await prisma.session.update({
-      where: { id: params.sessionId },
-      data: {
-        lastStepId: stepId,
-        finishedAt: new Date(),
-        outcome: 'completed',
-        lastActivityAt: new Date(),
-      },
-    })
-
-    // Fire `flow_completed` rules — the standard "candidate finished the
-    // flow" event. Without this call, rules pinned to flow_completed never
-    // fired for flows that ended on a submission step (the answer/route.ts
-    // path already fires this; submit/route.ts didn't).
-    await fireAutomations(params.sessionId, 'completed', { executionMode: 'public_trigger' })
+    // Mark session as finished (submission step ends the flow). The Prisma
+    // lifecycle middleware sees the `finishedAt` write and fires the
+    // `flow_completed` automations — no explicit call needed.
+    {
+      const now = new Date()
+      await prisma.session.update({
+        where: { id: params.sessionId },
+        data: {
+          lastStepId: stepId,
+          finishedAt: now,
+          outcome: 'completed',
+          lastActivityAt: now,
+          lastProgressAt: now,
+        },
+      })
+    }
 
     // Additionally fire `recording_ready` rules when the submission carried
-    // a video/audio recording. This lets workspaces wire automation rules
-    // (and stage advancement) to "candidate uploaded a recording" without
-    // overloading `flow_completed`. Same trigger type that Meet recordings
-    // use; the rule scope (pipeline + flow) keeps them from cross-firing.
+    // a video/audio recording. CandidateSubmission is not tracked by the
+    // lifecycle middleware (it watches CaptureResponse instead), so this
+    // is the only emit site for flow video recordings. Routed through
+    // emitAutomationEvent so the (workspaceId, eventKey) constraint dedups
+    // against any future emitter (e.g. an admin re-process endpoint).
     if (videoData) {
-      await fireFlowRecordingReadyAutomations(params.sessionId, { executionMode: 'public_trigger' })
+      await emitAutomationEvent({
+        workspaceId: session.workspaceId,
+        sessionId: params.sessionId,
+        triggerType: 'recording_ready',
+        eventKey: eventKeys.recordingReadyFlow(params.sessionId, submission.id),
+        source: 'public_endpoint',
+        payload: { candidateSubmissionId: submission.id, stepId },
+        dispatch: () => fireFlowRecordingReadyAutomations(params.sessionId, { executionMode: 'public_trigger' }),
+      })
     }
 
     return NextResponse.json({ finished: true })

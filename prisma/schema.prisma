@@ -73,6 +73,13 @@ model Workspace {
   // workspace via /api/integrations/recall/connect once RECALL_API_KEY is set
   // in env.
   recallBotEnabled             Boolean   @default(false) @map("recall_bot_enabled")
+  // Unified stale-detection threshold. Applies to all pipelines / stages by
+  // default. The cron flips an `active` candidate to `stalled` when
+  // `Session.lastProgressAt` (real forward-progress events only) is older than
+  // this many days. Null falls back to STALE_DETECTION_DEFAULT_DAYS in
+  // src/lib/candidate-status.ts. Per-pipeline / per-stage overrides are a
+  // future feature; this column is the only knob exposed in the UI today.
+  defaultStalledDays           Int?      @map("default_stalled_days")
   // ---- Stripe Billing (per-workspace subscription) ----
   // Stripe is the source of truth; these mirror state via webhooks so we can
   // gate features without a Stripe round-trip. `plan` (above) is set from the
@@ -98,6 +105,7 @@ model Workspace {
   emailTemplates    EmailTemplate[]
   smsTemplates      SmsTemplate[]
   automationRules   AutomationRule[]
+  automationEvents  AutomationEvent[]
   schedulingConfigs SchedulingConfig[]
   adTemplates       AdTemplate[]
   aiCallConfigs     AICallConfig[]
@@ -689,7 +697,25 @@ model Session {
   // engaging right now or has gone quiet. Distinct from `startedAt` (creation)
   // and `finishedAt` (flow completion) because it covers post-flow activity
   // like training and quiz progress.
+  //
+  // NB: `lastActivityAt` is bumped on passive signals too (opening a training
+  // landing page, viewing a public link). Do NOT use it for stale-detection —
+  // that uses `lastProgressAt` below, which is bumped only on real forward
+  // progress.
   lastActivityAt          DateTime?              @map("last_activity_at")
+  // Real forward-progress timestamp — bumped only when the candidate does
+  // something that demonstrably moves them through the funnel: submits an
+  // answer, completes the flow, starts/progresses a training step, books a
+  // meeting, attends a meeting, submits a background check. Passive page
+  // opens are deliberately excluded so the stale-detection cron can trust
+  // this column as the inactivity clock.
+  //
+  // Initialized at session create-time to `startedAt`. Read by
+  // /api/cron/detect-stalled to compute "candidate has been inactive for >N
+  // days". See src/lib/session-activity.ts:bumpSessionProgress for the writer
+  // and src/lib/candidate-status.ts:STALE_DETECTION_DEFAULT_DAYS for the
+  // platform fallback when Workspace.defaultStalledDays is null.
+  lastProgressAt          DateTime?              @map("last_progress_at")
   outcome                 String? // 'completed' | 'passed' | 'failed' | 'abandoned'
   pipelineStatus          String?                @map("pipeline_status")
   // Status axis — orthogonal to pipelineStatus (which is the funnel STAGE id).
@@ -1291,6 +1317,72 @@ model AutomationExecution {
   @@index([stageEntryId])
   @@index([sendgridMessageId])
   @@map("automation_executions")
+}
+
+// ============ AUTOMATION EVENT LOG ============
+//
+// One row per business event that *could* dispatch automations. The
+// `(workspaceId, eventKey)` unique constraint is the DB-enforced idempotency
+// boundary: every emitter (lifecycle middleware, webhooks, cron, public
+// endpoints, manual reruns) routes through `src/lib/automation-emit.ts`,
+// which writes here first. Two emitters firing the same business event in
+// the same millisecond → exactly one INSERT wins, the other returns a
+// duplicate-key error and the wrapper short-circuits the dispatch.
+//
+// The pre-existing AutomationExecution dedup (stepId/sessionId/channel +
+// guard) only catches races AFTER they've both reached the guard. This
+// table catches them at the door — independent of step/channel/stage, so
+// even multi-step rules with chained children are protected.
+//
+// `eventKey` is deterministic, computed by the emitter from the event
+// payload. Conventions (must contain NO nullable identifiers — the
+// constraint relies on stable non-null components):
+//   flow_completed:{sessionId}
+//   flow_passed:{sessionId}
+//   recording_ready:capture:{captureResponseId}
+//   recording_ready:meet:{interviewMeetingId}
+//   recording_ready:flow:{sessionId}:{candidateSubmissionId}
+//   training_started:{trainingEnrollmentId}
+//   training_completed:{trainingEnrollmentId}
+//   meeting_scheduled:{interviewMeetingId}
+//   meeting_rescheduled:{interviewMeetingId}:{newScheduledStartIso}
+//   meeting_started:{interviewMeetingId}
+//   meeting_ended:{interviewMeetingId}
+//   meeting_no_show:{interviewMeetingId}
+//   transcript_ready:meet:{interviewMeetingId}
+//   stage_entered:{stageEntryId}
+//   background_check:{backgroundCheckId}:{outcome}
+//
+// `source` distinguishes the emitter for telemetry — lifecycle | webhook |
+// cron | public_endpoint | manual | internal. Reconciler-driven re-fires
+// don't write new event rows; they reuse the existing one via
+// `redispatchAcceptedEvent`.
+
+model AutomationEvent {
+  id            String    @id @default(uuid())
+  workspaceId   String    @map("workspace_id")
+  sessionId     String?   @map("session_id")
+  triggerType   String    @map("trigger_type")
+  eventKey      String    @map("event_key")
+  source        String
+  payload       Json?
+  acceptedAt    DateTime  @default(now()) @map("accepted_at")
+  // Set when the wrapper's dispatch callback completes without throwing.
+  // Null means "accepted but never finished dispatching" — these are the
+  // rows the reconciler re-fires. Updated transactionally after dispatch.
+  dispatchedAt  DateTime? @map("dispatched_at")
+  // Captured if the dispatch callback throws. Reconciler uses this to skip
+  // hopeless events instead of retrying forever (anything older than the
+  // recovery window with dispatchError set is left alone after one retry).
+  dispatchError String?   @map("dispatch_error")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, eventKey])
+  @@index([sessionId, triggerType])
+  @@index([acceptedAt])
+  @@index([dispatchedAt])
+  @@map("automation_events")
 }
 
 // ============ SCHEDULING ============

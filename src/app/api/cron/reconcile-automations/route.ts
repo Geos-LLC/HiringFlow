@@ -29,13 +29,38 @@ import {
   fireMeetingLifecycleAutomations,
   fireTrainingCompletedAutomations,
 } from '@/lib/automation'
+import {
+  emitAutomationEvent,
+  eventKeys,
+  findOrphanAutomationEvents,
+  redispatchAcceptedEvent,
+} from '@/lib/automation-emit'
 import { logSchedulingEvent } from '@/lib/scheduling'
 
 interface SweepCounts {
-  scanned: { sessionsFinished: number; capturesProcessed: number; meetingsStuckOpen: number; trainingsCompleted: number }
-  fired: { flowCompleted: number; recordingReady: number; meetingEnded: number; trainingCompleted: number }
+  scanned: {
+    sessionsFinished: number
+    capturesProcessed: number
+    meetingsStuckOpen: number
+    trainingsCompleted: number
+    orphanEvents: number
+  }
+  fired: {
+    flowCompleted: number
+    recordingReady: number
+    meetingEnded: number
+    trainingCompleted: number
+    orphanRedispatched: number
+  }
   errors: number
 }
+
+// Window for the AutomationEvent orphan sweep. Anything <2min old is
+// still allowed to be in-flight dispatch (Vercel function timeout is 60s,
+// add a buffer for retries). Anything >24h is left alone — if it didn't
+// land in a day, manual triage is the right answer.
+const ORPHAN_MIN_AGE_MS = 2 * 60 * 1000
+const ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 // Wait this long after scheduledEnd before declaring a meeting stuck and
 // finalizing server-side. 30 min covers the long-tail of meetings that ran
@@ -51,8 +76,8 @@ export async function GET(request: NextRequest) {
 
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const counts: SweepCounts = {
-    scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0, trainingsCompleted: 0 },
-    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0, trainingCompleted: 0 },
+    scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0, trainingsCompleted: 0, orphanEvents: 0 },
+    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0, trainingCompleted: 0, orphanRedispatched: 0 },
     errors: 0,
   }
 
@@ -83,11 +108,24 @@ export async function GET(request: NextRequest) {
     for (const s of finishedSessions) {
       if (auditedSet.has(s.id)) continue
       try {
-        await fireAutomations(s.id, s.outcome ?? 'completed', { executionMode: 'cron' })
-        counts.fired.flowCompleted++
+        const session = await prisma.session.findUnique({ where: { id: s.id }, select: { workspaceId: true } })
+        if (!session) continue
+        const outcome = s.outcome ?? 'completed'
+        const triggerType = outcome === 'passed' ? 'flow_passed' : 'flow_completed'
+        const eventKey = triggerType === 'flow_passed' ? eventKeys.flowPassed(s.id) : eventKeys.flowCompleted(s.id)
+        const result = await emitAutomationEvent({
+          workspaceId: session.workspaceId,
+          sessionId: s.id,
+          triggerType,
+          eventKey,
+          source: 'cron',
+          payload: { outcome },
+          dispatch: () => fireAutomations(s.id, outcome, { executionMode: 'cron' }),
+        })
+        if (result.accepted) counts.fired.flowCompleted++
       } catch (err) {
         counts.errors++
-        console.error('[reconcile-automations] fireAutomations failed', { sessionId: s.id, err })
+        console.error('[reconcile-automations] flow_completed emit failed', { sessionId: s.id, err })
       }
     }
   }
@@ -135,8 +173,16 @@ export async function GET(request: NextRequest) {
       })
       if (!eligible) continue
 
-      await fireFlowRecordingReadyAutomations(cap.sessionId, { executionMode: 'cron' })
-      counts.fired.recordingReady++
+      const result = await emitAutomationEvent({
+        workspaceId: cap.workspaceId,
+        sessionId: cap.sessionId,
+        triggerType: 'recording_ready',
+        eventKey: eventKeys.recordingReadyCapture(cap.id),
+        source: 'cron',
+        payload: { captureResponseId: cap.id },
+        dispatch: () => fireFlowRecordingReadyAutomations(cap.sessionId, { executionMode: 'cron' }),
+      })
+      if (result.accepted) counts.fired.recordingReady++
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] fireFlowRecordingReadyAutomations failed', { captureId: cap.id, err })
@@ -201,8 +247,16 @@ export async function GET(request: NextRequest) {
       })
       if (!eligible) continue
 
-      await fireTrainingCompletedAutomations(sessionId, e.trainingId, { executionMode: 'cron' })
-      counts.fired.trainingCompleted++
+      const result = await emitAutomationEvent({
+        workspaceId: e.session.workspaceId,
+        sessionId,
+        triggerType: 'training_completed',
+        eventKey: eventKeys.trainingCompleted(e.id),
+        source: 'cron',
+        payload: { trainingEnrollmentId: e.id, trainingId: e.trainingId },
+        dispatch: () => fireTrainingCompletedAutomations(sessionId, e.trainingId, { executionMode: 'cron' }),
+      })
+      if (result.accepted) counts.fired.trainingCompleted++
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] fireTrainingCompletedAutomations failed', { enrollmentId: e.id, err })
@@ -235,7 +289,7 @@ export async function GET(request: NextRequest) {
       // may have manually resolved without populating actualEnd).
       scheduledStart: { gte: cutoff },
     },
-    select: { id: true, sessionId: true, scheduledEnd: true, meetingCode: true },
+    select: { id: true, sessionId: true, workspaceId: true, scheduledEnd: true, meetingCode: true },
   })
   counts.scanned.meetingsStuckOpen = stuckMeetings.length
 
@@ -268,13 +322,105 @@ export async function GET(request: NextRequest) {
           at: endAt.toISOString(),
         },
       })
-      await fireMeetingLifecycleAutomations(m.sessionId, 'meeting_ended')
-      counts.fired.meetingEnded++
+      const result = await emitAutomationEvent({
+        workspaceId: m.workspaceId,
+        sessionId: m.sessionId,
+        triggerType: 'meeting_ended',
+        eventKey: eventKeys.meetingEnded(m.id),
+        source: 'cron',
+        payload: { interviewMeetingId: m.id, source: 'cron_heartbeat_timeout' },
+        dispatch: () => fireMeetingLifecycleAutomations(m.sessionId, 'meeting_ended'),
+      })
+      if (result.accepted) counts.fired.meetingEnded++
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] meeting_ended recovery failed', { meetingId: m.id, err })
     }
   }
 
+  // -- Rule 5: AutomationEvent rows accepted but never dispatched -----------
+  //
+  // The emitter (lifecycle middleware / webhook / public endpoint) won the
+  // INSERT race against AutomationEvent's unique constraint but its
+  // dispatch callback never set `dispatchedAt`. The likely cause is Vercel
+  // killing the function mid-flight after the HTTP response returned
+  // (see lifecycle middleware comment about fire-and-forget). Rules 1-4
+  // are state-based scans that depend on observable side-effects
+  // (`AutomationExecution` row exists, `PipelineStatusChange` audit row);
+  // this sweep is *event-based* and picks up drops that didn't leave any
+  // side-effect at all.
+  //
+  // Re-firing routes through the same dispatch function — `redispatchAcceptedEvent`
+  // reuses the event row and stamps `dispatchedAt` on success. The per-step
+  // `AutomationExecution` guard remains the second line of defence if the
+  // dispatch partially completed.
+  const orphans = await findOrphanAutomationEvents({
+    minAgeMs: ORPHAN_MIN_AGE_MS,
+    maxAgeMs: ORPHAN_MAX_AGE_MS,
+    take: 200,
+  })
+  counts.scanned.orphanEvents = orphans.length
+
+  for (const ev of orphans) {
+    try {
+      // Re-derive the dispatch from triggerType + payload. The original
+      // closure is gone (lived in the emitter that died), so the cron
+      // owns the trigger → dispatch mapping. Anything we don't recognise
+      // is left alone with a dispatchError stamp so a human can triage.
+      const dispatch = await deriveDispatchFromEvent(ev)
+      if (!dispatch) {
+        await prisma.automationEvent.update({
+          where: { id: ev.id },
+          data: { dispatchError: `reconciler:unknown_trigger:${ev.triggerType}` },
+        }).catch(() => {})
+        continue
+      }
+      await redispatchAcceptedEvent({ eventId: ev.id, dispatch: () => dispatch() })
+      counts.fired.orphanRedispatched++
+    } catch (err) {
+      counts.errors++
+      console.error('[reconcile-automations] orphan redispatch failed', { eventId: ev.id, err })
+    }
+  }
+
   return NextResponse.json(counts)
+}
+
+/**
+ * Map a stored AutomationEvent back to its dispatch function. The cron is
+ * the only caller — emit sites always know the right `fire*` to wire up
+ * at write time. This covers every triggerType the wrapper currently
+ * accepts; an unmapped trigger returns null so the reconciler can stamp
+ * a `dispatchError` instead of silently looping.
+ */
+async function deriveDispatchFromEvent(ev: {
+  sessionId: string | null
+  triggerType: string
+  payload: Record<string, unknown> | null
+}): Promise<(() => Promise<void>) | null> {
+  if (!ev.sessionId) return null
+  const sessionId = ev.sessionId
+  switch (ev.triggerType) {
+    case 'flow_completed':
+    case 'flow_passed': {
+      const outcome = ev.triggerType === 'flow_passed' ? 'passed' : 'completed'
+      return () => fireAutomations(sessionId, outcome, { executionMode: 'cron' }).then(() => undefined)
+    }
+    case 'recording_ready':
+      return () => fireFlowRecordingReadyAutomations(sessionId, { executionMode: 'cron' }).then(() => undefined)
+    case 'training_completed': {
+      const trainingId = typeof ev.payload?.trainingId === 'string' ? (ev.payload.trainingId as string) : undefined
+      return () => fireTrainingCompletedAutomations(sessionId, trainingId, { executionMode: 'cron' }).then(() => undefined)
+    }
+    case 'meeting_started':
+    case 'meeting_ended':
+    case 'meeting_no_show':
+    case 'transcript_ready':
+      return () => fireMeetingLifecycleAutomations(
+        sessionId,
+        ev.triggerType as 'meeting_started' | 'meeting_ended' | 'meeting_no_show' | 'transcript_ready',
+      ).then(() => undefined)
+    default:
+      return null
+  }
 }

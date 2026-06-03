@@ -18,7 +18,8 @@
 import { prisma } from '../prisma'
 import { logSchedulingEvent } from '../scheduling'
 import { fireMeetingLifecycleAutomations } from '../automation'
-import { bumpSessionActivity } from '../session-activity'
+import { emitAutomationEvent, eventKeys } from '../automation-emit'
+import { bumpSessionProgress } from '../session-activity'
 import { recordArtifact } from '../meet/artifacts'
 import { getBot, listBotParticipants, type RecallParticipant } from './client'
 
@@ -34,6 +35,10 @@ async function emitLifecycleOnce(
   at: Date,
   extra: Record<string, unknown>,
 ): Promise<boolean> {
+  // SchedulingEvent dedup remains as the timeline-row guard (only one
+  // "meeting_started" row per interview shows up in the candidate's
+  // scheduling history). Automation dispatch dedup now lives in
+  // AutomationEvent — see emitAutomationEvent below.
   const existing = await prisma.schedulingEvent.findFirst({
     where: {
       sessionId,
@@ -48,9 +53,34 @@ async function emitLifecycleOnce(
     eventType,
     metadata: { interviewMeetingId, at: at.toISOString(), source: 'recall', ...extra },
   })
-  await fireMeetingLifecycleAutomations(sessionId, eventType).catch((err) =>
-    console.error(`[recall] ${eventType} automations failed:`, err),
-  )
+  // workspaceId comes off the meeting (always set for valid rows). Without
+  // it the AutomationEvent insert can't form its (workspaceId, eventKey)
+  // unique key — we fall through to fire-and-forget in the (rare) case
+  // the lookup fails, matching the prior behaviour.
+  const meeting = await prisma.interviewMeeting.findUnique({
+    where: { id: interviewMeetingId },
+    select: { workspaceId: true },
+  })
+  if (!meeting) {
+    await fireMeetingLifecycleAutomations(sessionId, eventType).catch((err) =>
+      console.error(`[recall] ${eventType} automations failed (no meeting):`, err),
+    )
+    return true
+  }
+  const eventKey =
+    eventType === 'meeting_started' ? eventKeys.meetingStarted(interviewMeetingId)
+    : eventType === 'meeting_ended' ? eventKeys.meetingEnded(interviewMeetingId)
+    : eventType === 'meeting_no_show' ? eventKeys.meetingNoShow(interviewMeetingId)
+    : eventKeys.recordingReadyMeet(interviewMeetingId)
+  await emitAutomationEvent({
+    workspaceId: meeting.workspaceId,
+    sessionId,
+    triggerType: eventType,
+    eventKey,
+    source: 'webhook',
+    payload: { interviewMeetingId, at: at.toISOString(), source: 'recall', ...extra },
+    dispatch: () => fireMeetingLifecycleAutomations(sessionId, eventType),
+  }).catch((err) => console.error(`[recall] ${eventType} emit failed:`, err))
   return true
 }
 
@@ -113,7 +143,7 @@ export async function handleBotInCallRecording(
     { event: 'bot.in_call_recording' },
   )
   if (fired) {
-    await bumpSessionActivity(meeting.sessionId).catch(() => {})
+    await bumpSessionProgress(meeting.sessionId).catch(() => {})
   }
 }
 
@@ -220,7 +250,7 @@ export async function handleBotCallEnded(
       meeting.id, meeting.sessionId, 'meeting_ended', occurredAt,
       { event: 'bot.call_ended', attendedSource },
     )
-    if (fired) await bumpSessionActivity(meeting.sessionId).catch(() => {})
+    if (fired) await bumpSessionProgress(meeting.sessionId).catch(() => {})
     return
   }
 
@@ -283,9 +313,25 @@ export async function handleBotDone(meetingId: string, botId: string, occurredAt
   }).catch((err) => console.warn('[recall] recordArtifact failed:', (err as Error).message))
 
   if (meeting.recordingState !== 'ready') {
-    await fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready').catch((err) =>
-      console.error('[recall] recording_ready automations failed:', err),
-    )
+    const meetingWithWs = await prisma.interviewMeeting.findUnique({
+      where: { id: meeting.id },
+      select: { workspaceId: true },
+    })
+    if (meetingWithWs) {
+      await emitAutomationEvent({
+        workspaceId: meetingWithWs.workspaceId,
+        sessionId: meeting.sessionId,
+        triggerType: 'recording_ready',
+        eventKey: eventKeys.recordingReadyMeet(meeting.id),
+        source: 'webhook',
+        payload: { interviewMeetingId: meeting.id, source: 'recall', recordingId: recording.id },
+        dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready'),
+      }).catch((err) => console.error('[recall] recording_ready emit failed:', err))
+    } else {
+      await fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready').catch((err) =>
+        console.error('[recall] recording_ready automations failed:', err),
+      )
+    }
   }
 }
 

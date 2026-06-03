@@ -119,10 +119,26 @@ export async function getOrCreateEnrollment(opts: {
 
   // Fire training_started so workspace funnel triggers can auto-place the
   // candidate. Imported lazily to keep this lib usable from contexts that
-  // don't pull the automation module.
+  // don't pull the automation module. Keyed off the enrollment id so
+  // re-creating tokens against the same enrollment doesn't re-fire.
   if (opts.sessionId) {
-    const { fireTrainingStartedAutomations } = await import('./automation')
-    await fireTrainingStartedAutomations(opts.sessionId, opts.trainingId).catch(() => {})
+    const session = await prisma.session.findUnique({
+      where: { id: opts.sessionId },
+      select: { workspaceId: true },
+    })
+    if (session) {
+      const { fireTrainingStartedAutomations } = await import('./automation')
+      const { emitAutomationEvent, eventKeys } = await import('./automation-emit')
+      await emitAutomationEvent({
+        workspaceId: session.workspaceId,
+        sessionId: opts.sessionId,
+        triggerType: 'training_started',
+        eventKey: eventKeys.trainingStarted(enrollment.id),
+        source: 'internal',
+        payload: { trainingEnrollmentId: enrollment.id, trainingId: opts.trainingId },
+        dispatch: () => fireTrainingStartedAutomations(opts.sessionId!, opts.trainingId),
+      }).catch(() => {})
+    }
   }
 
   return enrollment

@@ -12,8 +12,6 @@ import { prisma } from '@/lib/prisma'
 import { isMimeAllowed, type CaptureMode } from '@/lib/capture/capture-config'
 import { captureLog } from '@/lib/capture/capture-log'
 import { checkCaptureRateLimit, extractIp } from '@/lib/capture/capture-rate-limit'
-import { fireFlowRecordingReadyAutomations } from '@/lib/automation'
-
 // Public candidate-facing route. Confirms the presigned PUT actually landed
 // in S3, then transitions the CaptureResponse forward.
 //
@@ -159,23 +157,23 @@ export async function POST(
       durationSec: updated.durationSec ?? undefined,
     })
 
-    // Bump the session heartbeat — recruiter dashboards use lastActivityAt to
-    // tell "active right now" from "gone quiet". Same convention as the
-    // existing public flow routes.
+    // Bump both heartbeats — recruiter dashboards use lastActivityAt for
+    // "active right now" vs. "gone quiet", and the stale-detection cron uses
+    // lastProgressAt as the inactivity clock. A capture upload is real forward
+    // progress (candidate produced a recording / submission), so both columns
+    // get bumped.
     await prisma.session.update({
       where: { id: params.sessionId },
-      data: { lastActivityAt: new Date() },
+      data: { lastActivityAt: new Date(), lastProgressAt: new Date() },
     }).catch(() => {})
 
-    // Fire `recording_ready` automations now that the capture is processed.
-    // Capture steps live in CaptureResponse (separate from CandidateSubmission),
-    // so the firing path that lives in submit/route.ts never sees them — without
-    // this call, rules wired to recording_ready would never trigger for
-    // capture-based flows (the Spotless Homes voice-recording flow at
-    // Dispatcher pipeline was the reproducer). Fire-and-forget; an automation
-    // dispatcher failure must not bubble back to the candidate's upload UI.
-    fireFlowRecordingReadyAutomations(params.sessionId, { executionMode: 'public_trigger' })
-      .catch((err) => console.error('[captures/finalize] fireFlowRecordingReadyAutomations failed:', err))
+    // `recording_ready` is now fired by the Prisma `$use` lifecycle middleware
+    // when `finalizeCaptureUpload` flips CaptureResponse.status='processed'.
+    // Calling fireFlowRecordingReadyAutomations explicitly here raced the
+    // middleware path through executeStep — two near-simultaneous pending rows
+    // both passed the guard's idempotency check and both sent. AutomationEvent
+    // (src/lib/automation-emit.ts) is the DB-enforced dedup, but removing the
+    // call here keeps the explicit/implicit responsibility split clean.
 
     return NextResponse.json({
       capture: {

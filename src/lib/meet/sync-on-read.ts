@@ -31,7 +31,8 @@ import { findAttendanceForMeeting, type AttendanceSignal } from './attendance-fa
 import { recordArtifact, recordArtifacts } from './artifacts'
 import { logSchedulingEvent } from '../scheduling'
 import { fireMeetingLifecycleAutomations } from '../automation'
-import { bumpSessionActivity } from '../session-activity'
+import { emitAutomationEvent, eventKeys } from '../automation-emit'
+import { bumpSessionProgress } from '../session-activity'
 
 // Wait this long after scheduledEnd before pulling state. Avoids racing the
 // recording artifact pipeline on Workspace tenants and avoids treating a
@@ -229,8 +230,16 @@ export async function syncMeetingFromMeetApi(meeting: SyncableMeeting): Promise<
       // Fire the trigger here too so automations don't silently stall.
       // Idempotent: the engine's execution table guards against double-send.
       if (recordingJustReady) {
-        await fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready').catch((err) =>
-          console.error('[meet-sync] fire recording_ready failed for', meeting.id, ':', (err as Error).message))
+        await emitAutomationEvent({
+          workspaceId: meeting.workspaceId,
+          sessionId: meeting.sessionId,
+          triggerType: 'recording_ready',
+          eventKey: eventKeys.recordingReadyMeet(meeting.id),
+          source: 'cron',
+          payload: { interviewMeetingId: meeting.id, source: 'meet_api_sync' },
+          dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready'),
+        }).catch((err) =>
+          console.error('[meet-sync] emit recording_ready failed for', meeting.id, ':', (err as Error).message))
       }
       if (transcriptJustReady) {
         await logSchedulingEvent({
@@ -238,8 +247,16 @@ export async function syncMeetingFromMeetApi(meeting: SyncableMeeting): Promise<
           eventType: 'transcript_ready',
           metadata: { interviewMeetingId: meeting.id, driveFileId: data.driveTranscriptFileId as string, source: 'meet_api_sync' },
         }).catch((err) => console.error('[meet-sync] log transcript_ready failed for', meeting.id, ':', (err as Error).message))
-        await fireMeetingLifecycleAutomations(meeting.sessionId, 'transcript_ready').catch((err) =>
-          console.error('[meet-sync] fire transcript_ready failed for', meeting.id, ':', (err as Error).message))
+        await emitAutomationEvent({
+          workspaceId: meeting.workspaceId,
+          sessionId: meeting.sessionId,
+          triggerType: 'transcript_ready',
+          eventKey: eventKeys.transcriptReadyMeet(meeting.id),
+          source: 'cron',
+          payload: { interviewMeetingId: meeting.id, source: 'meet_api_sync' },
+          dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'transcript_ready'),
+        }).catch((err) =>
+          console.error('[meet-sync] emit transcript_ready failed for', meeting.id, ':', (err as Error).message))
       }
 
       // No-show evaluation, but only once we have a real end time. Mid-meeting
@@ -400,8 +417,16 @@ async function syncFromDriveRecording(
   // tenants at all, so this is the *only* place recording_ready ever gets
   // emitted. Engine de-dupes via the execution table.
   if (!prevReady) {
-    await fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready').catch((err) =>
-      console.error('[meet-sync] fire recording_ready failed for', meeting.id, ':', (err as Error).message))
+    await emitAutomationEvent({
+      workspaceId: meeting.workspaceId,
+      sessionId: meeting.sessionId,
+      triggerType: 'recording_ready',
+      eventKey: eventKeys.recordingReadyMeet(meeting.id),
+      source: 'cron',
+      payload: { interviewMeetingId: meeting.id, source: 'meet_api_sync_drive', recordingFileId: chosen.id },
+      dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready'),
+    }).catch((err) =>
+      console.error('[meet-sync] emit recording_ready failed for', meeting.id, ':', (err as Error).message))
   }
   return { updated: true, recordingFileId: chosen.id, createdAt }
 }
@@ -606,7 +631,7 @@ export async function applyAttendanceSignal(
     // engagement on the recruiter's "last active" indicator. Without this,
     // a candidate who only interacts with HireFunnel via interviews looks
     // permanently idle.
-    await bumpSessionActivity(meeting.sessionId)
+    await bumpSessionProgress(meeting.sessionId)
   }
 
   const startedSource = attendance?.source ?? 'recording'
@@ -626,7 +651,7 @@ export async function applyAttendanceSignal(
  * event was actually emitted (false on idempotent skip).
  */
 async function emitLifecycleEventOnce(
-  meeting: { id: string; sessionId: string },
+  meeting: { id: string; sessionId: string; workspaceId?: string },
   eventType: 'meeting_started' | 'meeting_ended',
   at: Date,
   extra: Record<string, unknown>,
@@ -647,8 +672,34 @@ async function emitLifecycleEventOnce(
     metadata: { interviewMeetingId: meeting.id, at: at.toISOString(), ...extra },
   })
   console.log('[Meet] lifecycle emitted from fallback', { meetingId: meeting.id, eventType, at: at.toISOString(), signal: extra.signal ?? null })
-  await fireMeetingLifecycleAutomations(meeting.sessionId, eventType).catch((err) => {
-    console.error(`[meet-sync] ${eventType} automations failed:`, err)
+
+  // Resolve workspaceId for the AutomationEvent dedup key. Not all callers
+  // pass it (the meeting struct varies across this module's helpers); fall
+  // back to a DB lookup so we always have one.
+  let workspaceId = meeting.workspaceId
+  if (!workspaceId) {
+    const row = await prisma.interviewMeeting.findUnique({ where: { id: meeting.id }, select: { workspaceId: true } })
+    workspaceId = row?.workspaceId
+  }
+  if (!workspaceId) {
+    await fireMeetingLifecycleAutomations(meeting.sessionId, eventType).catch((err) => {
+      console.error(`[meet-sync] ${eventType} automations failed (no workspaceId):`, err)
+    })
+    return true
+  }
+  const eventKey = eventType === 'meeting_started'
+    ? eventKeys.meetingStarted(meeting.id)
+    : eventKeys.meetingEnded(meeting.id)
+  await emitAutomationEvent({
+    workspaceId,
+    sessionId: meeting.sessionId,
+    triggerType: eventType,
+    eventKey,
+    source: 'cron',
+    payload: { interviewMeetingId: meeting.id, at: at.toISOString(), source: 'meet_api_sync', ...extra },
+    dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, eventType),
+  }).catch((err) => {
+    console.error(`[meet-sync] ${eventType} emit failed:`, err)
   })
   return true
 }
@@ -726,7 +777,15 @@ async function maybeFlagNoShow(
       ...(context.reason ? { reason: context.reason } : {}),
     },
   })
-  await fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_no_show').catch((err) => {
-    console.error('[meet-sync] no-show automations failed:', err)
+  await emitAutomationEvent({
+    workspaceId: meeting.workspaceId,
+    sessionId: meeting.sessionId,
+    triggerType: 'meeting_no_show',
+    eventKey: eventKeys.meetingNoShow(meeting.id),
+    source: 'cron',
+    payload: { interviewMeetingId: meeting.id, nonHostCount, source: 'meet_api_sync' },
+    dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'meeting_no_show'),
+  }).catch((err) => {
+    console.error('[meet-sync] no-show emit failed:', err)
   })
 }

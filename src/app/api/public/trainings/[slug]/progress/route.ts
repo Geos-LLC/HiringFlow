@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { completeEnrollment } from '@/lib/training-access'
 import { fireTrainingStartedAutomations } from '@/lib/automation'
-import { bumpSessionActivity } from '@/lib/session-activity'
+import { emitAutomationEvent, eventKeys } from '@/lib/automation-emit'
+import { bumpSessionProgress } from '@/lib/session-activity'
 
 // Progress JSON shape stored on TrainingEnrollment.progress.
 //   `sectionTimestamps`: sectionId → ISO completion time, so the recruiter
@@ -129,13 +130,30 @@ export async function PATCH(request: NextRequest) {
   // Route through the funnel-stage trigger only on initial progression so
   // we don't re-fire training_started for every section navigation post-
   // completion. Outside the transaction since it touches other rows.
+  // Keyed by enrollmentId so subsequent section pings are deduped — first
+  // section ping wins, the rest no-op without needing the !isCompleted
+  // check (kept for cheap early-out).
   if (result.sessionId && !result.isCompleted) {
-    await fireTrainingStartedAutomations(result.sessionId, result.trainingId, {
-      executionMode: 'public_trigger',
-    }).catch(() => {})
+    const session = await prisma.session.findUnique({
+      where: { id: result.sessionId },
+      select: { workspaceId: true },
+    })
+    if (session) {
+      await emitAutomationEvent({
+        workspaceId: session.workspaceId,
+        sessionId: result.sessionId,
+        triggerType: 'training_started',
+        eventKey: eventKeys.trainingStarted(enrollmentId),
+        source: 'public_endpoint',
+        payload: { trainingEnrollmentId: enrollmentId, trainingId: result.trainingId },
+        dispatch: () => fireTrainingStartedAutomations(result.sessionId!, result.trainingId, {
+          executionMode: 'public_trigger',
+        }),
+      }).catch(() => {})
+    }
   }
 
-  await bumpSessionActivity(result.sessionId)
+  await bumpSessionProgress(result.sessionId)
 
   return NextResponse.json({ success: true, progress: result.progress, status: result.status })
 }
@@ -189,7 +207,7 @@ export async function POST(request: NextRequest) {
   // and produced duplicate sends + duplicate invite_sent rows on the
   // candidate timeline.
 
-  await bumpSessionActivity(enrollment.sessionId)
+  await bumpSessionProgress(enrollment.sessionId)
 
   return NextResponse.json({ success: true, status: 'completed' })
 }
