@@ -14,7 +14,7 @@
  *   (Or set DATABASE_URL inline for one-off Railway pulls.)
  */
 
-import { runStaleDetection } from '../src/app/api/cron/detect-stalled/route'
+import { runStaleDetection } from '../src/app/api/cron/detect-stalled/runner'
 import { prisma } from '../src/lib/prisma'
 import { STALE_DETECTION_DEFAULT_DAYS } from '../src/lib/candidate-status'
 

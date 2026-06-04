@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { nanoid } from 'nanoid'
-import { runStaleDetection } from '../route'
+import { runStaleDetection } from '../runner'
 
 // Integration tests for the unified stale-detection cron. Hits the real
 // Prisma client / DB the rest of the suite uses (Railway prod via .env). Each
