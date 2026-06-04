@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client'
 import { prisma } from './prisma'
 import { sendEmail, renderTemplate } from './email'
 import { sendSms, normalizeToE164, SmsConfigError, SmsValidationError, SmsSendError } from './sms'
@@ -1134,7 +1135,7 @@ async function upsertExecution(opts: {
               deliveryErrorMessage: null,
               sendgridMessageId: null,
               sendgridEventId: null,
-              deliveryRaw: null,
+              deliveryRaw: Prisma.JsonNull,
               // A fresh send attempt gets its own retry chance — without
               // resetting this, the bounce-retry path would refuse to
               // retry the new attempt because the previous one already
