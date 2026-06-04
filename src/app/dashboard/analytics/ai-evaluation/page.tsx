@@ -29,6 +29,24 @@ interface Candidate {
   candidateEmail: string | null
   startedAt: string
   flow: { id: string; name: string } | null
+  // Funnel stage id (e.g. 'training_in_progress'). Lined up with the active
+  // pipeline's stages[] so the picker can filter to a single column.
+  pipelineStatus: string | null
+}
+
+interface Stage {
+  id: string
+  label: string
+  tone?: string
+  color?: string
+}
+
+interface Pipeline {
+  id: string
+  name: string
+  isDefault: boolean
+  stages: Stage[]
+  flowCount: number
 }
 
 interface ScoredCriterion {
@@ -89,33 +107,57 @@ export default function AIEvaluationPage() {
   const [running, setRunning] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
 
+  // Pipeline + stage filters. Each pipeline owns its own stage list, so
+  // changing the pipeline resets the stage filter to "All". `pipelineId=''`
+  // means "All pipelines" (no server-side filter applied); same for stage.
+  const [pipelines, setPipelines] = useState<Pipeline[]>([])
+  const [pipelineId, setPipelineId] = useState('')
+  const [stageId, setStageId] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+
+  // Preserve previously-loaded candidate metadata across filter changes.
+  // When the recruiter selects three candidates from pipeline A and then
+  // switches to pipeline B, the selection (and the comparison table) must
+  // still render the candidates from A even though they're no longer in the
+  // filtered list. Without this stash, selectedCandidates collapses to []
+  // every time the filter narrows.
+  const [candidateCache, setCandidateCache] = useState<Map<string, Candidate>>(new Map())
+
   // JD override: keyed by sessionId. Empty string = use the default JD.
   // We preload the default JD into the textarea so the recruiter can edit
   // before running.
   const [jdOverrides, setJdOverrides] = useState<Record<string, string>>({})
   const [expandedJd, setExpandedJd] = useState<string | null>(null)
 
-  // Load candidates + existing evaluations on mount.
+  // Initial load: pipelines + first candidates page + existing evaluations.
   useEffect(() => {
     void (async () => {
       try {
-        const [candidatesRes, evalsRes] = await Promise.all([
+        const [candidatesRes, evalsRes, pipelinesRes] = await Promise.all([
           fetch('/api/candidates'),
           fetch('/api/evaluations'),
+          fetch('/api/pipelines'),
         ])
         const candidatesData = await candidatesRes.json()
         const evalsData = await evalsRes.json()
+        const pipelinesData = pipelinesRes.ok ? await pipelinesRes.json() : []
         // /api/candidates returns either { candidates: [] } or [] depending on
         // the route shape. Handle both.
         const list: Candidate[] = Array.isArray(candidatesData)
           ? candidatesData
           : candidatesData.candidates ?? []
         setCandidates(list)
+        setCandidateCache((cur) => {
+          const next = new Map(cur)
+          for (const c of list) next.set(c.id, c)
+          return next
+        })
         const map: Record<string, Evaluation> = {}
         for (const e of (evalsData.evaluations ?? []) as Evaluation[]) {
           if (!map[e.sessionId]) map[e.sessionId] = e
         }
         setEvaluations(map)
+        setPipelines(Array.isArray(pipelinesData) ? pipelinesData : [])
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load')
       } finally {
@@ -123,6 +165,48 @@ export default function AIEvaluationPage() {
       }
     })()
   }, [])
+
+  // Refetch candidates when pipeline / stage filter changes. Skips the first
+  // run (loading=true) — the initial load above already populated the list.
+  useEffect(() => {
+    if (loading) return
+    const params = new URLSearchParams()
+    if (pipelineId) params.set('pipelineId', pipelineId)
+    if (stageId) params.set('status', stageId)
+    setRefreshing(true)
+    void (async () => {
+      try {
+        const res = await fetch(`/api/candidates?${params.toString()}`)
+        const data = await res.json()
+        const list: Candidate[] = Array.isArray(data) ? data : data.candidates ?? []
+        setCandidates(list)
+        setCandidateCache((cur) => {
+          const next = new Map(cur)
+          for (const c of list) next.set(c.id, c)
+          return next
+        })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load')
+      } finally {
+        setRefreshing(false)
+      }
+    })()
+  }, [pipelineId, stageId, loading])
+
+  // Stages of the active pipeline. Empty when "All pipelines" is selected.
+  const activeStages = useMemo<Stage[]>(() => {
+    if (!pipelineId) return []
+    const p = pipelines.find((x) => x.id === pipelineId)
+    return p?.stages ?? []
+  }, [pipelines, pipelineId])
+
+  // Selecting a different pipeline resets the stage filter — pipelines own
+  // their own stage lists so the previously selected stage id likely doesn't
+  // exist in the new pipeline.
+  const onPipelineChange = (id: string) => {
+    setPipelineId(id)
+    setStageId('')
+  }
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim()
@@ -136,9 +220,14 @@ export default function AIEvaluationPage() {
     return arr.slice(0, 100)
   }, [candidates, search])
 
+  // Resolve selected ids through the cache so previously-loaded candidates
+  // still render after a filter change hides them from `candidates`.
   const selectedCandidates = useMemo(
-    () => candidates.filter((c) => selected.has(c.id)),
-    [candidates, selected],
+    () =>
+      Array.from(selected)
+        .map((id) => candidateCache.get(id))
+        .filter((c): c is Candidate => c !== undefined),
+    [selected, candidateCache],
   )
 
   const selectedEvaluations = useMemo(
@@ -253,9 +342,51 @@ export default function AIEvaluationPage() {
         <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6">
           {/* Left — candidate picker */}
           <div className="bg-white border border-surface-border rounded-[12px] overflow-hidden">
-            <div className="px-4 py-3 border-b border-surface-border">
-              <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider mb-2">
-                Select candidates ({selected.size})
+            <div className="px-4 py-3 border-b border-surface-border space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider">
+                  Select candidates ({selected.size})
+                </div>
+                {selected.size > 0 && (
+                  <button
+                    onClick={() => setSelected(new Set())}
+                    className="text-[10px] text-grey-40 hover:text-ink underline-offset-2 hover:underline"
+                  >
+                    Clear selection
+                  </button>
+                )}
+              </div>
+              {/* Pipeline + stage filters. Same filter shape the candidates
+                  kanban uses (server resolves via /api/candidates?pipelineId=&status=).
+                  Selections survive filter changes — see candidateCache. */}
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={pipelineId}
+                  onChange={(e) => onPipelineChange(e.target.value)}
+                  className="px-2.5 py-1.5 border border-surface-border rounded-[8px] text-[12px] focus:outline-none focus:border-brand-500 bg-white"
+                  title="Filter by pipeline"
+                >
+                  <option value="">All pipelines</option>
+                  {pipelines.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.flowCount})
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={stageId}
+                  onChange={(e) => setStageId(e.target.value)}
+                  disabled={!pipelineId || activeStages.length === 0}
+                  className="px-2.5 py-1.5 border border-surface-border rounded-[8px] text-[12px] focus:outline-none focus:border-brand-500 bg-white disabled:bg-surface disabled:text-grey-50"
+                  title={pipelineId ? 'Filter by stage' : 'Pick a pipeline first'}
+                >
+                  <option value="">All stages</option>
+                  {activeStages.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
               </div>
               <input
                 type="search"
@@ -264,6 +395,11 @@ export default function AIEvaluationPage() {
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-sm focus:outline-none focus:border-brand-500"
               />
+              {refreshing && (
+                <div className="text-[10px] font-mono uppercase text-grey-40 tracking-wider">
+                  Refreshing…
+                </div>
+              )}
             </div>
             <div className="max-h-[480px] overflow-y-auto">
               {filtered.length === 0 && (
@@ -274,6 +410,12 @@ export default function AIEvaluationPage() {
               {filtered.map((c) => {
                 const isSelected = selected.has(c.id)
                 const hasEval = !!evaluations[c.id]
+                // Resolve the stage label from the active pipeline, falling
+                // back to the raw stage id when no pipeline is selected
+                // (cross-pipeline view).
+                const stageLabel = c.pipelineStatus
+                  ? activeStages.find((s) => s.id === c.pipelineStatus)?.label ?? c.pipelineStatus
+                  : null
                 return (
                   <button
                     key={c.id}
@@ -292,8 +434,18 @@ export default function AIEvaluationPage() {
                       <div className="text-sm font-medium text-ink truncate">
                         {c.candidateName || '(no name)'}
                       </div>
-                      <div className="text-[11px] text-grey-40 truncate">
-                        {c.candidateEmail ?? '—'} · {c.flow?.name ?? 'no flow'}
+                      <div className="text-[11px] text-grey-40 truncate flex items-center gap-1.5">
+                        <span className="truncate">{c.candidateEmail ?? '—'}</span>
+                        <span>·</span>
+                        <span className="truncate">{c.flow?.name ?? 'no flow'}</span>
+                        {stageLabel && (
+                          <>
+                            <span>·</span>
+                            <span className="shrink-0 px-1 rounded bg-surface text-grey-35 text-[10px] font-medium truncate max-w-[80px]">
+                              {stageLabel}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                     {hasEval && (
