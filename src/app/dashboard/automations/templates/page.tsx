@@ -342,8 +342,8 @@ function UsageBadge({ usage }: { usage?: TemplateUsage }) {
   const names = usage?.ruleNames ?? []
   if (names.length === 0) {
     return (
-      <div className="mb-3 text-[11px] text-grey-50">
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-grey-100 text-grey-50">
+      <div className="mb-3 text-[11px]">
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-weak text-grey-50 font-medium">
           Not used
         </span>
       </div>
@@ -354,7 +354,7 @@ function UsageBadge({ usage }: { usage?: TemplateUsage }) {
   const tooltip = names.join('\n')
   return (
     <div className="mb-3 text-[11px] text-grey-35" title={tooltip}>
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-50 text-green-700 font-medium">
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">
         Used in {names.length} rule{names.length === 1 ? '' : 's'}
       </span>
       <span className="ml-2 text-grey-40 truncate align-middle">
