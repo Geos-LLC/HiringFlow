@@ -2,19 +2,32 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { sendEmail, renderTemplate } from '@/lib/email'
+import { createAccessToken } from '@/lib/training-access'
 
 // Send a single test email rendering an EmailTemplate so the recruiter
 // can confirm formatting in their inbox without first wiring the
 // template into an AutomationRule. Independent of the automation
-// engine: no AutomationExecution rows, no lifecycle hooks, no test
-// Session. Merge tokens get filled with realistic sample values so the
-// rendered output mirrors a real send visually.
+// engine: no AutomationExecution rows, no lifecycle hooks.
 //
-// For sub-tokens like {{schedule_link:<configId>}} and
-// {{training_link:<trainingId>}} the route resolves to the workspace
-// resource's public URL (no candidate session means we can't mint a
-// candidate-bound training token — the test email shows the unsigned
-// path so the recruiter sees the button styled and labelled correctly).
+// Merge tokens get filled with realistic sample values so the rendered
+// output mirrors a real send visually AND so the recruiter can click
+// through and verify the candidate experience end-to-end.
+//
+// Training links: mint a real TrainingAccessToken bound to a per-workspace
+// preview Session (source='test', automationsHaltedAt set). Clicking the
+// link from the test email actually opens the training landing page and
+// progresses just like a candidate would see. Without this, the recruiter
+// hits "Access unavailable" because the link carried a literal "PREVIEW"
+// token that never resolved.
+//
+// Scheduling links: resolve sub-tokens to real /book/<configId> URLs;
+// bare {{schedule_link}} falls back to the workspace's first active
+// SchedulingConfig. The /book page is public (no token), so no special
+// session is needed.
+//
+// Reschedule / cancel links: still placeholders. Those require a real
+// InterviewMeeting that doesn't exist in test mode; the recruiter sees
+// the styled button without a working click-through.
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
@@ -77,17 +90,15 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     meeting_clock: sampleMeetingClock,
     meeting_time: sampleMeetingTime,
     meeting_link: 'https://meet.google.com/sample-test-link',
-    schedule_link: `${appUrl}/book/sample`,
-    training_link: `${appUrl}/t/sample?token=PREVIEW`,
     reschedule_link: `${appUrl}/book/sample/reschedule?t=PREVIEW`,
     cancel_link: `${appUrl}/book/sample/cancel?t=PREVIEW`,
+    // Filled below.
+    schedule_link: `${appUrl}/book/sample`,
+    training_link: `${appUrl}/t/sample?token=PREVIEW`,
   }
 
-  // Sub-tokens: scan subject + bodyHtml + bodyText for
-  // {{schedule_link:<id>}} / {{training_link:<id>}} and resolve each to
-  // a real workspace URL the recruiter can click in the test email.
-  // Training URLs use a literal "PREVIEW" token (won't authenticate),
-  // which is fine for visual verification.
+  // Scan the composite text for which sub-tokens AND bare tokens appear, so
+  // we only allocate preview resources for templates that actually use them.
   const composite = `${template.subject}\n${template.bodyHtml}\n${template.bodyText ?? ''}`
   const subTokenRe = /\{\{\s*(schedule_link|training_link):([A-Za-z0-9_-]+)\s*\}\}/g
   const scheduleIds = new Set<string>()
@@ -97,18 +108,58 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (m[1] === 'schedule_link') scheduleIds.add(m[2])
     else trainingIds.add(m[2])
   }
+  const hasBareTraining = /\{\{\s*training_link\s*\}\}/.test(composite)
+  const hasBareSchedule = /\{\{\s*schedule_link\s*\}\}/.test(composite)
+  const needsTrainingPreview = trainingIds.size > 0 || hasBareTraining
+
+  // schedule_link sub-tokens: no token needed, the booking page is public.
   for (const id of Array.from(scheduleIds)) {
     variables[`schedule_link:${id}`] = `${appUrl}/book/${id}`
   }
-  if (trainingIds.size > 0) {
-    const trainings = await prisma.training.findMany({
-      where: { id: { in: Array.from(trainingIds) }, workspaceId: ws.workspaceId },
-      select: { id: true, slug: true },
+
+  // Bare {{schedule_link}}: pick the workspace's first active SchedulingConfig
+  // as the fallback so the button leads somewhere real.
+  if (hasBareSchedule) {
+    const cfg = await prisma.schedulingConfig.findFirst({
+      where: { workspaceId: ws.workspaceId, isActive: true },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
     })
-    const slugById = new Map(trainings.map(t => [t.id, t.slug]))
-    for (const id of Array.from(trainingIds)) {
-      const slug = slugById.get(id) ?? 'sample'
-      variables[`training_link:${id}`] = `${appUrl}/t/${slug}?token=PREVIEW`
+    if (cfg) variables.schedule_link = `${appUrl}/book/${cfg.id}`
+  }
+
+  // Training links need a real TrainingAccessToken so the recruiter can
+  // click through. Mint one against a per-workspace preview Session.
+  if (needsTrainingPreview) {
+    const previewSession = await ensurePreviewSession(ws.workspaceId, to)
+    if (previewSession) {
+      // Sub-tokens: validate each id belongs to this workspace, then mint a
+      // token for that exact training.
+      if (trainingIds.size > 0) {
+        const trainings = await prisma.training.findMany({
+          where: { id: { in: Array.from(trainingIds) }, workspaceId: ws.workspaceId },
+          select: { id: true, slug: true },
+        })
+        for (const t of trainings) {
+          const tok = await createAccessToken({ sessionId: previewSession.id, trainingId: t.id })
+          variables[`training_link:${t.id}`] = `${appUrl}/t/${t.slug}?token=${tok.token}`
+        }
+      }
+
+      // Bare {{training_link}}: pick the workspace's first training as the
+      // fallback so the button leads somewhere real. Recruiters who want a
+      // specific training in a generic template should use {{training_link:<id>}}.
+      if (hasBareTraining) {
+        const fallback = await prisma.training.findFirst({
+          where: { workspaceId: ws.workspaceId },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true, slug: true },
+        })
+        if (fallback) {
+          const tok = await createAccessToken({ sessionId: previewSession.id, trainingId: fallback.id })
+          variables.training_link = `${appUrl}/t/${fallback.slug}?token=${tok.token}`
+        }
+      }
     }
   }
 
@@ -142,4 +193,42 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return NextResponse.json({ success: false, error: res.error || 'Send failed' }, { status: 502 })
   }
   return NextResponse.json({ success: true, sentTo: to })
+}
+
+/**
+ * Find-or-create a per-workspace "preview" Session that test-send tokens
+ * bind to. Source='test' so the automation guard's existing test-session
+ * filter (`source='test'`) keeps lifecycle hooks from firing when the
+ * recruiter clicks through and creates an enrollment. `automationsHaltedAt`
+ * is set as belt-and-suspenders — even paths that don't consult the
+ * source filter hit the central kill-switch.
+ *
+ * Returns null when the workspace has no Flow yet (Session requires a
+ * flowId). In that case the caller falls back to the literal PREVIEW
+ * placeholder URL — there's no candidate funnel to mint against anyway.
+ */
+async function ensurePreviewSession(workspaceId: string, recipientEmail: string) {
+  const existing = await prisma.session.findFirst({
+    where: { workspaceId, source: 'test', candidateName: '__template_preview__' },
+  })
+  if (existing) return existing
+
+  const flow = await prisma.flow.findFirst({
+    where: { workspaceId },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true },
+  })
+  if (!flow) return null
+
+  return prisma.session.create({
+    data: {
+      workspaceId,
+      flowId: flow.id,
+      source: 'test',
+      candidateName: '__template_preview__',
+      candidateEmail: recipientEmail,
+      automationsHaltedAt: new Date(),
+      automationsHaltedReason: 'preview:test_send',
+    },
+  })
 }
