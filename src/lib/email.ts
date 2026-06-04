@@ -1,8 +1,10 @@
 import sgMail from '@sendgrid/mail'
+import { buildUnsubscribeUrl } from './unsubscribe'
+
+export const PLATFORM_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || 'noreply@hirefunnel.app'
+export const PLATFORM_FROM_NAME = process.env.SENDGRID_FROM_NAME || 'HireFunnel'
 
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY
-const FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || 'noreply@hirefunnel.app'
-const FROM_NAME = process.env.SENDGRID_FROM_NAME || 'HireFunnel'
 
 if (SENDGRID_API_KEY) {
   sgMail.setApiKey(SENDGRID_API_KEY)
@@ -28,6 +30,13 @@ export interface EmailPayload {
   executionId?: string | null
   workspaceId?: string | null
   candidateId?: string | null
+  // When present, sendEmail attaches RFC 8058 List-Unsubscribe headers
+  // pointing at /u/<token>. Required by Apple + Gmail bulk-sender rules
+  // (Feb 2024) for marketing-class mail; helps deliverability on
+  // transactional candidate-facing automations too. Pass the sessionId
+  // for the candidate this email is going to. System emails to recruiters
+  // (transcoder, password reset) should omit it.
+  unsubscribeSessionId?: string | null
 }
 
 export async function sendEmail(payload: EmailPayload): Promise<{ success: boolean; messageId?: string; error?: string }> {
@@ -37,8 +46,8 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
   }
 
   const from = payload.from?.email
-    ? { email: payload.from.email, name: payload.from.name || FROM_NAME }
-    : { email: FROM_EMAIL, name: FROM_NAME }
+    ? { email: payload.from.email, name: payload.from.name || PLATFORM_FROM_NAME }
+    : { email: PLATFORM_FROM_EMAIL, name: PLATFORM_FROM_NAME }
 
   const replyTo = payload.replyTo?.email
     ? { email: payload.replyTo.email, name: payload.replyTo.name || undefined }
@@ -51,6 +60,19 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
   if (payload.executionId) customArgs.executionId = payload.executionId
   if (payload.workspaceId) customArgs.workspaceId = payload.workspaceId
   if (payload.candidateId) customArgs.candidateId = payload.candidateId
+
+  // RFC 8058 one-click List-Unsubscribe headers. Apple Mail (Feb 2024 bulk
+  // sender requirements) and Gmail require these for high-volume mail and
+  // weight them heavily for reputation. We include them on every
+  // candidate-facing automation email — the candidate gets an
+  // "Unsubscribe" link in the native mail UI; clicking it POSTs to /u/…
+  // which halts further automations for that session.
+  const headers: Record<string, string> = {}
+  if (payload.unsubscribeSessionId) {
+    const url = buildUnsubscribeUrl(payload.unsubscribeSessionId)
+    headers['List-Unsubscribe'] = `<${url}>`
+    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
+  }
 
   try {
     const [response] = await sgMail.send({
@@ -65,6 +87,7 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
         openTracking: { enable: false },
       },
       ...(Object.keys(customArgs).length > 0 ? { customArgs } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
     })
 
     const messageId = response.headers['x-message-id'] as string || undefined

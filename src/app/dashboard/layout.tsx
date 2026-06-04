@@ -15,10 +15,12 @@
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { signOut, useSession } from 'next-auth/react'
+import { Toaster } from 'sonner'
 import { TopNav, type TopNavItem } from '@/components/design'
 import { SwipeTabs } from '@/components/design/SwipeTabs'
 import { TranscodeBanner } from './_components/TranscodeBanner'
 import { UploadProvider } from './_components/UploadProvider'
+import { DeliveryFailureToaster } from './_components/DeliveryFailureToaster'
 
 const NAV_ITEMS: TopNavItem[] = [
   { href: '/dashboard/candidates', label: 'Candidates' },
@@ -78,6 +80,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         />
 
         <TranscodeBanner />
+        <DeliveryFailureToaster />
+        <Toaster position="bottom-right" richColors closeButton />
 
         <SwipeTabs items={NAV_ITEMS} disabledPaths={SWIPE_DISABLED}>
           <main

@@ -1646,6 +1646,7 @@ export async function executeStep(
   // ─── Send on the requested channel ─────────────────────────────────
   let result: { success: boolean; error?: string; messageId?: string }
   let provider: 'sendgrid' | 'sigcore' = 'sendgrid'
+  let renderedEmail: { subject: string; html: string; text: string | null } | null = null
 
   if (channel === 'sms') {
     provider = 'sigcore'
@@ -1726,6 +1727,7 @@ export async function executeStep(
     const subject = renderTemplate(step.emailTemplate.subject, variables)
     const html = renderTemplate(step.emailTemplate.bodyHtml, variables)
     const text: string | undefined = step.emailTemplate.bodyText ? renderTemplate(step.emailTemplate.bodyText, variables) : undefined
+    renderedEmail = { subject, html, text: text ?? null }
     // Note: if the recruiter set "Includes link to" but the template doesn't
     // contain the matching {{xxx_link}} token, the link silently won't
     // appear. The rule editor surfaces this as an inline warning so the
@@ -1763,6 +1765,12 @@ export async function executeStep(
       replyTo = { email: session.candidateEmail, name: session.candidateName || undefined }
     }
 
+    // Only attach List-Unsubscribe when the email actually goes to the
+    // candidate — recruiter-side "company" notifications don't need
+    // candidate-scoped unsubscribe machinery (the recruiter isn't going to
+    // opt themselves out of their own pipeline notifications).
+    const unsubscribeSessionId = step.emailDestination === 'applicant' ? sessionId : null
+
     result = await sendEmail({
       to: recipient,
       subject,
@@ -1773,6 +1781,7 @@ export async function executeStep(
       executionId: execution.id,
       workspaceId: session.workspaceId,
       candidateId: sessionId,
+      unsubscribeSessionId,
     })
   }
 
@@ -1785,6 +1794,12 @@ export async function executeStep(
       sentAt: result.success ? new Date() : null,
       channel,
       provider,
+      // Capture rendered email content so the bounce-retry path can resend
+      // the exact same subject + body without re-walking the variables
+      // chain. Only relevant for email channel.
+      renderedSubject: channel === 'email' ? renderedEmail?.subject ?? null : null,
+      renderedHtml: channel === 'email' ? renderedEmail?.html ?? null : null,
+      renderedText: channel === 'email' ? renderedEmail?.text ?? null : null,
     },
   })
 

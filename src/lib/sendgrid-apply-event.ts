@@ -6,6 +6,7 @@ import {
   type SendgridEvent,
   type DeliveryStatus,
 } from './sendgrid-events'
+import { maybeBounceRetry } from './bounce-retry'
 
 export type ApplyResult = 'updated' | 'no_execution' | 'cross_workspace' | 'duplicate' | 'no_status_change'
 
@@ -86,5 +87,21 @@ export async function applyEventToExecution(
       } as any,
     },
   })
+
+  // Sender-policy bounces (Apple HM08 etc) are recoverable by resending
+  // from the platform default sender. Fire-and-forget; failures are
+  // logged but never block the webhook ack (SendGrid retries are
+  // expensive and the row already reflects the original block).
+  if (next === 'blocked' || next === 'bounce') {
+    maybeBounceRetry(executionId)
+      .then(r => {
+        if (r.retried) {
+          console.log('[SendGridWebhook] bounce-retry sent', { executionId, messageId: r.messageId })
+        }
+      })
+      .catch(err => {
+        console.error('[SendGridWebhook] bounce-retry error', { executionId, err })
+      })
+  }
   return 'updated'
 }

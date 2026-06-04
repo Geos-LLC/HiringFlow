@@ -86,7 +86,16 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (domainOk || singleOk) from = { email: wsRow.senderEmail, name: wsRow.senderName || undefined }
   }
 
-  const result = await sendEmail({ to: session.candidateEmail, subject, html, text, from })
+  const result = await sendEmail({
+    to: session.candidateEmail,
+    subject,
+    html,
+    text,
+    from,
+    workspaceId: session.workspaceId,
+    candidateId: session.id,
+    unsubscribeSessionId: session.id,
+  })
   if (!result.success) {
     return NextResponse.json({ error: result.error || 'Email send failed' }, { status: 502 })
   }

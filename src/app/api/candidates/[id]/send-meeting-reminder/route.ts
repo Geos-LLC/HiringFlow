@@ -115,7 +115,16 @@ export async function POST(_request: NextRequest, { params }: { params: { id: st
   const subject = renderTemplate(template.subject, variables)
   const html = renderTemplate(template.bodyHtml, variables)
   const text: string | undefined = template.bodyText ? renderTemplate(template.bodyText, variables) : undefined
-  const emailResult = await sendEmail({ to: session.candidateEmail, subject, html, text, from })
+  const emailResult = await sendEmail({
+    to: session.candidateEmail,
+    subject,
+    html,
+    text,
+    from,
+    workspaceId: session.workspaceId,
+    candidateId: session.id,
+    unsubscribeSessionId: session.id,
+  })
 
   let smsResult: { success: boolean; error?: string } | null = null
   if (session.candidatePhone) {

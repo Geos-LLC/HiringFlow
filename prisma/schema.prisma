@@ -1311,6 +1311,20 @@ model AutomationExecution {
   sendgridEventId      String?         @map("sendgrid_event_id")
   // Raw event payload from SendGrid, for admin debugging. Trimmed on write.
   deliveryRaw          Json?           @map("delivery_raw")
+  // Timestamp of the bounce-retry attempt: when SendGrid reports an
+  // HM08-like per-recipient block on a workspace-custom sender, we resend
+  // the same execution once via the platform default sender (noreply@…).
+  // Set once on retry; presence guarantees we never retry the same exec
+  // twice (avoids loops if the platform sender is also blocked).
+  bounceRetriedAt      DateTime?       @map("bounce_retried_at")
+  // Captured rendered email content at send time. Lets the bounce-retry
+  // path resend the exact same subject + body without re-walking the
+  // variable-building chain (meeting/scheduling links, template tokens,
+  // workspace branding). Also serves as a "what did we actually send"
+  // audit if a recruiter asks why a delivery failed. Null for SMS rows.
+  renderedSubject      String?         @map("rendered_subject")
+  renderedHtml         String?         @map("rendered_html") @db.Text
+  renderedText         String?         @map("rendered_text") @db.Text
 
   @@unique([stepId, sessionId, channel, stageEntryId])
   @@index([sessionId, status])

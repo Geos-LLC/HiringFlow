@@ -251,6 +251,7 @@ export async function POST(request: NextRequest) {
       executionId: execution.id,
       workspaceId: ws.workspaceId,
       candidateId: s.id,
+      unsubscribeSessionId: s.id,
     })
 
     if (res.success) {
@@ -261,6 +262,9 @@ export async function POST(request: NextRequest) {
           status: 'sent',
           sentAt: new Date(),
           providerMessageId: res.messageId ?? null,
+          renderedSubject,
+          renderedHtml,
+          renderedText,
         },
       })
     } else {
@@ -268,7 +272,13 @@ export async function POST(request: NextRequest) {
       failures.push({ id: s.id, reason: res.error || 'unknown' })
       await prisma.automationExecution.update({
         where: { id: execution.id },
-        data: { status: 'failed', errorMessage: res.error ?? 'unknown' },
+        data: {
+          status: 'failed',
+          errorMessage: res.error ?? 'unknown',
+          renderedSubject,
+          renderedHtml,
+          renderedText,
+        },
       })
     }
   }

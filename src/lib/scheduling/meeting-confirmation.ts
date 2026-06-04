@@ -174,6 +174,7 @@ export async function sendMeetingConfirmation(
     from,
     workspaceId: meeting.workspace.id,
     candidateId: meeting.session.id,
+    unsubscribeSessionId: meeting.session.id,
   })
 
   if (!result.success) {
