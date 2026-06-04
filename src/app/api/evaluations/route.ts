@@ -148,6 +148,7 @@ export async function POST(request: NextRequest) {
         criteria: result.criteria as any,
         strengths: result.strengths as any,
         weaknesses: result.weaknesses as any,
+        roleSuccessFactors: result.roleSuccessFactors as any,
         sources: gathered.sources as any,
         includeVoice: !!includeVoice,
         includeVideo: !!includeVideo,

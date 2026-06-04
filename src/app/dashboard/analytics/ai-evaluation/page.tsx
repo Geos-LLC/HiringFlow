@@ -102,6 +102,9 @@ interface Evaluation {
   criteria: ScoredCriterion[]
   strengths: string[]
   weaknesses: string[]
+  // Outcome-driving behaviors the rubric was built from. Null for evals
+  // created before the success-factor layer landed.
+  roleSuccessFactors?: string[] | null
   positionDescriptionSnapshot: string
   sources?: SourcesSummary
   includeVoice?: boolean
@@ -1050,6 +1053,37 @@ function ComparisonTable({
                         <div><dt className="inline font-semibold text-grey-20">Camera presence: </dt><dd className="inline">{first.cameraPresence}</dd></div>
                         <div><dt className="inline font-semibold text-grey-20">Engagement: </dt><dd className="inline">{first.engagement}</dd></div>
                       </dl>
+                    </td>
+                  )
+                })}
+              </tr>
+            )}
+            {/* Role success factors — the outcome-driving behaviors the
+                rubric was derived from. Shown once per candidate since
+                different JDs (or per-candidate JD overrides) can produce
+                different factor lists. Null on pre-success-factor evals. */}
+            {orderedCandidates.some((c) => (bySession.get(c.id)?.roleSuccessFactors?.length ?? 0) > 0) && (
+              <tr className="border-b border-surface-border bg-surface-light/20">
+                <td className="px-4 py-2.5 text-[11px] font-mono uppercase text-grey-35 align-top">
+                  Role success factors
+                </td>
+                {orderedCandidates.map((c) => {
+                  const ev = bySession.get(c.id)!
+                  const factors = ev.roleSuccessFactors ?? []
+                  if (factors.length === 0) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-50">
+                        (pre-success-factor eval)
+                      </td>
+                    )
+                  }
+                  return (
+                    <td key={c.id} className="px-3 py-2.5 align-top">
+                      <ul className="text-[11px] text-grey-15 space-y-0.5 list-disc list-inside">
+                        {factors.map((f, i) => (
+                          <li key={i}>{f}</li>
+                        ))}
+                      </ul>
                     </td>
                   )
                 })}

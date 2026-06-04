@@ -69,6 +69,7 @@ interface Evaluation {
   criteria: Array<{ name: string; description: string; weight: number; score: number; evidence: string }>
   strengths: string[]
   weaknesses: string[]
+  roleSuccessFactors?: string[] | null
   positionDescriptionSnapshot: string
   sources?: SourcesSummary
   includeVoice?: boolean
@@ -523,6 +524,18 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
               </div>
             )}
             <div className="text-[12px] text-grey-15 mb-3">{evaluation.summary}</div>
+            {(evaluation.roleSuccessFactors?.length ?? 0) > 0 && (
+              <div className="mb-3 px-3 py-2 bg-emerald-50/50 rounded-[8px] border border-emerald-100">
+                <div className="text-[10px] font-mono uppercase text-emerald-700 tracking-wider mb-1">
+                  Role success factors
+                </div>
+                <ul className="text-[11px] text-grey-15 space-y-0.5 list-disc list-inside">
+                  {evaluation.roleSuccessFactors!.map((f, i) => (
+                    <li key={i}>{f}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="space-y-1.5">
               {evaluation.criteria.map((c) => (
                 <div key={c.name} className="flex items-center gap-2 text-[11px]">

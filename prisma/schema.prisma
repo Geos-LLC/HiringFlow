@@ -1078,6 +1078,12 @@ model CandidateEvaluation {
   criteria                    Json
   strengths                   Json // string[]
   weaknesses                  Json // string[]
+  // The 3-6 outcome-driving behaviors the rubric was built from
+  // (string[]). Persisted so the recruiter can see WHY a given rubric was
+  // chosen — e.g. "convert inbound leads into booked appointments" leading
+  // to the "Booking Conversion" criterion. Nullable because evaluations
+  // created before the success-factor layer (pre-2026-06-04) don't have one.
+  roleSuccessFactors          Json?     @map("role_success_factors")
   // Provenance metadata: which transcripts went into the prompt. Shape:
   // { meetings: [{id, durationSec, hasTranscript}],
   //   aiCalls: [{conversationId, durationSecs, hasTranscript}],
