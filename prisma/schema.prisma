@@ -1072,6 +1072,13 @@ model EmailTemplate {
   automations AutomationRule[]
   steps       AutomationStep[]
 
+  // Names must be unique per workspace. Without this, the seed endpoint
+  // running twice (or a recruiter retrying a POST) produced multiple rows
+  // with the same display name — see the "Next Step × 3 / Training
+  // Invitation × 2" cleanup on 2026-06-04. POST /api/email-templates
+  // translates the P2002 conflict into a 409 so the UI can surface
+  // "Name already in use".
+  @@unique([workspaceId, name])
   @@map("email_templates")
 }
 
@@ -1092,6 +1099,8 @@ model SmsTemplate {
   updatedAt   DateTime         @updatedAt @map("updated_at")
   steps       AutomationStep[]
 
+  // Same per-workspace name uniqueness as EmailTemplate.
+  @@unique([workspaceId, name])
   @@map("sms_templates")
 }
 
