@@ -854,6 +854,12 @@ export default function AIEvaluationPage() {
               </div>
             )}
 
+            {selectedEvaluations.length >= 2 && (
+              <ComparisonSummary
+                candidates={selectedCandidates}
+                evaluations={selectedEvaluations}
+              />
+            )}
             {selectedEvaluations.length > 0 && (
               <ComparisonTable
                 candidates={selectedCandidates}
@@ -1344,6 +1350,202 @@ function EvaluationCards({
           >
             {expanded ? `Show top 8` : `Show all ${list.length}`}
           </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// =========================================================================
+// ComparisonSummary — role-aware relative deployment summary across candidates
+// =========================================================================
+//
+// Calls POST /api/evaluations/compare and renders the result as a bucketed
+// deployment view above the criteria comparison table. Lets the recruiter
+// see at a glance: who's best for which slot, who needs training, who has
+// risk flags. The bucket labels come from the model based on the role's
+// success factors — they're NOT hardcoded.
+
+interface ComparisonBucket {
+  label: string
+  description: string
+  sessionIds: string[]
+  reason: string
+}
+interface ComparisonRiskFlag {
+  sessionId: string
+  flag: string
+  severity: 'low' | 'medium' | 'high'
+}
+interface ComparisonTrainingItem {
+  sessionId: string
+  needs: string
+}
+interface ComparisonResult {
+  buckets: ComparisonBucket[]
+  trainingRequired: ComparisonTrainingItem[]
+  riskFlags: ComparisonRiskFlag[]
+  summary: string
+}
+
+const SEVERITY_COLOR: Record<ComparisonRiskFlag['severity'], string> = {
+  low: 'bg-amber-50 text-amber-700 border-amber-200',
+  medium: 'bg-orange-50 text-orange-700 border-orange-200',
+  high: 'bg-red-50 text-red-700 border-red-200',
+}
+
+function ComparisonSummary({
+  candidates,
+  evaluations,
+}: {
+  candidates: Candidate[]
+  evaluations: Evaluation[]
+}) {
+  const [result, setResult] = useState<ComparisonResult | null>(null)
+  const [crossJd, setCrossJd] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // Track the set of evaluation IDs the summary was generated against. When
+  // the recruiter changes selection or re-runs an evaluation, the cached
+  // summary becomes stale — we surface "Refresh" so they know.
+  const [staleKey, setStaleKey] = useState<string | null>(null)
+
+  const currentKey = useMemo(
+    () =>
+      evaluations
+        .map((e) => e.id)
+        .sort()
+        .join('|'),
+    [evaluations],
+  )
+  const isStale = result !== null && staleKey !== currentKey
+
+  const nameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of candidates) m.set(c.id, c.candidateName || '(no name)')
+    return m
+  }, [candidates])
+
+  const run = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/evaluations/compare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionIds: evaluations.map((e) => e.sessionId) }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Comparison failed')
+      setResult(data.comparison as ComparisonResult)
+      setCrossJd(!!data.crossJd)
+      setStaleKey(currentKey)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Comparison failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="bg-white border border-surface-border rounded-[12px] overflow-hidden">
+      <div className="px-4 py-3 border-b border-surface-border flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider">
+            Comparison summary
+          </div>
+          <div className="text-[12px] text-grey-40">
+            Role-aware deployment buckets, training gaps, and risk flags across the {evaluations.length} selected candidates.
+          </div>
+        </div>
+        <button
+          onClick={run}
+          disabled={loading}
+          className="text-[12px] px-3 py-1.5 rounded-[8px] bg-ink text-white font-semibold hover:bg-grey-15 disabled:opacity-50 transition-colors"
+        >
+          {loading ? 'Comparing…' : result ? (isStale ? 'Refresh' : 'Re-run') : 'Generate summary'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="px-4 py-3 border-b border-red-200 bg-red-50 text-red-700 text-sm">
+          {error}
+        </div>
+      )}
+
+      {crossJd && (
+        <div className="px-4 py-2 border-b border-amber-200 bg-amber-50 text-amber-800 text-[11px]">
+          ⚠ Comparing across different position descriptions — using the most-recent evaluation's JD as the role basis.
+        </div>
+      )}
+
+      {result ? (
+        <div className="px-4 py-4 space-y-4">
+          <div className="text-[12px] text-grey-15 italic">{result.summary}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {result.buckets.map((b, i) => (
+              <div key={i} className="bg-surface/40 border border-surface-border rounded-[8px] p-3">
+                <div className="text-[12px] font-semibold text-ink mb-0.5">{b.label}</div>
+                <div className="text-[11px] text-grey-50 mb-2">{b.description}</div>
+                {b.sessionIds.length === 0 ? (
+                  <div className="text-[11px] text-grey-50 italic">(none)</div>
+                ) : (
+                  <ul className="space-y-1">
+                    {b.sessionIds.map((sid) => (
+                      <li key={sid} className="text-[11px] text-grey-15">
+                        <span className="font-medium">{nameById.get(sid) ?? sid.slice(0, 8)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {b.reason && (
+                  <div className="text-[11px] text-grey-25 mt-2 leading-snug">{b.reason}</div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {result.trainingRequired.length > 0 && (
+            <div>
+              <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider mb-1.5">
+                Training required
+              </div>
+              <ul className="space-y-1">
+                {result.trainingRequired.map((t, i) => (
+                  <li key={i} className="text-[12px] text-grey-15">
+                    <span className="font-medium">{nameById.get(t.sessionId) ?? t.sessionId.slice(0, 8)}:</span>{' '}
+                    <span className="text-grey-25">{t.needs}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {result.riskFlags.length > 0 && (
+            <div>
+              <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider mb-1.5">
+                Risk flags
+              </div>
+              <ul className="space-y-1">
+                {result.riskFlags.map((r, i) => (
+                  <li key={i} className="text-[12px] text-grey-15 flex items-start gap-2">
+                    <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border font-medium uppercase ${SEVERITY_COLOR[r.severity]}`}>
+                      {r.severity}
+                    </span>
+                    <span>
+                      <span className="font-medium">{nameById.get(r.sessionId) ?? r.sessionId.slice(0, 8)}:</span>{' '}
+                      <span className="text-grey-25">{r.flag}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="px-4 py-6 text-center text-[12px] text-grey-50">
+          Click <span className="font-medium text-grey-25">Generate summary</span> for a relative
+          deployment view (best slot per candidate, training gaps, risk flags).
         </div>
       )}
     </div>

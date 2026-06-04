@@ -77,16 +77,28 @@ export const DERIVE_RUBRIC_SYSTEM_PROMPT = `You design hiring rubrics that predi
 Your output has TWO sections:
 
 (A) ROLE SUCCESS FACTORS — 3 to 6 observable behaviors that DIRECTLY predict success in this specific job.
-    These are business outcomes, not personality traits. Examples by role type:
-      • Dispatcher / customer intake / phone sales:
-          discovery, scope qualification, service explanation, pricing delivery,
-          objection handling, upsell of appropriate add-ons, booking control / closing,
-          appointment confirmation, follow-up accuracy.
+    These are business outcomes, not personality traits. Examples by role type
+    (illustrative — derive the actual factors from THIS JD):
+      • Dispatcher / customer intake / residential cleaning / phone sales:
+          building rapport quickly with homeowners, qualifying cleaning scope
+          naturally (not via interrogation), explaining services clearly,
+          delivering pricing confidently, handling objections and hesitation,
+          recovering from customer complaints, upselling appropriate add-ons,
+          controlling the call toward booking, scheduling accurately and
+          confirming appointment details.
       • Cleaner / field / in-home service:
-          presentation in customer homes, instruction-following, attention to detail,
-          reliability signals (showing up, time discipline), safety + professionalism
-          around customers and property, recovery when something goes wrong.
-      • Other roles: read the JD carefully and infer the equivalent outcome-driving behaviors.
+          professional presentation in customer homes, instruction-following,
+          reliability signals (showing up, time discipline), attention to detail,
+          customer-home professionalism, recovery when something goes wrong.
+      • Sales / closing roles:
+          discovery, value demonstration, objection handling, urgency creation,
+          closing conversion, follow-up discipline.
+      • Operations / coordination roles:
+          process accuracy, documentation discipline, cross-team coordination,
+          error recovery, throughput.
+      • Other roles: read the JD carefully and infer the equivalent
+        outcome-driving behaviors. Do NOT default to dispatcher behaviors when
+        the JD is about something else.
 
 (B) CRITERIA — 4 to 8 scoring criteria that each measure ONE of the success factors above.
     Each criterion must be observable in a recorded screening conversation, AI training call,
@@ -100,10 +112,17 @@ HARD RULES:
      standalone concerns: ${GENERIC_FORBIDDEN_AXES.join(', ')}.
      If the JD wants "professional phone manner", that's "Phone Manner & Tone" or
      "Customer-Facing Composure" — not bare "Professionalism".
-  3. Prefer outcome-anchored names: "Booking Conversion", "Scope Qualification",
-     "Service Explanation", "Pricing Delivery", "Objection Handling", "Upsell Ability",
-     "Instruction Following", "Customer-Home Presentation" — not "Communication" or
-     "Customer Service".
+  3. Prefer outcome-anchored names. Good examples for the relevant role
+     families:
+       • Dispatcher / phone intake: "Lead Qualification", "Service Explanation",
+         "Pricing Delivery", "Booking Control", "Upsell Ability",
+         "Objection Handling", "Complaint Recovery", "Scheduling Accuracy",
+         "Rapport Building".
+       • Cleaner / field: "Instruction Following", "Customer-Home Presentation",
+         "Reliability Signals", "Detail Coverage", "Property Safety".
+       • Sales: "Discovery Depth", "Value Demonstration", "Closing Conversion",
+         "Follow-Up Discipline".
+     Avoid bare "Communication" or "Customer Service".
   4. Names are 2-4 words. Descriptions are one sentence stating the observable behavior
      AND why it matters for this job's outcomes.`
 
@@ -277,15 +296,30 @@ How to score each criterion (0-100):
      did the candidate actually do this behavior in a way that would drive
      the desired outcome for THIS job?
   2. For customer-facing or phone-based roles, evaluate COMPLETE CONVERSATION
-     OUTCOMES, not isolated statements. Consider whether the candidate:
-       - gathered the right information (discovery, scope qualification)
-       - explained services clearly enough that the customer could decide
-       - delivered pricing without flinching or apologizing
-       - handled hesitation and objections without losing the customer
-       - moved the conversation toward booking / commitment / next step
-       - built customer confidence over the course of the call, or eroded it
-     A candidate who recited polite phrases but never moved toward booking
-     scores lower than one who asked sharp qualifying questions and closed.
+     OUTCOMES across the whole call, not isolated statements. Specifically
+     check whether the candidate:
+       - OPENED the conversation naturally and built rapport quickly
+         (instead of stiff scripted openers or going straight into questions)
+       - GATHERED required information in a NATURAL order, conversationally
+         (discovery, scope qualification) — NOT a back-to-back interrogation
+         that drains the customer
+       - EXPLAINED services clearly enough that the customer could decide
+       - DELIVERED pricing confidently — no flinching, no apologizing,
+         no over-discounting
+       - HANDLED objections, hesitation, and complaints by acknowledging
+         and recovering, rather than ignoring or deflecting
+       - OFFERED appropriate add-ons / upsells in context (not pushy,
+         not absent)
+       - MOVED the conversation toward booking, commitment, or a clear
+         next step
+       - CONFIRMED appointment details accurately (date, time, address,
+         scope) before ending the call
+       - BUILT customer confidence over the course of the call, or eroded it
+     A candidate who recited polite phrases but never qualified scope,
+     stumbled on price, or never closed scores LOWER than one who
+     conversationally discovered, quoted confidently, handled an objection,
+     and confirmed the booking — even if the second candidate had a less
+     polished opener.
   3. For field/cleaner/in-home roles, evaluate behaviors visible in the
      self-intro recording and any captures: presentation, instruction
      following, reliability signals, attention to detail, professionalism
@@ -401,4 +435,186 @@ export async function runEvaluation(
 ): Promise<EvaluationResult> {
   const derivation = await deriveCriteria(positionDescription)
   return scoreCandidate(positionDescription, derivation, material, voice ?? null, video ?? null)
+}
+
+// =================================================================
+// Cross-candidate comparison summary
+// =================================================================
+//
+// Given a set of saved evaluations for candidates being considered for the
+// SAME role, produce a role-aware relative summary so the recruiter can see
+// at-a-glance: who's best for immediate conversion, who fits operations
+// better, who needs coaching, who has risk flags.
+//
+// The bucket labels are NOT hardcoded — the model derives 3-5 deployment
+// buckets from the role's success factors, then assigns each candidate to
+// a bucket with a one-line reason. This stays consistent with the rest of
+// the engine's "role-dynamic, no hardcoded categories" architecture.
+
+export interface ComparisonInputEvaluation {
+  sessionId: string
+  candidateName: string | null
+  overallScore: number
+  recommendation: EvaluationResult['recommendation']
+  summary: string
+  criteria: Array<{ name: string; weight: number; score: number; evidence: string }>
+  strengths: string[]
+  weaknesses: string[]
+  roleSuccessFactors?: string[] | null
+}
+
+export interface ComparisonBucket {
+  label: string
+  description: string
+  sessionIds: string[]
+  reason: string
+}
+
+export interface ComparisonRiskFlag {
+  sessionId: string
+  flag: string
+  severity: 'low' | 'medium' | 'high'
+}
+
+export interface ComparisonTrainingItem {
+  sessionId: string
+  // What this candidate would need to be ready for the role.
+  needs: string
+}
+
+export interface ComparisonResult {
+  // 3-5 deployment buckets, model-derived from the role's success factors.
+  // Each bucket can hold 0 or more candidates. A candidate can appear in
+  // at most one bucket — the model picks the best fit.
+  buckets: ComparisonBucket[]
+  trainingRequired: ComparisonTrainingItem[]
+  riskFlags: ComparisonRiskFlag[]
+  // 2-3 sentence overview: who you'd hire, who you'd put where, who you'd
+  // pass on. Specific over bland.
+  summary: string
+}
+
+export const COMPARE_CANDIDATES_SYSTEM_PROMPT = `You compare candidates evaluated against the SAME role and produce a relative deployment summary.
+
+Output structure:
+  1. BUCKETS — derive 3-5 deployment buckets from the role's success factors.
+     Each bucket is a slot the recruiter would actually fill. Examples
+     depending on the role:
+       • Phone-intake / dispatcher: "Strongest for immediate dispatcher
+         conversion", "Strongest for operations / process discipline",
+         "Coachable — needs training", "Pass".
+       • Field / cleaner: "Ready for solo work", "Ready with checklist
+         supervision", "Needs ride-along training", "Pass".
+       • Sales: "Ready to quota", "Ramp candidate", "Pass".
+     Bucket LABELS must reflect THIS role's outcomes — do NOT use generic
+     "Top performer / Average / Weak". Each bucket gets a one-line
+     description of why the bucket exists, and the sessionIds of the
+     candidates assigned to it with a one-line reason per assignment.
+
+  2. TRAINING REQUIRED — for any candidate who would need specific coaching
+     to be ready, name the actual skill gap (e.g. "needs pricing-delivery
+     reps", "needs scope-qualification practice"), not "needs training".
+
+  3. RISK FLAGS — concrete behaviors that would put the company or the
+     customer at risk. Severity: low / medium / high. Examples:
+     "deflected complaint instead of recovering" (medium),
+     "made up pricing not on the rate card" (high),
+     "didn't confirm appointment details before ending the call" (medium).
+
+  4. SUMMARY — 2-3 sentences telling the recruiter who to hire, who to
+     deploy where, and who to pass on. Specific over bland.
+
+Hard rules:
+  - Every candidate in the input MUST appear in exactly ONE bucket. Don't
+    silently drop anyone.
+  - Compare candidates RELATIVELY, not absolutely — even if all candidates
+    are weak, the strongest still goes in the highest-quality bucket
+    available, and the recruiter can decide whether to hire from it.
+  - Reasons must reference SPECIFIC criteria scores or evidence from the
+    input, not generic language.
+  - Do NOT invent criteria or behaviors the evaluations don't mention.`
+
+export async function compareEvaluations(
+  positionDescription: string,
+  evaluations: ComparisonInputEvaluation[],
+): Promise<ComparisonResult> {
+  if (evaluations.length < 2) {
+    throw new Error('Need at least 2 evaluations to produce a comparison')
+  }
+
+  const completion = await openai.chat.completions.create({
+    model: MODEL,
+    temperature: 0.2,
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'comparison',
+        strict: true,
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['buckets', 'trainingRequired', 'riskFlags', 'summary'],
+          properties: {
+            buckets: {
+              type: 'array',
+              minItems: 2,
+              maxItems: 5,
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['label', 'description', 'sessionIds', 'reason'],
+                properties: {
+                  label: { type: 'string' },
+                  description: { type: 'string' },
+                  sessionIds: { type: 'array', items: { type: 'string' } },
+                  reason: { type: 'string' },
+                },
+              },
+            },
+            trainingRequired: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['sessionId', 'needs'],
+                properties: {
+                  sessionId: { type: 'string' },
+                  needs: { type: 'string' },
+                },
+              },
+            },
+            riskFlags: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['sessionId', 'flag', 'severity'],
+                properties: {
+                  sessionId: { type: 'string' },
+                  flag: { type: 'string' },
+                  severity: { type: 'string', enum: ['low', 'medium', 'high'] },
+                },
+              },
+            },
+            summary: { type: 'string' },
+          },
+        },
+      },
+    },
+    messages: [
+      { role: 'system', content: COMPARE_CANDIDATES_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Position description:\n\n${positionDescription}\n\nCandidates (use sessionId verbatim in your output):\n\n${JSON.stringify(
+          evaluations,
+          null,
+          2,
+        )}`,
+      },
+    ],
+  })
+
+  const raw = completion.choices[0]?.message?.content
+  if (!raw) throw new Error('Empty comparison response from model')
+  return JSON.parse(raw) as ComparisonResult
 }

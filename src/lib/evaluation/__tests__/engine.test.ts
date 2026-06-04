@@ -2,9 +2,12 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import {
   DERIVE_RUBRIC_SYSTEM_PROMPT,
   SCORE_CANDIDATE_SYSTEM_PROMPT,
+  COMPARE_CANDIDATES_SYSTEM_PROMPT,
   GENERIC_FORBIDDEN_AXES,
   deriveCriteria,
+  compareEvaluations,
   type RubricDerivation,
+  type ComparisonResult,
 } from '../engine'
 
 // Mock the OpenAI singleton. Each test asserts on the args the engine
@@ -89,6 +92,26 @@ describe('DERIVE_RUBRIC_SYSTEM_PROMPT', () => {
     expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/booking|qualif|objection|upsell|presentation/)
   })
 
+  it('names the full dispatcher success-factor list — including complaint recovery, rapport, scheduling accuracy', () => {
+    // The recruiter spec called out Complaint Recovery as a behavior the
+    // model used to miss. Lock it in so a prompt edit can't drop it.
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/complaint/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/rapport/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/scheduling|confirm.*appointment/)
+    // Outcome-anchored name suggestions are listed in HARD RULES so the
+    // model picks "Complaint Recovery" / "Scheduling Accuracy" instead of
+    // bland HR labels.
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Complaint Recovery/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Scheduling Accuracy/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Rapport Building/)
+  })
+
+  it('names sales and operations role-family exemplars so non-dispatcher JDs still get role-specific factors', () => {
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/sales|closing/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/operations|coordination/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/do not default to dispatcher/i)
+  })
+
   it('forbids generic-axes verbatim only "unless the JD explicitly requires"', () => {
     expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/unless the JD explicitly requires/i)
   })
@@ -119,6 +142,47 @@ describe('SCORE_CANDIDATE_SYSTEM_PROMPT', () => {
     expect(SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()).toMatch(/discovery|scope qualification/)
     expect(SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()).toMatch(/objection/)
     expect(SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()).toMatch(/booking|commitment|next step/)
+  })
+
+  it('checks the conversational-flow signals the recruiter called out', () => {
+    // These are the specific phone-call behaviors the spec required the
+    // scorer to evaluate. Lock them in.
+    const p = SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()
+    expect(p).toMatch(/opened the conversation naturally|opened.*natural|rapport/)
+    expect(p).toMatch(/natural order|interrogation/)
+    expect(p).toMatch(/confirmed appointment details/)
+    expect(p).toMatch(/complaint/)
+  })
+})
+
+describe('COMPARE_CANDIDATES_SYSTEM_PROMPT', () => {
+  it('derives buckets from THIS role, not hardcoded categories', () => {
+    expect(COMPARE_CANDIDATES_SYSTEM_PROMPT).toMatch(/derive 3-5 deployment buckets/i)
+    // Explicitly forbids the bland generic banding.
+    expect(COMPARE_CANDIDATES_SYSTEM_PROMPT).toMatch(/do NOT use generic/i)
+    expect(COMPARE_CANDIDATES_SYSTEM_PROMPT).toMatch(/Top performer.*Average.*Weak/i)
+  })
+
+  it('lists role-aware bucket examples for dispatcher, cleaner, sales', () => {
+    const p = COMPARE_CANDIDATES_SYSTEM_PROMPT.toLowerCase()
+    expect(p).toMatch(/dispatcher conversion|phone-intake/)
+    expect(p).toMatch(/ride-along|checklist supervision|ready for solo/)
+    expect(p).toMatch(/ready to quota|ramp candidate/)
+  })
+
+  it('requires every input candidate to appear in exactly one bucket', () => {
+    expect(COMPARE_CANDIDATES_SYSTEM_PROMPT).toMatch(/Every candidate.*exactly ONE bucket/i)
+    // Phrase wraps across lines in the prompt template; tolerate whitespace.
+    expect(COMPARE_CANDIDATES_SYSTEM_PROMPT).toMatch(/Don't\s+silently drop anyone/i)
+  })
+
+  it('names training-required and risk-flags sections with concrete severity rules', () => {
+    const p = COMPARE_CANDIDATES_SYSTEM_PROMPT.toLowerCase()
+    expect(p).toMatch(/training required/)
+    expect(p).toMatch(/risk flags/)
+    expect(p).toMatch(/low.*medium.*high/i)
+    // Severity examples must be concrete behaviors, not generic words.
+    expect(p).toMatch(/made up pricing|deflected complaint|didn.t confirm/)
   })
 })
 
@@ -181,23 +245,26 @@ describe('deriveCriteria — dispatcher JD', () => {
     // Even if a sloppy model tried to mix in "Communication" and "Technical
     // Proficiency", the rest of the rubric must still be role-specific. This
     // test asserts on the FIXTURE the test owns — i.e. what the engine SHOULD
-    // produce for a dispatcher JD. If the prompt regresses and starts
-    // producing generic axes, you'd see it in deployed evaluations and add
-    // failing assertions here.
+    // produce for a residential cleaning dispatcher JD. Includes Complaint
+    // Recovery per the latest spec.
     const goodFixture: RubricDerivation = {
       roleSuccessFactors: [
-        'convert leads to booked appointments',
-        'qualify scope before quoting',
-        'handle objections',
-        'upsell add-ons',
+        'build rapport quickly with homeowners',
+        'qualify cleaning scope naturally',
+        'deliver pricing confidently',
+        'handle objections and complaints',
+        'upsell appropriate extras',
+        'control call toward booking',
       ],
       criteria: [
-        { name: 'Lead Qualification', description: 'Discovery questions before quoting.', weight: 25 },
-        { name: 'Service Explanation', description: 'Walks through service crisply.', weight: 15 },
+        { name: 'Lead Qualification', description: 'Discovery questions before quoting.', weight: 18 },
+        { name: 'Service Explanation', description: 'Walks through the cleaning service crisply.', weight: 12 },
         { name: 'Pricing Delivery', description: 'States rate without apology.', weight: 15 },
-        { name: 'Booking Control', description: 'Steers toward an appointment.', weight: 20 },
-        { name: 'Objection Handling', description: 'Addresses hesitation.', weight: 15 },
+        { name: 'Booking Control', description: 'Steers toward an appointment.', weight: 17 },
+        { name: 'Objection Handling', description: 'Addresses hesitation.', weight: 13 },
         { name: 'Upsell Ability', description: 'Offers right add-ons.', weight: 10 },
+        { name: 'Complaint Recovery', description: 'Acknowledges complaints and recovers the customer.', weight: 10 },
+        { name: 'Rapport Building', description: 'Opens naturally; warms the homeowner.', weight: 5 },
       ],
     }
     openai.chat.completions.create.mockReturnValueOnce(fakeCompletion(goodFixture))
@@ -211,6 +278,9 @@ describe('deriveCriteria — dispatcher JD', () => {
     expect(names).toContain('Booking Control')
     expect(names).toContain('Upsell Ability')
     expect(names).toContain('Objection Handling')
+    // New: Complaint Recovery is explicitly required for residential
+    // cleaning dispatcher / phone intake roles.
+    expect(names).toContain('Complaint Recovery')
 
     // Spec-required: these generic HR axes MUST NOT appear unless the JD
     // explicitly requires them. The dispatcher JD above does not.
@@ -220,6 +290,119 @@ describe('deriveCriteria — dispatcher JD', () => {
     expect(names).not.toContain('Communication')
     expect(names).not.toContain('Customer Service')
     expect(names).not.toContain('Customer Service Excellence')
+    // "Bilingual Communication" is the specific example the spec called out
+    // as a bad criterion for a bilingual dispatcher role — the bilingual
+    // requirement should fold into rapport/qualification, not be its own axis.
+    expect(names).not.toContain('Bilingual Communication')
+  })
+})
+
+describe('compareEvaluations', () => {
+  beforeEach(async () => {
+    const { openai } = (await import('@/lib/openai')) as any
+    openai.chat.completions.create.mockReset()
+  })
+
+  it('refuses to compare fewer than 2 candidates', async () => {
+    await expect(
+      compareEvaluations(DISPATCHER_JD, [
+        {
+          sessionId: 's1',
+          candidateName: 'Solo',
+          overallScore: 70,
+          recommendation: 'hire',
+          summary: '',
+          criteria: [],
+          strengths: [],
+          weaknesses: [],
+        },
+      ]),
+    ).rejects.toThrow(/at least 2/i)
+  })
+
+  it('passes the JD and every candidate to the model, returns the bucketed result', async () => {
+    const { openai } = (await import('@/lib/openai')) as any
+    const fixture: ComparisonResult = {
+      buckets: [
+        {
+          label: 'Strongest for immediate dispatcher conversion',
+          description: 'Ready to take live inbound calls and close.',
+          sessionIds: ['s1'],
+          reason: 'Scored 88 on Booking Control and 84 on Pricing Delivery.',
+        },
+        {
+          label: 'Strongest for operations / process discipline',
+          description: 'Better for scheduling + coordination than live closing.',
+          sessionIds: ['s2'],
+          reason: 'Scored 80 on Scheduling Accuracy but 55 on Booking Control.',
+        },
+        {
+          label: 'Coachable — needs training',
+          description: 'Has rapport but missed dispatcher fundamentals.',
+          sessionIds: ['s3'],
+          reason: '60 on Lead Qualification, 50 on Pricing Delivery.',
+        },
+      ],
+      trainingRequired: [
+        { sessionId: 's3', needs: 'pricing-delivery reps and scope-qualification practice' },
+      ],
+      riskFlags: [
+        { sessionId: 's2', flag: 'deflected complaint instead of recovering', severity: 'medium' },
+      ],
+      summary:
+        'Hire s1 for the dispatcher slot. Place s2 on coordination/operations. Train s3 before putting them on calls.',
+    }
+    openai.chat.completions.create.mockReturnValueOnce(fakeCompletion(fixture))
+
+    const result = await compareEvaluations(DISPATCHER_JD, [
+      {
+        sessionId: 's1',
+        candidateName: 'A',
+        overallScore: 86,
+        recommendation: 'strong_hire',
+        summary: '',
+        criteria: [{ name: 'Booking Control', weight: 20, score: 88, evidence: '…' }],
+        strengths: [],
+        weaknesses: [],
+      },
+      {
+        sessionId: 's2',
+        candidateName: 'B',
+        overallScore: 70,
+        recommendation: 'hire',
+        summary: '',
+        criteria: [{ name: 'Booking Control', weight: 20, score: 55, evidence: '…' }],
+        strengths: [],
+        weaknesses: [],
+      },
+      {
+        sessionId: 's3',
+        candidateName: 'C',
+        overallScore: 58,
+        recommendation: 'borderline',
+        summary: '',
+        criteria: [{ name: 'Lead Qualification', weight: 20, score: 60, evidence: '…' }],
+        strengths: [],
+        weaknesses: [],
+      },
+    ])
+
+    const callArgs = openai.chat.completions.create.mock.calls[0][0]
+    expect(callArgs.messages[0].content).toBe(COMPARE_CANDIDATES_SYSTEM_PROMPT)
+    expect(callArgs.messages[1].content).toContain(DISPATCHER_JD)
+    // Every sessionId must be in the prompt so the model can assign them.
+    expect(callArgs.messages[1].content).toContain('"s1"')
+    expect(callArgs.messages[1].content).toContain('"s2"')
+    expect(callArgs.messages[1].content).toContain('"s3"')
+
+    // Output shape is preserved.
+    expect(result.buckets).toHaveLength(3)
+    expect(result.buckets[0].label).toMatch(/dispatcher conversion/)
+    expect(result.trainingRequired).toHaveLength(1)
+    expect(result.trainingRequired[0].sessionId).toBe('s3')
+    expect(result.riskFlags).toHaveLength(1)
+    expect(result.riskFlags[0].severity).toBe('medium')
+    expect(result.summary).toMatch(/Hire s1/)
   })
 })
 
