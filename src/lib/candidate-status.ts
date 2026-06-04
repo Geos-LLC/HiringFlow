@@ -31,10 +31,14 @@ export const CANDIDATE_STATUSES: readonly CandidateStatus[] = [
 
 export type CandidateDispositionReason =
   | 'no_response_after_video_invite'
+  | 'flow_not_completed'
   | 'video_interview_not_completed'
   | 'training_not_started'
   | 'training_not_completed'
+  | 'scheduling_not_booked'
   | 'interview_no_show'
+  | 'background_check_not_completed'
+  | 'no_progress_generic'
   | 'candidate_declined'
   | 'failed_screening'
   | 'failed_training'
@@ -45,10 +49,14 @@ export type CandidateDispositionReason =
 
 export const CANDIDATE_DISPOSITION_REASONS: readonly CandidateDispositionReason[] = [
   'no_response_after_video_invite',
+  'flow_not_completed',
   'video_interview_not_completed',
   'training_not_started',
   'training_not_completed',
+  'scheduling_not_booked',
   'interview_no_show',
+  'background_check_not_completed',
+  'no_progress_generic',
   'candidate_declined',
   'failed_screening',
   'failed_training',
@@ -142,10 +150,14 @@ export const STATUS_DISPLAY: Record<CandidateStatus, { label: string; tone: Cand
 // and the detail page's Reason field.
 export const DISPOSITION_DISPLAY: Record<CandidateDispositionReason, string> = {
   no_response_after_video_invite: 'No response after video invite',
+  flow_not_completed:             'Flow not completed',
   video_interview_not_completed:  'Video interview not completed',
   training_not_started:           'Training not started',
   training_not_completed:         'Training not completed',
+  scheduling_not_booked:          'Scheduling invite not booked',
   interview_no_show:              'Interview no-show',
+  background_check_not_completed: 'Background check not completed',
+  no_progress_generic:            'No forward progress',
   candidate_declined:             'Candidate declined',
   failed_screening:               'Failed screening',
   failed_training:                'Failed training',
@@ -156,9 +168,20 @@ export const DISPOSITION_DISPLAY: Record<CandidateDispositionReason, string> = {
 }
 
 /**
- * Default timeouts for the cron-driven stalled detector. Stored on `Flow` so
- * different roles can run different SLAs; these are the fallback when a flow
- * leaves any timeout column null.
+ * Platform fallback for the unified stale-detection rule. Used when
+ * `Workspace.defaultStalledDays` is null. The cron flips an active candidate
+ * to `stalled` after this many days without a real forward-progress event
+ * (Session.lastProgressAt).
+ */
+export const STALE_DETECTION_DEFAULT_DAYS = 7
+
+/**
+ * Legacy per-checkpoint timeouts on `Flow`. NOT used by the unified
+ * stale-detection cron — kept temporarily so existing rows don't lose their
+ * values during the transition. New code should reference
+ * `STALE_DETECTION_DEFAULT_DAYS` / `Workspace.defaultStalledDays` instead.
+ *
+ * @deprecated Will be removed once per-pipeline / per-stage overrides land.
  */
 export const DEFAULT_TIMEOUTS = {
   videoInterviewTimeoutDays: 3,
@@ -167,6 +190,70 @@ export const DEFAULT_TIMEOUTS = {
   schedulingTimeoutHours: 48,
   backgroundCheckTimeoutDays: 7,
 } as const
+
+/**
+ * Snapshot of a candidate's session state — just enough fields for
+ * `deriveStaleReason` to figure out which checkpoint they got stuck at. Kept
+ * narrow so callers (cron, dry-run script, tests) can construct it from the
+ * minimum Prisma `select` payload instead of dragging the full Session.
+ */
+export interface StaleReasonContext {
+  finishedAt: Date | null
+  // Most recent attempted scheduling — null means the candidate never received
+  // a scheduling invite. Set to a non-null Date when a SchedulingEvent of type
+  // 'scheduling_invite_sent' exists for this session.
+  schedulingInviteSentAt: Date | null
+  // Most recent InterviewMeeting.scheduledStart for this session, regardless of
+  // status. Null when no meeting was ever scheduled.
+  latestMeetingScheduledStart: Date | null
+  // Whether ANY interview meeting on this session has actualStart set. If true
+  // the candidate did attend at some point — don't blame them for no-show.
+  hasAttendedAnyMeeting: boolean
+  // True when at least one TrainingAccessToken exists for this session — i.e.
+  // the candidate was invited to training. Drives the training_not_*
+  // reasons.
+  hasTrainingInvite: boolean
+  // True when at least one TrainingEnrollment progressed past 'not_started'.
+  hasTrainingProgress: boolean
+  // True when at least one TrainingEnrollment is completed.
+  hasTrainingCompleted: boolean
+  // True when a BackgroundCheck row exists for this session and is not in a
+  // completed/passed terminal state.
+  hasPendingBackgroundCheck: boolean
+}
+
+/**
+ * Pick the most specific disposition reason for a stale candidate based on the
+ * checkpoint they failed to clear. Ordering follows the funnel: earliest stuck
+ * point wins so a candidate who never completed the flow doesn't get tagged
+ * `scheduling_not_booked` just because they also never booked.
+ *
+ * Fall-through is `no_progress_generic` — the candidate finished the flow,
+ * has no training assigned, no scheduling invite, no meeting, no background
+ * check, and still went quiet for >N days. Rare but possible (e.g. a recruiter
+ * is sitting on them without a next-step automation).
+ */
+export function deriveStaleReason(ctx: StaleReasonContext): CandidateDispositionReason {
+  if (!ctx.finishedAt) return 'flow_not_completed'
+
+  if (ctx.hasTrainingInvite && !ctx.hasTrainingCompleted) {
+    return ctx.hasTrainingProgress ? 'training_not_completed' : 'training_not_started'
+  }
+
+  if (ctx.latestMeetingScheduledStart && !ctx.hasAttendedAnyMeeting) {
+    // Meeting was booked but candidate didn't attend any of them.
+    return 'interview_no_show'
+  }
+
+  if (ctx.schedulingInviteSentAt && !ctx.latestMeetingScheduledStart) {
+    // Scheduling email went out but no meeting ever materialised.
+    return 'scheduling_not_booked'
+  }
+
+  if (ctx.hasPendingBackgroundCheck) return 'background_check_not_completed'
+
+  return 'no_progress_generic'
+}
 
 /**
  * Derive what the new `status`-axis fields should be when a manual lifecycle
@@ -190,6 +277,7 @@ export function statusTransitionPatch(
   hiredAt?: Date | null
   automationsHaltedAt?: Date | null
   automationsHaltedReason?: string | null
+  lastProgressAt?: Date
 } {
   const now = opts.now ?? new Date()
   const patch: ReturnType<typeof statusTransitionPatch> = { status: next }
@@ -244,6 +332,11 @@ export function statusTransitionPatch(
       patch.automationsHaltedAt = null
       patch.automationsHaltedReason = null
       if (opts.dispositionReason === undefined) patch.dispositionReason = null
+      // Reset the stale-detection clock so the cron doesn't instantly
+      // re-stall a candidate the recruiter just reactivated. Without this,
+      // a candidate who was stalled for 10 days would flip back to stalled
+      // on the next 04:00 UTC run.
+      patch.lastProgressAt = now
       break
   }
 

@@ -861,6 +861,22 @@ export default function CandidateDetailPage() {
   const timeline: { label: string; time: string; type: string; detail?: string; delivery?: DeliveryBadge }[] = []
   timeline.push({ label: 'Applied / Flow started', time: candidate.startedAt, type: 'start' })
   if (candidate.finishedAt) timeline.push({ label: `Flow ${candidate.outcome || 'completed'}`, time: candidate.finishedAt, type: candidate.outcome === 'passed' ? 'success' : candidate.outcome === 'failed' ? 'error' : 'info' })
+  // Stale-detection event — derived from Session.stalledAt so the cron itself
+  // doesn't need to write a separate event row. Idempotent for free: one
+  // stalledAt column = one timeline entry. Label is deliberately threshold-
+  // agnostic because the workspace setting could have changed since the
+  // stale flip; the disposition reason carries the structured "why".
+  if (candidate.stalledAt) {
+    const reasonLabel = candidate.dispositionReason
+      ? (DISPOSITION_DISPLAY[candidate.dispositionReason] || candidate.dispositionReason)
+      : null
+    timeline.push({
+      label: 'Candidate became stale — no forward progress',
+      detail: reasonLabel ? `Reason: ${reasonLabel}` : undefined,
+      time: candidate.stalledAt,
+      type: 'error',
+    })
+  }
   candidate.trainingEnrollments.forEach(e => {
     timeline.push({ label: `Training started: ${e.training.title}`, time: e.startedAt, type: 'info' })
     // Per-section completion events — only enrollments saved after the

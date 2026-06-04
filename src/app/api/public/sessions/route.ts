@@ -83,6 +83,7 @@ export async function POST(request: NextRequest) {
         candidatePhone: normalizedPhone,
         lastStepId: startStepId,
         lastActivityAt: new Date(),
+        lastProgressAt: new Date(),
         // Source attribution (from Ad link)
         adId: adId || null,
         source: source || null,

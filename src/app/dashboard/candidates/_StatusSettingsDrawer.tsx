@@ -4,14 +4,15 @@
  * Status settings drawer — sibling of StageSettingsDrawer. Edits two
  * orthogonal pieces of the candidate-status model:
  *
- *  1. **Stalled detection thresholds**, per-flow. Controls when the daily
- *     `/api/cron/detect-stalled` flips a candidate from active → stalled.
- *     Null fields fall back to the platform `DEFAULT_TIMEOUTS`.
+ *  1. **Stale candidate detection** — a single workspace-level inactivity
+ *     threshold consumed by the daily `/api/cron/detect-stalled`. Null /
+ *     blank → use the platform default in `STALE_DETECTION_DEFAULT_DAYS`.
+ *     Per-pipeline / per-stage overrides are a future feature.
  *
  *  2. **Statuses list** — 6 built-in statuses (read-only) plus
  *     workspace-defined custom statuses. Custom statuses are manual-only
  *     labels for "nurture-like" buckets the recruiter wants to track
- *     without touching the cron rules. Stored on
+ *     without touching the cron rule. Stored on
  *     `Workspace.settings.customStatuses`.
  */
 
@@ -19,7 +20,7 @@ import { useEffect, useState } from 'react'
 import { Badge, Button } from '@/components/design'
 import {
   CANDIDATE_STATUSES,
-  DEFAULT_TIMEOUTS,
+  STALE_DETECTION_DEFAULT_DAYS,
   STATUS_DISPLAY,
   makeCustomStatusId,
   type CandidateStatus,
@@ -30,7 +31,7 @@ import {
 const STATUS_DESCRIPTIONS: Record<CandidateStatus, string> = {
   active:  'Default — candidate is moving through the funnel.',
   waiting: 'Waiting on something external (e.g. a training to be scheduled). Treated like active on the board.',
-  stalled: 'Auto-flagged by the daily cron when a checkpoint timeout elapses. See the conditions above.',
+  stalled: 'Auto-flagged by the daily cron when the candidate has no forward progress for the threshold below.',
   nurture: 'Manual — keeping warm for a future cycle. Not in the active pool.',
   lost:    'Manual — true terminal negative outcome (rejected, declined, etc.). Hidden from the default board.',
   hired:   'Manual — confirmed hire.',
@@ -45,58 +46,37 @@ const TONE_OPTIONS: Array<{ tone: CandidateStatusTone; color: string; label: str
   { tone: 'danger',  color: 'var(--danger-fg)',     label: 'Red'    },
 ]
 
-interface FlowRow {
-  id: string
-  name: string
-  videoInterviewTimeoutDays: number | null
-  trainingTimeoutDays: number | null
-  noShowTimeoutHours: number | null
-  schedulingTimeoutHours: number | null
-  backgroundCheckTimeoutDays: number | null
-}
-
 interface Props {
   open: boolean
   onClose: () => void
   initialCustomStatuses: CustomStatus[]
-  onSaved: (next: { customStatuses: CustomStatus[] }) => void
+  onSaved: (next: { customStatuses: CustomStatus[]; defaultStalledDays: number | null }) => void
 }
 
 export function StatusSettingsDrawer({ open, onClose, initialCustomStatuses, onSaved }: Props) {
-  const [flows, setFlows] = useState<FlowRow[]>([])
+  const [defaultStalledDays, setDefaultStalledDays] = useState<number | null>(null)
   const [customStatuses, setCustomStatuses] = useState<CustomStatus[]>(initialCustomStatuses)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // Reload flows + reset working copy whenever the drawer opens.
+  // Reload workspace settings + reset working copy whenever the drawer opens.
   useEffect(() => {
     if (!open) return
     setCustomStatuses(initialCustomStatuses)
     setError(null)
     setLoading(true)
-    fetch('/api/flows', { credentials: 'same-origin' })
+    fetch('/api/workspace/settings', { credentials: 'same-origin' })
       .then((r) => r.json())
-      .then((flowsRaw: Array<Record<string, unknown>>) => {
-        setFlows(flowsRaw.map((f) => ({
-          id: String(f.id),
-          name: String(f.name ?? 'Flow'),
-          videoInterviewTimeoutDays: typeof f.videoInterviewTimeoutDays === 'number' ? f.videoInterviewTimeoutDays : null,
-          trainingTimeoutDays: typeof f.trainingTimeoutDays === 'number' ? f.trainingTimeoutDays : null,
-          noShowTimeoutHours: typeof f.noShowTimeoutHours === 'number' ? f.noShowTimeoutHours : null,
-          schedulingTimeoutHours: typeof f.schedulingTimeoutHours === 'number' ? f.schedulingTimeoutHours : null,
-          backgroundCheckTimeoutDays: typeof f.backgroundCheckTimeoutDays === 'number' ? f.backgroundCheckTimeoutDays : null,
-        })))
+      .then((ws: Record<string, unknown>) => {
+        const raw = ws.defaultStalledDays
+        setDefaultStalledDays(typeof raw === 'number' && raw > 0 ? raw : null)
       })
-      .catch(() => setError('Failed to load flows'))
+      .catch(() => setError('Failed to load workspace settings'))
       .finally(() => setLoading(false))
   }, [open, initialCustomStatuses])
 
   if (!open) return null
-
-  const updateFlowField = (flowId: string, field: keyof FlowRow, value: number | null) => {
-    setFlows((prev) => prev.map((f) => (f.id === flowId ? { ...f, [field]: value } : f)))
-  }
 
   const addCustomStatus = () => {
     const label = `New status ${customStatuses.length + 1}`
@@ -116,44 +96,25 @@ export function StatusSettingsDrawer({ open, onClose, initialCustomStatuses, onS
     setSaving(true)
     setError(null)
     try {
-      // Save flow timeouts in parallel. Each flow PATCH is independent;
-      // partial failure surfaces as the first error.
-      const flowSaves = flows.map((f) =>
-        fetch(`/api/flows/${f.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({
-            videoInterviewTimeoutDays: f.videoInterviewTimeoutDays,
-            trainingTimeoutDays: f.trainingTimeoutDays,
-            noShowTimeoutHours: f.noShowTimeoutHours,
-            schedulingTimeoutHours: f.schedulingTimeoutHours,
-            backgroundCheckTimeoutDays: f.backgroundCheckTimeoutDays,
-          }),
-        }).then((r) => {
-          if (!r.ok) throw new Error(`Failed to save timeouts for "${f.name}"`)
-        }),
-      )
-
-      // Save custom statuses on workspace.settings (merge to preserve other
-      // settings like funnelStages and customRejectionReasons).
       const wsRes = await fetch('/api/workspace/settings', { credentials: 'same-origin' })
       const wsData = wsRes.ok ? await wsRes.json() : null
       const currentSettings = (wsData?.settings && typeof wsData.settings === 'object') ? wsData.settings : {}
       const cleaned = customStatuses
         .filter((s) => s.label.trim().length > 0)
         .map((s) => ({ id: s.id, label: s.label.trim(), tone: s.tone }))
-      const settingsSave = fetch('/api/workspace/settings', {
+
+      const res = await fetch('/api/workspace/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ settings: { ...currentSettings, customStatuses: cleaned } }),
-      }).then((r) => {
-        if (!r.ok) throw new Error('Failed to save custom statuses')
+        body: JSON.stringify({
+          settings: { ...currentSettings, customStatuses: cleaned },
+          defaultStalledDays: defaultStalledDays,
+        }),
       })
+      if (!res.ok) throw new Error('Failed to save')
 
-      await Promise.all([...flowSaves, settingsSave])
-      onSaved({ customStatuses: cleaned })
+      onSaved({ customStatuses: cleaned, defaultStalledDays })
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed')
@@ -194,63 +155,51 @@ export function StatusSettingsDrawer({ open, onClose, initialCustomStatuses, onS
               <strong> Stages</strong> drawer.
             </div>
           </div>
-          {/* Section A — Stalled detection conditions */}
+
+          {/* Section A — Unified stale-detection threshold */}
           <section>
-            <div className="text-[13px] font-semibold text-ink mb-1">Stalled detection rules</div>
+            <div className="text-[13px] font-semibold text-ink mb-1">Stale candidate detection</div>
             <p className="text-[12px] text-grey-40 mb-4">
-              The daily cron flags a candidate as <strong>Stalled</strong> when a checkpoint stays quiet for this long.
-              The same thresholds drive the &quot;Candidate didn&apos;t complete X&quot; entries in the timeline.
-              Leave blank to use the platform default
-              ({DEFAULT_TIMEOUTS.videoInterviewTimeoutDays} d / {DEFAULT_TIMEOUTS.trainingTimeoutDays} d / {DEFAULT_TIMEOUTS.noShowTimeoutHours} h / {DEFAULT_TIMEOUTS.schedulingTimeoutHours} h / {DEFAULT_TIMEOUTS.backgroundCheckTimeoutDays} d).
+              Candidates are marked <strong>Stale</strong> when they have no forward progress for
+              this many days. This applies to all pipelines and stages by default.
             </p>
+
             {loading ? (
-              <div className="py-6 text-center text-sm text-grey-40">Loading flows…</div>
-            ) : flows.length === 0 ? (
-              <div className="py-6 text-center text-sm text-grey-40">No flows yet.</div>
+              <div className="py-6 text-center text-sm text-grey-40">Loading…</div>
             ) : (
-              <div className="space-y-3">
-                {flows.map((flow) => (
-                  <div key={flow.id} className="rounded-[10px] border border-surface-border p-4">
-                    <div className="text-[13px] font-medium text-ink mb-3 truncate">{flow.name}</div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <TimeoutInput
-                        label="Video / flow not completed"
-                        suffix="days"
-                        defaultValue={DEFAULT_TIMEOUTS.videoInterviewTimeoutDays}
-                        value={flow.videoInterviewTimeoutDays}
-                        onChange={(v) => updateFlowField(flow.id, 'videoInterviewTimeoutDays', v)}
-                      />
-                      <TimeoutInput
-                        label="Training not started / completed"
-                        suffix="days"
-                        defaultValue={DEFAULT_TIMEOUTS.trainingTimeoutDays}
-                        value={flow.trainingTimeoutDays}
-                        onChange={(v) => updateFlowField(flow.id, 'trainingTimeoutDays', v)}
-                      />
-                      <TimeoutInput
-                        label="Interview no-show silent"
-                        suffix="hours"
-                        defaultValue={DEFAULT_TIMEOUTS.noShowTimeoutHours}
-                        value={flow.noShowTimeoutHours}
-                        onChange={(v) => updateFlowField(flow.id, 'noShowTimeoutHours', v)}
-                      />
-                      <TimeoutInput
-                        label="Scheduling invite not booked"
-                        suffix="hours"
-                        defaultValue={DEFAULT_TIMEOUTS.schedulingTimeoutHours}
-                        value={flow.schedulingTimeoutHours}
-                        onChange={(v) => updateFlowField(flow.id, 'schedulingTimeoutHours', v)}
-                      />
-                      <TimeoutInput
-                        label="Background check not completed"
-                        suffix="days"
-                        defaultValue={DEFAULT_TIMEOUTS.backgroundCheckTimeoutDays}
-                        value={flow.backgroundCheckTimeoutDays}
-                        onChange={(v) => updateFlowField(flow.id, 'backgroundCheckTimeoutDays', v)}
-                      />
-                    </div>
+              <div className="rounded-[10px] border border-surface-border p-4">
+                <label className="flex items-center gap-3">
+                  <span className="text-[13px] text-ink min-w-[160px]">Default stale after:</span>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={defaultStalledDays ?? ''}
+                      placeholder={String(STALE_DETECTION_DEFAULT_DAYS)}
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        if (raw === '') return setDefaultStalledDays(null)
+                        const n = Number.parseInt(raw, 10)
+                        if (Number.isNaN(n) || n <= 0) return
+                        setDefaultStalledDays(n)
+                      }}
+                      className="w-[120px] px-2 pr-12 py-1.5 border border-surface-border rounded-[6px] text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                    />
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono uppercase text-grey-50" style={{ letterSpacing: '0.08em' }}>
+                      days
+                    </span>
                   </div>
-                ))}
+                  {defaultStalledDays === null && (
+                    <span className="text-[11px] text-grey-50">
+                      using platform default ({STALE_DETECTION_DEFAULT_DAYS} days)
+                    </span>
+                  )}
+                </label>
+
+                <p className="text-[11px] text-grey-50 mt-3">
+                  You can add pipeline-specific or stage-specific stale rules later if needed.
+                </p>
               </div>
             )}
           </section>
@@ -322,40 +271,5 @@ export function StatusSettingsDrawer({ open, onClose, initialCustomStatuses, onS
         </div>
       </div>
     </div>
-  )
-}
-
-function TimeoutInput(props: {
-  label: string
-  suffix: string
-  defaultValue: number
-  value: number | null
-  onChange: (v: number | null) => void
-}) {
-  const placeholder = `default ${props.defaultValue} ${props.suffix}`
-  return (
-    <label className="block">
-      <div className="text-[11px] text-grey-35 mb-1">{props.label}</div>
-      <div className="relative">
-        <input
-          type="number"
-          min={1}
-          step={1}
-          value={props.value ?? ''}
-          placeholder={placeholder}
-          onChange={(e) => {
-            const raw = e.target.value
-            if (raw === '') return props.onChange(null)
-            const n = Number.parseInt(raw, 10)
-            if (Number.isNaN(n) || n <= 0) return
-            props.onChange(n)
-          }}
-          className="w-full px-2 pr-12 py-1.5 border border-surface-border rounded-[6px] text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-brand-500/40"
-        />
-        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono uppercase text-grey-50" style={{ letterSpacing: '0.08em' }}>
-          {props.suffix}
-        </span>
-      </div>
-    </label>
   )
 }

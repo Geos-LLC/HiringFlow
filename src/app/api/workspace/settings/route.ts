@@ -31,6 +31,7 @@ export async function GET() {
     senderName: workspace.senderName,
     senderEmail: workspace.senderEmail,
     settings: workspace.settings,
+    defaultStalledDays: workspace.defaultStalledDays,
     createdAt: workspace.createdAt,
     members: workspace.members.map(m => ({
       id: m.id,
@@ -61,8 +62,20 @@ export async function PATCH(request: NextRequest) {
       ...(body.senderName !== undefined && { senderName: body.senderName || null }),
       ...(body.senderEmail !== undefined && { senderEmail: body.senderEmail || null }),
       ...(body.settings !== undefined && { settings: body.settings }),
+      ...(body.defaultStalledDays !== undefined && {
+        defaultStalledDays: normalizeStalledDaysInput(body.defaultStalledDays),
+      }),
     },
   })
 
   return NextResponse.json(updated)
+}
+
+// Empty string / null / negative / non-numeric → null (use platform default).
+// Cap at 365 days so a typo can't disable detection. Floors to integer days.
+function normalizeStalledDaysInput(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null
+  const n = typeof raw === 'number' ? raw : Number.parseInt(String(raw), 10)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.min(365, Math.floor(n))
 }
