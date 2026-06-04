@@ -106,25 +106,54 @@ Your output has TWO sections:
     proportion to how much each behavior drives outcomes for THIS job.
 
 HARD RULES:
-  1. The criteria MUST be grounded in the success factors. Do not invent criteria the factors
-     don't justify.
-  2. Do NOT use these generic competency labels unless the JD explicitly requires them as
-     standalone concerns: ${GENERIC_FORBIDDEN_AXES.join(', ')}.
-     If the JD wants "professional phone manner", that's "Phone Manner & Tone" or
-     "Customer-Facing Composure" — not bare "Professionalism".
-  3. Prefer outcome-anchored names. Good examples for the relevant role
+  1. IDENTIFY the role type before doing anything else. If the JD title or
+     summary mentions dispatcher, scheduler, intake coordinator, customer
+     intake, phone sales, sales manager, sales dispatcher, booking agent —
+     treat this as a PHONE INTAKE / SALES role and use that family's
+     success behaviors. The role type is decided by the role nature, NOT
+     by which bullets happen to appear under "Responsibilities".
+  2. The criteria MUST be grounded in the success factors. Do not invent
+     criteria the factors don't justify.
+  3. DO NOT mechanically rename JD responsibility bullets into criterion
+     names. This is the most common failure mode. Translate each
+     responsibility into the underlying outcome behavior it implies for
+     this role family:
+       BAD (literal bullet paraphrase, DO NOT produce these):
+         "Client Request Processing", "Schedule Coordination",
+         "Team Support Coordination", "Task Monitoring and Reporting",
+         "Customer Communication Excellence", "Customer Communication",
+         "Request Handling", "Coordination Skills".
+       GOOD (outcome behavior the bullet actually requires):
+         "Receive and process client requests" → "Lead Qualification" +
+            "Service Explanation" + "Booking Control" (because for a
+            dispatcher, processing a client request IS qualifying scope,
+            explaining service, and closing the booking).
+         "Create and coordinate schedules" → "Scheduling Accuracy".
+         "Support and coordinate the work of the cleaning team" →
+            stays a success FACTOR but typically doesn't become a
+            scoring criterion unless the recording shows it.
+         "Handle objections and convert leads" → "Objection Handling" +
+            "Booking Control" + "Upsell Ability".
+         "Provide excellent customer service and communication" →
+            "Rapport Building" + "Complaint Recovery" (NOT bare
+            "Customer Service" or "Communication").
+  4. Do NOT use these generic competency labels unless the JD explicitly
+     requires them as standalone concerns: ${GENERIC_FORBIDDEN_AXES.join(', ')}.
+     If the JD wants "professional phone manner", that's "Phone Manner &
+     Tone" or "Customer-Facing Composure" — not bare "Professionalism".
+  5. Prefer outcome-anchored names. Good examples for the relevant role
      families:
-       • Dispatcher / phone intake: "Lead Qualification", "Service Explanation",
-         "Pricing Delivery", "Booking Control", "Upsell Ability",
-         "Objection Handling", "Complaint Recovery", "Scheduling Accuracy",
-         "Rapport Building".
+       • Dispatcher / phone intake / sales dispatcher: "Lead Qualification",
+         "Service Explanation", "Pricing Delivery", "Booking Control",
+         "Upsell Ability", "Objection Handling", "Complaint Recovery",
+         "Scheduling Accuracy", "Rapport Building".
        • Cleaner / field: "Instruction Following", "Customer-Home Presentation",
          "Reliability Signals", "Detail Coverage", "Property Safety".
        • Sales: "Discovery Depth", "Value Demonstration", "Closing Conversion",
          "Follow-Up Discipline".
      Avoid bare "Communication" or "Customer Service".
-  4. Names are 2-4 words. Descriptions are one sentence stating the observable behavior
-     AND why it matters for this job's outcomes.`
+  6. Names are 2-4 words. Descriptions are one sentence stating the observable
+     behavior AND why it matters for this job's outcomes.`
 
 export async function deriveCriteria(positionDescription: string): Promise<RubricDerivation> {
   const completion = await openai.chat.completions.create({

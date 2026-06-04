@@ -112,8 +112,38 @@ describe('DERIVE_RUBRIC_SYSTEM_PROMPT', () => {
     expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/do not default to dispatcher/i)
   })
 
+  it('forbids mechanical JD-bullet paraphrasing — calls out the bad names prod produced', () => {
+    // Prod evaluations 2026-06-04 21:15Z produced verbatim JD-paraphrase
+    // criterion names: "Client Request Processing", "Schedule Coordination",
+    // "Team Support Coordination", "Task Monitoring and Reporting",
+    // "Customer Communication Excellence". The prompt must name these as
+    // BAD examples so the model never produces them again.
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Client Request Processing/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Schedule Coordination/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Team Support Coordination/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Task Monitoring and Reporting/)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Customer Communication Excellence/)
+    // The prompt must instruct the model NOT to paraphrase bullets.
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/mechanically rename JD responsibility bullets/i)
+  })
+
+  it('identifies role TYPE up front before scoring criteria', () => {
+    // The prod failure was the model treating "Receive and process client
+    // requests" as its own axis instead of recognizing the role as a
+    // phone-intake dispatcher. Prompt must demand role identification first.
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/identify the role type/i)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/dispatcher|sales dispatcher|sales manager/i)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT.toLowerCase()).toMatch(/role type is decided by the role nature/i)
+  })
+
+  it('shows the worked translation from "Receive and process client requests" to outcome behaviors', () => {
+    // The single most important worked example: the JD bullet → outcome
+    // behavior translation for the most common dispatcher JD bullet.
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/Receive and process client requests.*Lead Qualification/i)
+  })
+
   it('forbids generic-axes verbatim only "unless the JD explicitly requires"', () => {
-    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/unless the JD explicitly requires/i)
+    expect(DERIVE_RUBRIC_SYSTEM_PROMPT).toMatch(/unless the JD explicitly\s+requires/i)
   })
 })
 
@@ -294,6 +324,15 @@ describe('deriveCriteria — dispatcher JD', () => {
     // as a bad criterion for a bilingual dispatcher role — the bilingual
     // requirement should fold into rapport/qualification, not be its own axis.
     expect(names).not.toContain('Bilingual Communication')
+
+    // The specific prod-failure names from 2026-06-04 21:15Z evaluations.
+    // The fixture under test doesn't produce them, but locking them in
+    // here documents the regression criteria for future prompt edits.
+    expect(names).not.toContain('Client Request Processing')
+    expect(names).not.toContain('Schedule Coordination')
+    expect(names).not.toContain('Team Support Coordination')
+    expect(names).not.toContain('Task Monitoring and Reporting')
+    expect(names).not.toContain('Customer Communication Excellence')
   })
 })
 
