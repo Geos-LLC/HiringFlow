@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { excludeTestSessions } from '@/lib/session-filters'
+import { normalizeStages } from '@/lib/funnel-stages'
+import { getOrCreateDefaultPipeline } from '@/lib/pipelines'
 
 export async function GET(request: NextRequest) {
   const ws = await getWorkspaceSession()
@@ -37,7 +39,33 @@ export async function GET(request: NextRequest) {
   const andClauses: Record<string, unknown>[] = [excludeTestSessions()]
 
   if (status && status !== 'all') {
-    where.pipelineStatus = status
+    // The kanban groups candidates via resolveStage(), which is forgiving:
+    // a candidate with pipelineStatus=null (or any unrecognized legacy
+    // value) lands in the FIRST stage column. A strict
+    // `pipelineStatus = <stageId>` filter doesn't match those rows — so
+    // selecting the first stage in the dropdown would silently empty a
+    // column that's clearly populated on the kanban. Mirror the resolver
+    // here: when the requested stage is the first one in the active
+    // pipeline, also include null + any pipelineStatus that isn't an
+    // explicit current-stage id.
+    const stages = await resolveActivePipelineStages({
+      workspaceId: ws.workspaceId,
+      pipelineId,
+      flowId,
+    })
+    const isFallbackStage = stages.length > 0 && stages[0].id === status
+    if (isFallbackStage) {
+      const knownStageIds = stages.map((s) => s.id)
+      andClauses.push({
+        OR: [
+          { pipelineStatus: status },
+          { pipelineStatus: null },
+          { pipelineStatus: { notIn: knownStageIds } },
+        ],
+      })
+    } else {
+      where.pipelineStatus = status
+    }
   }
   if (candidateStatusParam && candidateStatusParam !== 'all') {
     const values = candidateStatusParam.split(',').map((s) => s.trim()).filter(Boolean)
@@ -396,4 +424,40 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ id: created.id }, { status: 201 })
+}
+
+/**
+ * Resolve which pipeline's stages are visible in the current view, given the
+ * caller's flow / pipeline filter. Mirrors `resolvePipelineForFlow` but kept
+ * inline here because GET only needs the stages list, not the full pipeline
+ * row. Returns [] if no pipeline is reachable (workspace with no flows etc.).
+ */
+async function resolveActivePipelineStages(opts: {
+  workspaceId: string
+  pipelineId: string | null
+  flowId: string | null
+}) {
+  let pipelineRow: { stages: unknown } | null = null
+  if (opts.pipelineId && !opts.flowId) {
+    pipelineRow = await prisma.pipeline.findFirst({
+      where: { id: opts.pipelineId, workspaceId: opts.workspaceId },
+      select: { stages: true },
+    })
+  } else if (opts.flowId) {
+    const flow = await prisma.flow.findUnique({
+      where: { id: opts.flowId },
+      select: { pipelineId: true },
+    })
+    if (flow?.pipelineId) {
+      pipelineRow = await prisma.pipeline.findUnique({
+        where: { id: flow.pipelineId },
+        select: { stages: true },
+      })
+    }
+  }
+  if (!pipelineRow) {
+    const def = await getOrCreateDefaultPipeline(opts.workspaceId)
+    pipelineRow = { stages: def.stages }
+  }
+  return normalizeStages(pipelineRow.stages)
 }
