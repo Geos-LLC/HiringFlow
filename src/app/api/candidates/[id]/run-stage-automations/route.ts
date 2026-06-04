@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized, forbidden } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { executeRule } from '@/lib/automation'
+import { dispatchRule } from '@/lib/automation'
 import { type StageTriggerEvent } from '@/lib/funnel-stages'
 import { resolvePipelineForFlow, stagesFor } from '@/lib/pipelines'
 import { pipelineScopeFragment } from '@/lib/automation-pipeline-scope'
@@ -16,11 +16,15 @@ const RERUN_ADMIN_ROLES = new Set(['admin', 'owner'])
 // given stage, for one candidate. Each stage has zero or more StageTriggers
 // (event + optional targetId). For every trigger event we find active
 // AutomationRules that share the same triggerType and either match the
-// candidate's flowId or have no flow filter, then run their FIRST STEP
-// immediately. Subsequent steps (delayed follow-ups) are NOT fired by this
-// path — recruiters were getting 2 emails at once when a rule had a +2m
-// step and a +3d follow-up, because executeRule used to loop every step
-// inline. The first-step-only policy lives in executeRule itself.
+// candidate's flowId or have no flow filter, then dispatch them through
+// the SAME path a real trigger uses — `dispatchRule` queues each step at
+// its own `delayMinutes` via QStash, so a rule with step 0 at +2m and
+// step 1 at +3d behaves exactly like a real flow_completed event: first
+// email lands in 2 minutes, follow-up lands in 3 days. NOT both at once.
+//
+// Pre-fix (commit ef0f230, since reverted in this endpoint): we called
+// executeRule which iterates every step inline ignoring delays — that
+// sent 2 emails to the same candidate within ~200ms of each other.
 //
 // GET returns the same matched-rule list without firing, so the UI can show
 // a count / button-enabled state.
@@ -153,18 +157,17 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const results: Array<{ ruleId: string; name: string; ok: boolean; error?: string }> = []
   for (const rule of rules) {
     try {
-      // Manual run = recruiter intent to send now. The central guard re-loads
-      // session state and only honours `force` for executionMode='manual_rerun'.
-      // Without force the duplicate-send guard still applies — a manual rerun
-      // of an already-sent step is silently a no-op unless an admin opted in.
-      await executeRule(rule.id, session.id, {
+      // Manual run = simulate the trigger firing now. dispatchRule routes each
+      // step through dispatchStep → queueStepAtDelay, so step 0 at delay=2m
+      // queues for 2m, step 1 at delay=4320m queues for 3 days. QStash
+      // callback re-evaluates the guard at fire time (executionMode flips to
+      // 'delayed_callback' for queued steps). Immediate steps (delay=0) still
+      // get the manual_rerun bypass since they fire inline through executeStep.
+      await dispatchRule(rule.id, session.id, {
+        triggerType: rule.triggerType,
+        executionMode: 'manual_rerun',
+        actorUserId: ws.userId,
         force: force === true,
-        dispatchCtx: {
-          triggerType: rule.triggerType,
-          executionMode: 'manual_rerun',
-          actorUserId: ws.userId,
-          force: force === true,
-        },
       })
       results.push({ ruleId: rule.id, name: rule.name, ok: true })
     } catch (err) {

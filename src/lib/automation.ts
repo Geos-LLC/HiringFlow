@@ -1872,11 +1872,15 @@ export async function executeStep(
  * old-shape messages with { ruleId, sessionId }.
  *
  * Runs the rule's first step inline on every channel. Subsequent steps are
- * never fired by this path because they represent delayed follow-ups —
- * "Send Test" and "Run Automations" both mean "send the immediate email now",
- * not "send the entire 3-day sequence at once". Production triggers go
- * through dispatchRule → queueStepAtDelay, which queues each step with its
- * real delay; that path is unaffected.
+ * never fired by this path because they represent delayed follow-ups, and
+ * the surviving callers of executeRule (the "Send Test" button and the
+ * legacy QStash callback for { ruleId, sessionId }-shaped messages) must
+ * not queue real delayed sends — Send Test would otherwise drop a 3-day
+ * email in the recruiter's own inbox.
+ *
+ * Production triggers AND the "Run Automations" button both go through
+ * dispatchRule → queueStepAtDelay, which queues each step with its real
+ * delay via QStash; that path stays the source of truth for sequencing.
  *
  * The `ignoreActive` flag propagates to executeStep so paused rules can be
  * tested. `force` bypasses the per-(step,session,channel) "already sent"
