@@ -26,6 +26,7 @@ import { CurrentActivityCard } from './_CurrentActivityCard'
 import { BackgroundCheckCard } from './_BackgroundCheckCard'
 import { CapturesPanel } from './_CapturesPanel'
 import CapturePlayback from '@/components/CapturePlayback'
+import { AICallsPanel } from './_AICallsPanel'
 
 interface CaptureSummary {
   id: string
@@ -1825,6 +1826,12 @@ export default function CandidateDetailPage() {
           capture step don't see an empty card. Shares the same fetch as
           the Captures tab below; single network call. */}
       <CapturesPanel captures={captures} loading={capturesLoading} />
+
+      {/* AI training calls + evaluation. Lets the recruiter create a new AI
+          call link pre-bound to this candidate, map an unattached existing
+          one, and run the AI evaluation against the candidate's accumulated
+          transcripts (AI calls, self-intro captures, meetings). */}
+      <AICallsPanel sessionId={id} candidateName={candidate.candidateName} />
 
       {/* Background check — Certn integration; self-hides gracefully if the
           workspace hasn't connected Certn yet (the order button just returns

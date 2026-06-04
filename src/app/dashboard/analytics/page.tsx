@@ -16,6 +16,12 @@
 
 import { useEffect, useState } from 'react'
 import { Button, Badge, Card, Eyebrow, PageHeader, Stat, type BadgeTone } from '@/components/design'
+import { SubNav } from '../_components/SubNav'
+
+const ANALYTICS_NAV = [
+  { href: '/dashboard/analytics', label: 'Funnel' },
+  { href: '/dashboard/analytics/ai-evaluation', label: 'AI Evaluation' },
+]
 import {
   STATUS_DISPLAY,
   DISPOSITION_DISPLAY,
@@ -142,6 +148,7 @@ export default function AnalyticsPage() {
       />
 
       <div className="px-8 py-6 space-y-5">
+        <SubNav items={ANALYTICS_NAV} />
         {/* Status cards (orthogonal to the funnel — counts of where
             candidates currently sit on the active/stalled/lost/hired
             axis). Sits above the funnel stats so recruiters see the

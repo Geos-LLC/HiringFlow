@@ -119,6 +119,7 @@ model Workspace {
   transitionRules   PipelineTransitionRule[]
   stageEntries      StageEntry[]
   billingEvents     BillingEvent[]
+  candidateEvaluations CandidateEvaluation[]
 
   @@map("workspaces")
 }
@@ -565,6 +566,13 @@ model Flow {
   startMessage               String            @default("Welcome! Please complete the following steps.") @map("start_message")
   endMessage                 String            @default("Thank you for your participation!") @map("end_message")
   branding                   Json?
+  // Plain-text job/position description used as the default input to the
+  // candidate AI evaluation engine. Recruiters can paste a JD here once and
+  // every evaluation run against a candidate of this flow inherits it. Null
+  // falls back to the linked Ad copy (headline + bodyText + requirements +
+  // benefits), and finally to the flow name. See
+  // src/lib/evaluation/position-description.ts.
+  positionDescription        String?           @map("position_description")
   // Per-flow timeouts (days/hours) consumed by the cron stalled detector.
   // Null → use the platform DEFAULT_TIMEOUTS in src/lib/candidate-status.ts.
   // Roles with longer hiring loops (e.g. specialty trades) can extend these
@@ -777,6 +785,8 @@ model Session {
   pipelineStatusChanges   PipelineStatusChange[]
   captureResponses        CaptureResponse[]
   stageEntries            StageEntry[]
+  aiCallCandidates        AICallCandidate[]
+  evaluations             CandidateEvaluation[]
 
   // Composite index for the board's default "active candidates" filter and
   // for the cron stalled detector's per-workspace sweep — both query by
@@ -1028,9 +1038,56 @@ model AICallCandidate {
   name            String
   agentId         String    @map("agent_id")
   conversationIds String[]  @default([]) @map("conversation_ids") // ElevenLabs conversation IDs
+  // Optional link to a HiringFlow candidate (Session). When set, the AI call
+  // record is "attached" to that candidate and surfaces under their detail
+  // page; transcripts feed the candidate evaluation engine. Null = unattached
+  // (the recruiter created the agent link before knowing which candidate
+  // would use it, or the candidate was a one-off test).
+  sessionId       String?   @map("session_id")
+  session         Session?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   createdAt       DateTime  @default(now()) @map("created_at")
 
+  @@index([workspaceId, sessionId])
   @@map("ai_call_candidates")
+}
+
+// AI-generated candidate evaluation. Persisted so the Analytics > AI Evaluation
+// page can compare candidates without re-running OpenAI on every render. Each
+// row is the result of a single evaluation pass — the recruiter can re-run
+// (writes a fresh row) and the comparison table picks the latest per session.
+//
+// Criteria are dynamic: the engine first asks the model to derive role-specific
+// criteria from the position description, then scores each one 0-100. So a
+// "Cleaner" evaluation surfaces different criteria than "Dispatcher".
+model CandidateEvaluation {
+  id                          String    @id @default(uuid())
+  workspaceId                 String    @map("workspace_id")
+  workspace                   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sessionId                   String    @map("session_id")
+  session                     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // Snapshot of the JD used for this run, so re-rating a candidate after the
+  // JD changes still lets the recruiter see what was scored against.
+  positionDescriptionSnapshot String    @map("position_description_snapshot")
+  model                       String    @default("gpt-4o-mini")
+  overallScore                Int       @map("overall_score") // 0..100, weighted average
+  recommendation              String // 'strong_hire' | 'hire' | 'borderline' | 'no_hire'
+  summary                     String
+  // Array of { name, description, weight, score, evidence }. Shape derived
+  // from the JD by the model, validated by parseEvaluationResult in
+  // src/lib/evaluation/engine.ts.
+  criteria                    Json
+  strengths                   Json // string[]
+  weaknesses                  Json // string[]
+  // Provenance metadata: which transcripts went into the prompt. Shape:
+  // { meetings: [{id, durationSec, hasTranscript}],
+  //   aiCalls: [{conversationId, durationSecs, hasTranscript}],
+  //   captures: [{id, mode, hasTranscript}] }
+  sources                     Json
+  createdById                 String?   @map("created_by_id")
+  createdAt                   DateTime  @default(now()) @map("created_at")
+
+  @@index([workspaceId, sessionId, createdAt(sort: Desc)])
+  @@map("candidate_evaluations")
 }
 
 // ============ AD TEMPLATES ============

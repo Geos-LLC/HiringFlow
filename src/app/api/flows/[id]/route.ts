@@ -99,11 +99,14 @@ export async function PATCH(
       pipelineId?: string | null
       // Schema-view layout: { [stepId]: { x: number, y: number } }
       canvasLayout?: Record<string, { x: number; y: number }> | null
+      // Plain-text job description used as the default input for AI candidate
+      // evaluation. Pass null to clear and fall back to the linked Ad copy.
+      positionDescription?: string | null
     }
     const { name, isPublished, startMessage, endMessage, branding,
       videoInterviewTimeoutDays, trainingTimeoutDays, noShowTimeoutHours,
       schedulingTimeoutHours, backgroundCheckTimeoutDays, pipelineId,
-      canvasLayout } = body
+      canvasLayout, positionDescription } = body
 
     // Only allow positive integers (or null to clear). Reject other shapes
     // so a typo in the drawer doesn't write garbage to the DB.
@@ -154,6 +157,7 @@ export async function PATCH(
         ...(backgroundCheckTimeoutDays !== undefined && { backgroundCheckTimeoutDays }),
         ...(pipelineId !== undefined && { pipelineId }),
         ...(canvasLayout !== undefined && { canvasLayout: canvasLayout as object }),
+        ...(positionDescription !== undefined && { positionDescription }),
       },
     })
 

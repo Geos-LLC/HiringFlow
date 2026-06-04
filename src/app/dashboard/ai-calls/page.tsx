@@ -28,7 +28,13 @@ Areas for Improvement:
 - <one short sentence per item>`
 
 interface Agent { agent_id: string; name: string }
-interface Candidate { id: string; name: string; agentId: string; conversationIds: string[]; createdAt: string }
+interface Candidate {
+  id: string; name: string; agentId: string; conversationIds: string[]; createdAt: string
+  // Bound HiringFlow Session (the actual candidate). Null = unattached.
+  sessionId?: string | null
+  session?: { id: string; candidateName: string | null; candidateEmail: string | null } | null
+}
+interface HFCandidate { id: string; candidateName: string | null; candidateEmail: string | null }
 interface Conversation {
   conversation_id: string; status: string; start_time_unix_secs: number
   call_duration_secs: number; message_count: number; call_successful: string | null
@@ -67,6 +73,12 @@ export default function AICallsPage() {
   const [assignConvId, setAssignConvId] = useState('')
   const [assignCandidateId, setAssignCandidateId] = useState('')
 
+  // HiringFlow candidates (Session rows) for the "Link to candidate" picker on
+  // each AICallCandidate card. Loaded once on mount alongside the rest.
+  const [hfCandidates, setHfCandidates] = useState<HFCandidate[]>([])
+  const [linkOpenId, setLinkOpenId] = useState<string | null>(null)
+  const [linkSearch, setLinkSearch] = useState('')
+
   // Criteria editor
   const [tab, setTab] = useState<'candidates' | 'criteria'>('candidates')
   const [criteriaLoading, setCriteriaLoading] = useState(false)
@@ -87,9 +99,13 @@ export default function AICallsPage() {
       fetch('/api/workspace/settings').then(r => r.json()),
       fetch('/api/ai-calls/agents').then(r => r.ok ? r.json() : []),
       fetch('/api/ai-calls/candidates').then(r => r.ok ? r.json() : []),
-    ]).then(([ws, agentList, candList]) => {
+      fetch('/api/candidates').then(r => r.ok ? r.json() : []),
+    ]).then(([ws, agentList, candList, hfList]) => {
       setAgents(agentList)
       setCandidates(candList)
+      // /api/candidates returns either a bare array or { candidates }
+      const list: HFCandidate[] = Array.isArray(hfList) ? hfList : (hfList.candidates ?? [])
+      setHfCandidates(list)
       const s = (ws.settings || {}) as Record<string, string>
       if (s.elevenlabs_agent_id) { setAgentId(s.elevenlabs_agent_id); fetchConversations() }
       setLoading(false)
@@ -199,6 +215,33 @@ export default function AICallsPage() {
     await fetch(`/api/ai-calls/candidates/${id}`, { method: 'DELETE' })
     setCandidates(prev => prev.filter(c => c.id !== id))
     if (selectedCandidate?.id === id) { setSelectedCandidate(null); setCandidateConvs([]) }
+  }
+
+  // Bind / unbind an AICallCandidate to a HiringFlow Session. PATCH accepts
+  // sessionId=null to unlink.
+  const linkToSession = async (aiCandidateId: string, sessionId: string | null) => {
+    const res = await fetch(`/api/ai-calls/candidates/${aiCandidateId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    })
+    if (!res.ok) return
+    const session = sessionId ? hfCandidates.find((c) => c.id === sessionId) : null
+    setCandidates((prev) =>
+      prev.map((c) =>
+        c.id === aiCandidateId
+          ? {
+              ...c,
+              sessionId,
+              session: session
+                ? { id: session.id, candidateName: session.candidateName, candidateEmail: session.candidateEmail }
+                : null,
+            }
+          : c,
+      ),
+    )
+    setLinkOpenId(null)
+    setLinkSearch('')
   }
 
   const fetchCriteria = async () => {
@@ -466,7 +509,71 @@ export default function AICallsPage() {
                           <button onClick={(e) => { e.stopPropagation(); deleteCandidate(c.id) }} className="text-xs text-grey-50 hover:text-red-500 ml-1">&times;</button>
                         </div>
                       </div>
-                      <div className="text-xs text-grey-50 mt-1">Created {formatDateStr(c.createdAt)}</div>
+                      <div className="text-xs text-grey-50 mt-1 flex items-center justify-between gap-2">
+                        <span>Created {formatDateStr(c.createdAt)}</span>
+                        {/* Candidate-mapping pill. Shows the bound HF
+                            candidate when linked; otherwise a Link button that
+                            opens an inline picker. */}
+                        {c.sessionId && c.session ? (
+                          <span className="inline-flex items-center gap-1 text-[10px]" onClick={(e) => e.stopPropagation()}>
+                            <a
+                              href={`/dashboard/candidates/${c.sessionId}`}
+                              className="px-2 py-0.5 rounded-full bg-brand-50 text-brand-600 font-medium hover:bg-brand-100"
+                              title="Open candidate"
+                            >
+                              {c.session.candidateName || c.session.candidateEmail || 'Candidate'}
+                            </a>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); void linkToSession(c.id, null) }}
+                              className="text-grey-50 hover:text-red-500"
+                              title="Unlink"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setLinkOpenId(linkOpenId === c.id ? null : c.id); setLinkSearch('') }}
+                            className="text-[10px] px-2 py-0.5 rounded-full border border-dashed border-surface-border text-grey-40 hover:border-brand-500 hover:text-brand-600"
+                          >
+                            + Link to candidate
+                          </button>
+                        )}
+                      </div>
+                      {linkOpenId === c.id && (
+                        <div onClick={(e) => e.stopPropagation()} className="mt-2 bg-surface rounded-[6px] p-2 border border-surface-border">
+                          <input
+                            type="search"
+                            placeholder="Search candidates…"
+                            value={linkSearch}
+                            onChange={(e) => setLinkSearch(e.target.value)}
+                            className="w-full px-2 py-1 text-xs border border-surface-border rounded-[6px] focus:outline-none focus:border-brand-500"
+                            autoFocus
+                          />
+                          <div className="max-h-40 overflow-y-auto mt-1">
+                            {hfCandidates
+                              .filter((hf) => {
+                                const q = linkSearch.toLowerCase().trim()
+                                if (!q) return true
+                                return (
+                                  (hf.candidateName ?? '').toLowerCase().includes(q) ||
+                                  (hf.candidateEmail ?? '').toLowerCase().includes(q)
+                                )
+                              })
+                              .slice(0, 8)
+                              .map((hf) => (
+                                <button
+                                  key={hf.id}
+                                  onClick={() => void linkToSession(c.id, hf.id)}
+                                  className="w-full text-left px-2 py-1.5 text-xs hover:bg-white rounded-[4px]"
+                                >
+                                  <div className="font-medium text-grey-15">{hf.candidateName || '(no name)'}</div>
+                                  <div className="text-[10px] text-grey-50">{hf.candidateEmail ?? '—'}</div>
+                                </button>
+                              ))}
+                          </div>
+                        </div>
+                      )}
                     </button>
                   )})}
                 </div>
