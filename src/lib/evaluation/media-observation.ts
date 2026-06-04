@@ -26,6 +26,7 @@
 import { openai } from '@/lib/openai'
 import { prisma } from '@/lib/prisma'
 import { s3Download } from '@/lib/s3'
+import { extractFramesFromBuffer } from './video-frames'
 
 const VOICE_MODEL = 'gpt-4o-audio-preview'
 const VIDEO_MODEL = 'gpt-4o'
@@ -261,15 +262,138 @@ export async function observeVoice(
   return { clips: observed, summary }
 }
 
+async function fetchVideoBytes(input: VideoClipInput): Promise<Buffer | null> {
+  try {
+    if (input.source.kind === 's3') {
+      const buf = await s3Download(input.source.storageKey)
+      if (!buf) return null
+      return Buffer.from(buf)
+    }
+    const res = await fetch(input.source.url, { headers: input.source.headers })
+    if (!res.ok) return null
+    const arr = new Uint8Array(await res.arrayBuffer())
+    return Buffer.from(arr)
+  } catch {
+    return null
+  }
+}
+
 /**
- * Video observation stub. The frame-extraction pipeline (ffmpeg in a Lambda)
- * isn't provisioned yet, so the first PR returns a clearly-labeled
- * unavailable result instead of fabricating frame-based observations. The
- * schema field is preserved so future PRs can populate clips[] without a
- * migration. UI surfaces this as "Video frame extraction not yet available."
+ * Observe one video clip. Downloads the source, extracts evenly-spaced
+ * frames via ffmpeg-static, sends them to gpt-4o vision, and returns a
+ * structured descriptive observation. Cached the same way as voice.
+ *
+ * Frame-based observations only — pace/clarity/etc. live on voice. Here we
+ * stick to what's visible: camera presence, presentation, engagement.
  */
+async function observeVideoClip(
+  workspaceId: string,
+  input: VideoClipInput,
+): Promise<VideoClipObservation | null> {
+  const cached = await prisma.mediaAnalysisCache.findUnique({
+    where: {
+      workspaceId_assetType_assetId_kind_model_analysisVersion: {
+        workspaceId,
+        assetType: input.assetType,
+        assetId: input.assetId,
+        kind: 'video',
+        model: VIDEO_MODEL,
+        analysisVersion: ANALYSIS_VERSION,
+      },
+    },
+  })
+  if (cached) return cached.result as unknown as VideoClipObservation
+
+  const videoBytes = await fetchVideoBytes(input)
+  if (!videoBytes) return null
+
+  const frames = await extractFramesFromBuffer(videoBytes, input.durationSec)
+  if (!frames || frames.length === 0) return null
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: VIDEO_MODEL,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'video_observation',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['cameraPresence', 'presentation', 'engagement', 'evidence'],
+            properties: {
+              cameraPresence: { type: 'string', description: 'One short sentence: framing, eye contact, posture, distance to camera.' },
+              presentation: { type: 'string', description: 'One short sentence: visible setting, lighting, attire — observational only.' },
+              engagement: { type: 'string', description: 'One short sentence: gestures, facial activity, attentiveness signals visible in the frames.' },
+              evidence: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 6,
+                items: { type: 'string' },
+                description: 'Reference specific frame timestamps (e.g. "at 4.5s") for each observation.',
+              },
+            },
+          },
+        },
+      },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You observe sampled frames from a candidate video for a hiring manager. Report DESCRIPTIVE observations only — camera presence, presentation, engagement. Each observation is one short sentence with neutral language. Never make claims about trustworthiness, honesty, attractiveness, intelligence, age, race, gender, or personality. Never invent content not present in the frames. If a frame is dark, blurry, or absent, say so plainly rather than guessing.',
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `Asset type: ${input.assetType}. Asset id: ${input.assetId}. Duration: ${input.durationSec ?? 'unknown'}s. ${frames.length} frames sampled at evenly-spaced timestamps. Describe what you observe.`,
+            },
+            ...frames.map((f) => ({
+              type: 'image_url' as const,
+              image_url: {
+                url: `data:${f.mimeType};base64,${f.base64}`,
+                detail: 'low' as const,
+              },
+            })),
+          ],
+        },
+      ],
+    })
+
+    const raw = completion.choices[0]?.message?.content
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Omit<VideoClipObservation, 'assetType' | 'assetId' | 'durationSec'>
+    const result: VideoClipObservation = {
+      assetType: input.assetType,
+      assetId: input.assetId,
+      durationSec: input.durationSec,
+      ...parsed,
+    }
+
+    await prisma.mediaAnalysisCache.create({
+      data: {
+        workspaceId,
+        assetType: input.assetType,
+        assetId: input.assetId,
+        kind: 'video',
+        model: VIDEO_MODEL,
+        analysisVersion: ANALYSIS_VERSION,
+        result: result as any,
+        durationSec: input.durationSec,
+      },
+    })
+
+    return result
+  } catch (err) {
+    console.error('[media-observation] video clip failed', { assetId: input.assetId, err: (err as Error).message })
+    return null
+  }
+}
+
 export async function observeVideo(
-  _workspaceId: string,
+  workspaceId: string,
   clips: VideoClipInput[],
 ): Promise<VideoObservationResult> {
   if (clips.length === 0) {
@@ -279,12 +403,24 @@ export async function observeVideo(
       unavailableReason: 'No video clips were available for this candidate.',
     }
   }
-  return {
-    clips: [],
-    summary: '',
-    unavailableReason:
-      'Video frame extraction pipeline is not yet provisioned. Voice observation runs from the same recordings; video frame analysis will land in a follow-up PR.',
+
+  const observed: VideoClipObservation[] = []
+  for (const clip of clips) {
+    const r = await observeVideoClip(workspaceId, clip)
+    if (r) observed.push(r)
   }
+
+  if (observed.length === 0) {
+    return {
+      clips: [],
+      summary: '',
+      unavailableReason:
+        'Video clips were present but frame extraction or vision-model observation failed for all of them.',
+    }
+  }
+
+  const summary = await summarizeMediaObservations(observed, 'video')
+  return { clips: observed, summary }
 }
 
 async function summarizeMediaObservations(

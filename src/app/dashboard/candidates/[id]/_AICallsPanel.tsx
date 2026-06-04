@@ -454,9 +454,9 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
             />
             🎬 Include video observation
           </label>
-          {includeVideo && (
-            <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
-              Video frame extraction not yet provisioned
+          {(includeVoice || includeVideo) && (
+            <span className="text-[10px] text-grey-50">
+              Adds 10-30s on first run, cached after.
             </span>
           )}
         </div>

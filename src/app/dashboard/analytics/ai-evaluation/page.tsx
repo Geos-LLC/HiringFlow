@@ -715,9 +715,9 @@ export default function AIEvaluationPage() {
                         (camera presence, presentation, engagement)
                       </span>
                     </label>
-                    {includeVideo && (
-                      <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
-                        Video frame extraction not yet provisioned — will skip with notice
+                    {(includeVoice || includeVideo) && (
+                      <span className="text-[10px] text-grey-50">
+                        Adds 10-30s per candidate on first run; cached after.
                       </span>
                     )}
                   </div>

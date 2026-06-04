@@ -6,6 +6,13 @@ import { runEvaluation } from '@/lib/evaluation/engine'
 import { buildPositionDescription } from '@/lib/evaluation/position-description'
 import { observeVoice, observeVideo } from '@/lib/evaluation/media-observation'
 
+// Force the Node.js serverless runtime — the media observation path spawns
+// the ffmpeg-static binary, which only runs on the Node runtime (not Edge).
+// maxDuration + memory are bumped in vercel.json to accommodate the video
+// frame extraction + vision model call chain.
+export const runtime = 'nodejs'
+export const maxDuration = 300
+
 /**
  * GET /api/evaluations?sessionIds=a,b,c
  *
