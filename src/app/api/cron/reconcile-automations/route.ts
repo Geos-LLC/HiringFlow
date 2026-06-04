@@ -81,52 +81,70 @@ export async function GET(request: NextRequest) {
     errors: 0,
   }
 
-  // -- Rule 1: Session.finishedAt set but no auto:flow_completed audit -----
+  // -- Rule 1: Session.finishedAt set but no flow_completed execution row ---
   //
-  // PipelineStatusChange is the canonical "this event was dispatched"
-  // signal — fireAutomations() always calls applyStageTrigger() which
-  // writes either the matched-stage row or a legacyFallback row. If
-  // neither exists for the session, the firing path never executed.
+  // Audit signal: presence of an AutomationExecution row whose rule has
+  // triggerType ∈ ('flow_completed', 'flow_passed') for this session.
+  //
+  // Previous criterion was `PipelineStatusChange.source='auto:flow_completed'`
+  // — but `applyStageTrigger` writes that row BEFORE the rule-loading +
+  // execution-row-creation step inside `dispatchRulesForTrigger`. If Vercel
+  // killed the lambda between those two points (Amber Frederick / Jarmall
+  // Chester 2026-06-03), the audit row landed but no executions were
+  // created, and the cron incorrectly concluded "already dispatched, skip"
+  // forever. Same pattern Rules 2 & 3 already use — `AutomationExecution`
+  // existence is the only honest "dispatch reached the end" signal.
+  //
+  // Workspaces with no matching active rule produce zero executions even
+  // on a healthy dispatch. The eligible-rule pre-filter prevents re-firing
+  // forever for those sessions.
   const finishedSessions = await prisma.session.findMany({
     where: {
       finishedAt: { gte: cutoff, not: null },
     },
-    select: { id: true, outcome: true },
+    select: { id: true, outcome: true, workspaceId: true },
   })
   counts.scanned.sessionsFinished = finishedSessions.length
 
-  if (finishedSessions.length > 0) {
-    const audited = await prisma.pipelineStatusChange.findMany({
-      where: {
-        sessionId: { in: finishedSessions.map((s) => s.id) },
-        source: { in: ['auto:flow_completed', 'auto:flow_passed'] },
-      },
-      select: { sessionId: true },
-    })
-    const auditedSet = new Set(audited.map((a) => a.sessionId))
+  for (const s of finishedSessions) {
+    try {
+      const outcome = s.outcome ?? 'completed'
+      const triggerType = outcome === 'passed' ? 'flow_passed' : 'flow_completed'
 
-    for (const s of finishedSessions) {
-      if (auditedSet.has(s.id)) continue
-      try {
-        const session = await prisma.session.findUnique({ where: { id: s.id }, select: { workspaceId: true } })
-        if (!session) continue
-        const outcome = s.outcome ?? 'completed'
-        const triggerType = outcome === 'passed' ? 'flow_passed' : 'flow_completed'
-        const eventKey = triggerType === 'flow_passed' ? eventKeys.flowPassed(s.id) : eventKeys.flowCompleted(s.id)
-        const result = await emitAutomationEvent({
-          workspaceId: session.workspaceId,
+      const existing = await prisma.automationExecution.findFirst({
+        where: {
           sessionId: s.id,
-          triggerType,
-          eventKey,
-          source: 'cron',
-          payload: { outcome },
-          dispatch: () => fireAutomations(s.id, outcome, { executionMode: 'cron' }),
-        })
-        if (result.accepted) counts.fired.flowCompleted++
-      } catch (err) {
-        counts.errors++
-        console.error('[reconcile-automations] flow_completed emit failed', { sessionId: s.id, err })
-      }
+          automationRule: { triggerType: { in: ['flow_completed', 'flow_passed'] } },
+        },
+        select: { id: true },
+      })
+      if (existing) continue
+
+      // No matching active rule → no work to do, no point re-emitting forever.
+      const eligible = await prisma.automationRule.findFirst({
+        where: {
+          workspaceId: s.workspaceId,
+          isActive: true,
+          triggerType: { in: ['flow_completed', 'flow_passed'] },
+        },
+        select: { id: true },
+      })
+      if (!eligible) continue
+
+      const eventKey = triggerType === 'flow_passed' ? eventKeys.flowPassed(s.id) : eventKeys.flowCompleted(s.id)
+      const result = await emitAutomationEvent({
+        workspaceId: s.workspaceId,
+        sessionId: s.id,
+        triggerType,
+        eventKey,
+        source: 'cron',
+        payload: { outcome },
+        dispatch: () => fireAutomations(s.id, outcome, { executionMode: 'cron' }),
+      })
+      if (result.accepted) counts.fired.flowCompleted++
+    } catch (err) {
+      counts.errors++
+      console.error('[reconcile-automations] flow_completed emit failed', { sessionId: s.id, err })
     }
   }
 
