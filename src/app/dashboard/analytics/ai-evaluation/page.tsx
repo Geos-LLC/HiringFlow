@@ -75,7 +75,11 @@ interface Evaluation {
   positionDescriptionSnapshot: string
   sources?: SourcesSummary
   createdAt: string
-  session?: { candidateName: string | null; candidateEmail: string | null }
+  session?: {
+    candidateName: string | null
+    candidateEmail: string | null
+    flow?: { name: string | null } | null
+  }
 }
 
 type JdSource = 'override' | 'flow' | 'ad' | 'fallback_ad' | 'flow_start' | 'flow_name'
@@ -470,6 +474,20 @@ export default function AIEvaluationPage() {
             {error}
           </div>
         )}
+
+        <EvaluationCards
+          evaluations={evaluations}
+          candidateCache={candidateCache}
+          selected={selected}
+          onToggleSelect={(id) =>
+            setSelected((cur) => {
+              const next = new Set(cur)
+              if (next.has(id)) next.delete(id)
+              else next.add(id)
+              return next
+            })
+          }
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6">
           {/* Left — candidate picker */}
@@ -940,6 +958,177 @@ function ComparisonTable({
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Saved-evaluations cards strip. Sits above the picker so the recruiter can
+ * see every candidate they've already evaluated without scrolling the picker
+ * to find a score badge.
+ *
+ * Each card shows: name + email, big colored score, recommendation pill,
+ * flow, source badges, "Saved Xh ago". Clicking the card toggles the
+ * candidate into the selection — same effect as clicking them in the
+ * picker, just easier to discover when you already have results.
+ *
+ * Hidden entirely when there are no saved evaluations.
+ *
+ * Sorted by score descending so the strongest candidates surface first.
+ * Three view modes:
+ *   - 'top'  : 8 cards
+ *   - 'all'  : every saved evaluation (scrollable grid)
+ *   - 'mine' : only currently-selected candidates' evals (debug shortcut)
+ */
+function EvaluationCards({
+  evaluations,
+  candidateCache,
+  selected,
+  onToggleSelect,
+}: {
+  evaluations: Record<string, Evaluation>
+  candidateCache: Map<string, Candidate>
+  selected: Set<string>
+  onToggleSelect: (sessionId: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [recOnly, setRecOnly] = useState<'all' | 'strong_hire' | 'hire' | 'borderline' | 'no_hire'>('all')
+
+  // Build a sorted, optionally-filtered list of saved evaluations.
+  const list = useMemo(() => {
+    const arr = Object.values(evaluations)
+    const filtered = recOnly === 'all' ? arr : arr.filter((e) => e.recommendation === recOnly)
+    return filtered.sort((a, b) => b.overallScore - a.overallScore)
+  }, [evaluations, recOnly])
+
+  if (list.length === 0) return null
+
+  const visible = expanded ? list : list.slice(0, 8)
+
+  const counts = {
+    all: Object.values(evaluations).length,
+    strong_hire: Object.values(evaluations).filter((e) => e.recommendation === 'strong_hire').length,
+    hire: Object.values(evaluations).filter((e) => e.recommendation === 'hire').length,
+    borderline: Object.values(evaluations).filter((e) => e.recommendation === 'borderline').length,
+    no_hire: Object.values(evaluations).filter((e) => e.recommendation === 'no_hire').length,
+  }
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider">
+            Saved evaluations ({list.length})
+          </div>
+          <div className="text-[12px] text-grey-50">
+            Click a card to add the candidate to the comparison.
+          </div>
+        </div>
+        <div className="flex items-center gap-1">
+          {(['all', 'strong_hire', 'hire', 'borderline', 'no_hire'] as const).map((key) => {
+            const isActive = recOnly === key
+            const label =
+              key === 'all'
+                ? 'All'
+                : RECOMMENDATION_LABEL[key as Evaluation['recommendation']]
+            const count = counts[key]
+            if (count === 0 && key !== 'all') return null
+            return (
+              <button
+                key={key}
+                onClick={() => setRecOnly(key)}
+                className={`px-2.5 py-1 rounded-[8px] text-[11px] font-medium border transition-colors ${
+                  isActive
+                    ? key === 'all'
+                      ? 'bg-ink text-white border-ink'
+                      : RECOMMENDATION_COLOR[key as Evaluation['recommendation']]
+                    : 'bg-white text-grey-35 border-surface-border hover:border-grey-50'
+                }`}
+              >
+                {label} <span className="tabular-nums opacity-70">{count}</span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        {visible.map((ev) => {
+          const cached = candidateCache.get(ev.sessionId)
+          const name =
+            cached?.candidateName ?? ev.session?.candidateName ?? '(no name)'
+          const email =
+            cached?.candidateEmail ?? ev.session?.candidateEmail ?? null
+          const flowName =
+            cached?.flow?.name ?? ev.session?.flow?.name ?? null
+          const isSelected = selected.has(ev.sessionId)
+          const badges = describeSources(ev.sources)
+          return (
+            <button
+              key={ev.id}
+              onClick={() => onToggleSelect(ev.sessionId)}
+              className={`text-left bg-white border rounded-[12px] p-3.5 transition-colors hover:border-brand-500 ${
+                isSelected ? 'border-brand-500 ring-1 ring-brand-500/30' : 'border-surface-border'
+              }`}
+              title={ev.summary}
+            >
+              <div className="flex items-start gap-3 mb-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] font-semibold text-ink truncate">{name}</div>
+                  <div className="text-[11px] text-grey-40 truncate">{email ?? '—'}</div>
+                  {flowName && (
+                    <div className="text-[10px] text-grey-50 truncate mt-0.5">{flowName}</div>
+                  )}
+                </div>
+                <div className="text-right">
+                  <div className={`text-[22px] font-bold tabular-nums leading-none ${scoreColor(ev.overallScore)}`}>
+                    {ev.overallScore}
+                  </div>
+                  <div className="text-[9px] font-mono text-grey-50 uppercase tracking-wider mt-0.5">
+                    /100
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${RECOMMENDATION_COLOR[ev.recommendation]}`}>
+                  {RECOMMENDATION_LABEL[ev.recommendation]}
+                </span>
+                <span className="text-[10px] text-grey-50">{timeAgo(ev.createdAt)}</span>
+              </div>
+              {badges.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {badges.map((b, i) => (
+                    <span
+                      key={i}
+                      className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
+                        b.ok
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-amber-50 text-amber-700 border-amber-200'
+                      }`}
+                    >
+                      {b.icon} {b.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {isSelected && (
+                <div className="text-[10px] text-brand-600 font-medium mt-2">
+                  ✓ In comparison
+                </div>
+              )}
+            </button>
+          )
+        })}
+      </div>
+      {list.length > 8 && (
+        <div className="mt-3 text-center">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="text-[12px] text-grey-35 hover:text-ink underline-offset-2 hover:underline"
+          >
+            {expanded ? `Show top 8` : `Show all ${list.length}`}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
