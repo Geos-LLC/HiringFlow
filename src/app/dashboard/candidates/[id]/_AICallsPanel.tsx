@@ -70,6 +70,9 @@ interface Evaluation {
   strengths: string[]
   weaknesses: string[]
   roleSuccessFactors?: string[] | null
+  analysis?: string | null
+  coverageGaps?: string[] | null
+  model?: string | null
   positionDescriptionSnapshot: string
   sources?: SourcesSummary
   includeVoice?: boolean
@@ -524,6 +527,18 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
               </div>
             )}
             <div className="text-[12px] text-grey-15 mb-3">{evaluation.summary}</div>
+            {(evaluation.coverageGaps?.length ?? 0) > 0 && (
+              <div className="mb-3 px-3 py-2 bg-amber-50 rounded-[8px] border border-amber-200">
+                <div className="text-[10px] font-mono uppercase text-amber-700 tracking-wider mb-1">
+                  ⚠ Coverage gaps — score discounted
+                </div>
+                <ul className="text-[11px] text-amber-800 space-y-0.5 list-disc list-inside">
+                  {evaluation.coverageGaps!.map((g, i) => (
+                    <li key={i}>{g}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {(evaluation.roleSuccessFactors?.length ?? 0) > 0 && (
               <div className="mb-3 px-3 py-2 bg-emerald-50/50 rounded-[8px] border border-emerald-100">
                 <div className="text-[10px] font-mono uppercase text-emerald-700 tracking-wider mb-1">
@@ -534,6 +549,14 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
                     <li key={i}>{f}</li>
                   ))}
                 </ul>
+              </div>
+            )}
+            {evaluation.analysis && (
+              <div className="mb-3 px-3 py-2 bg-sky-50/50 rounded-[8px] border border-sky-100">
+                <div className="text-[10px] font-mono uppercase text-sky-700 tracking-wider mb-1">
+                  Reasoning
+                </div>
+                <div className="text-[11px] text-grey-15 leading-snug">{evaluation.analysis}</div>
               </div>
             )}
             <div className="space-y-1.5">

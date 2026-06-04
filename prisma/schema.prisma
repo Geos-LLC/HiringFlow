@@ -1084,6 +1084,16 @@ model CandidateEvaluation {
   // to the "Booking Conversion" criterion. Nullable because evaluations
   // created before the success-factor layer (pre-2026-06-04) don't have one.
   roleSuccessFactors          Json?     @map("role_success_factors")
+  // 4-8 sentence pre-scoring analysis the model wrote BEFORE committing to
+  // numeric scores. Surfaced in the UI as a "Reasoning" block. Nullable
+  // because evaluations created before the analysis field landed don't
+  // have one.
+  analysis                    String?
+  // string[] of data modalities that were missing for this candidate
+  // (e.g. "no AI-call transcript", "no video self-intro"). Drives the
+  // coverage discount — when entire modalities are missing, the candidate's
+  // overall score is downgraded relative to peers with full material.
+  coverageGaps                Json?     @map("coverage_gaps")
   // Provenance metadata: which transcripts went into the prompt. Shape:
   // { meetings: [{id, durationSec, hasTranscript}],
   //   aiCalls: [{conversationId, durationSecs, hasTranscript}],

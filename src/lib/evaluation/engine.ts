@@ -23,7 +23,17 @@ import { openai } from '@/lib/openai'
 import type { GatheredMaterial } from './gather'
 import type { VoiceObservationResult, VideoObservationResult } from './media-observation'
 
-const MODEL = 'gpt-4o-mini'
+// Model split by step. The rubric derivation is a JSON-shape transformation
+// the smaller model handles fine (verified live against the dispatcher JD —
+// produces "Lead Qualification / Booking Control / ..." correctly). The
+// scoring step is where the actual cognitive work happens — reading
+// transcripts, weighing evidence, judging conversational outcomes — and the
+// smaller model produces clustered scores that don't differentiate strong
+// candidates from average ones the way a recruiter (or ChatGPT-in-browser)
+// would. We use gpt-4o for scoring and comparison.
+const DERIVE_MODEL = 'gpt-4o-mini'
+const SCORE_MODEL = 'gpt-4o'
+const COMPARE_MODEL = 'gpt-4o'
 
 export interface DerivedCriterion {
   name: string
@@ -48,6 +58,14 @@ export interface EvaluationResult {
   criteria: ScoredCriterion[]
   strengths: string[]
   weaknesses: string[]
+  // Pre-scoring reasoning: the model's explicit analysis BEFORE committing
+  // to numeric scores. Forces actual cognitive work instead of a snap
+  // judgment, and gives the recruiter visibility into why each score
+  // landed where it did. Surfaced in the UI as a "Reasoning" block.
+  analysis: string
+  // Coverage gaps that affected the score (e.g. "no AI-call transcript
+  // available"). Empty when the candidate had full material.
+  coverageGaps: string[]
   // Carried from the derivation step so the API route can persist the
   // factors the rubric was built from. Not scored by the model — purely
   // informative for the recruiter UI.
@@ -157,7 +175,7 @@ HARD RULES:
 
 export async function deriveCriteria(positionDescription: string): Promise<RubricDerivation> {
   const completion = await openai.chat.completions.create({
-    model: MODEL,
+    model: DERIVE_MODEL,
     temperature: 0.2,
     response_format: {
       type: 'json_schema',
@@ -368,17 +386,61 @@ Evidence rules:
     presence, engagement). It informs but never decides — and is NEVER used
     as a measure of trustworthiness, honesty, or personality.
 
+Coverage discount (CRITICAL — applies BEFORE finalizing the overall score):
+  - If entire DATA MODALITIES are missing for this candidate, you MUST
+    discount the overall score and explicitly downgrade confidence. Missing
+    data is NOT the same as 100% on the missing dimension.
+  - Concretely:
+      • No AI-call / phone-roleplay transcript for a phone-intake / sales
+        / dispatcher role → the role's main behaviors (Booking Control,
+        Pricing Delivery, Objection Handling, Complaint Recovery) cannot
+        be verified. Score those criteria conservatively (50-65 cap, not
+        80+) and discount the overall score 5-15 points relative to a
+        candidate with comparable strengths who DID have a verified call.
+      • No video / self-intro recording for an in-home / customer-facing
+        role → presentation, camera presence, engagement can't be checked.
+        Penalize the relevant criteria the same way.
+      • No interview meeting attendance for a role where the interview is
+        in the rubric → flag accordingly.
+  - When a peer candidate HAS the missing material and demonstrated the
+    behavior, the gap matters MORE: the candidate without coverage cannot
+    out-rank a peer who verifiably executed the behavior.
+  - Write the coverage gap into the summary ("scoring is uncertain because
+    no AI-call transcript was available — verify before hire") so the
+    recruiter sees it.
+
 Overall score & recommendation:
-  - overallScore is the weight-weighted average of the criterion scores.
+  - overallScore is the weight-weighted average of the criterion scores,
+    THEN reduced by the coverage discount above if material was missing.
+    Round to integer.
   - Recommendation thresholds: ≥85 strong_hire, 70-84 hire, 55-69 borderline,
-    <55 no_hire.
+    <55 no_hire. A candidate with major coverage gaps should rarely reach
+    strong_hire even on excellent partial evidence.
+
+Pre-scoring analysis (REQUIRED — write this FIRST, before the criterion
+scores):
+  - In 4-8 sentences, walk through what the material actually shows for
+    this candidate against the role's success factors. Name the specific
+    moments / behaviors / quotes that drove your reasoning. This is the
+    thinking work that justifies the numbers — do it explicitly, don't
+    skip to scores.
+  - This analysis is shown to the recruiter. Write it as if you're
+    briefing them, not as internal scratch.
+
+Coverage gaps (REQUIRED list, possibly empty):
+  - List every data modality that was MISSING for this candidate
+    (e.g. "no AI-call / phone-roleplay transcript", "no video self-intro",
+    "no interview meeting attended"). Empty array when the candidate had
+    full material for the role's rubric.
 
 Strengths / weaknesses / summary:
   - Each strength / weakness is a one-line statement of an outcome-driving
     behavior the candidate did or failed to do. NOT generic praise/criticism.
   - The summary is 1-2 sentences focused on the candidate's likely job
     performance — would they convert leads, would they show up and present
-    well in a customer's home, etc. Specific over bland.
+    well in a customer's home, etc. When coverage gaps exist, the summary
+    MUST mention them ("scoring is uncertain because no AI-call transcript
+    was available — verify before hire").
 
 Be specific and honest — bland praise is worse than no feedback. Never reject
 a candidate solely on observation findings.`
@@ -397,7 +459,7 @@ async function scoreCandidate(
         derivation.roleSuccessFactors.map((f) => `  - ${f}`).join('\n')
       : ''
   const completion = await openai.chat.completions.create({
-    model: MODEL,
+    model: SCORE_MODEL,
     temperature: 0.2,
     response_format: {
       type: 'json_schema',
@@ -407,8 +469,23 @@ async function scoreCandidate(
         schema: {
           type: 'object',
           additionalProperties: false,
-          required: ['overallScore', 'recommendation', 'summary', 'criteria', 'strengths', 'weaknesses'],
+          // `analysis` and `coverageGaps` come FIRST in `required` so the
+          // structured-output model commits to its reasoning before
+          // producing scores. Empirically this produces better
+          // differentiation between candidates than skipping straight to
+          // the criteria array.
+          required: ['analysis', 'coverageGaps', 'criteria', 'overallScore', 'recommendation', 'summary', 'strengths', 'weaknesses'],
           properties: {
+            analysis: {
+              type: 'string',
+              description:
+                '4-8 sentences walking through what the material shows. Name specific moments. Reason before scoring.',
+            },
+            coverageGaps: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Missing data modalities (e.g. "no AI-call transcript"). Empty when material is complete.',
+            },
             overallScore: { type: 'integer', minimum: 0, maximum: 100 },
             recommendation: { type: 'string', enum: ['strong_hire', 'hire', 'borderline', 'no_hire'] },
             summary: { type: 'string' },
@@ -572,7 +649,7 @@ export async function compareEvaluations(
   }
 
   const completion = await openai.chat.completions.create({
-    model: MODEL,
+    model: COMPARE_MODEL,
     temperature: 0.2,
     response_format: {
       type: 'json_schema',

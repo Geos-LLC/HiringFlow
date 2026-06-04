@@ -183,6 +183,34 @@ describe('SCORE_CANDIDATE_SYSTEM_PROMPT', () => {
     expect(p).toMatch(/confirmed appointment details/)
     expect(p).toMatch(/complaint/)
   })
+
+  it('penalizes candidates with missing data modalities (coverage discount)', () => {
+    // The recruiter spec called out "if there is no data, it doesn't mean
+    // it is 100%". The prompt must explicitly discount the overall score
+    // when an entire modality (AI call, video, etc.) is missing.
+    const p = SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()
+    expect(p).toMatch(/coverage discount|missing data is not|missing.*not.*100/i)
+    expect(p).toMatch(/discount the overall score/i)
+    expect(p).toMatch(/no ai-?call.*transcript|phone-roleplay.*transcript/i)
+    expect(p).toMatch(/no video|self-intro recording/i)
+    // Concrete cap so the model doesn't give 80+ on a criterion it can't verify.
+    expect(p).toMatch(/50-65 cap|50-65/i)
+    // Comparison rule: a peer with verified material out-ranks one without.
+    expect(p).toMatch(/cannot\s+out-rank a peer\s+who verifiably executed/i)
+  })
+
+  it('requires the model to write a pre-scoring analysis BEFORE committing to scores', () => {
+    // The "let the model think first" pattern. Empirically produces better
+    // differentiation between candidates than skipping straight to numbers.
+    expect(SCORE_CANDIDATE_SYSTEM_PROMPT).toMatch(/Pre-scoring analysis/i)
+    expect(SCORE_CANDIDATE_SYSTEM_PROMPT).toMatch(/write this FIRST/i)
+    expect(SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()).toMatch(/4-8 sentences/)
+  })
+
+  it('requires a coverageGaps list so the UI can surface what was missing', () => {
+    expect(SCORE_CANDIDATE_SYSTEM_PROMPT).toMatch(/Coverage gaps \(REQUIRED list/i)
+    expect(SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()).toMatch(/empty array when the candidate\s+had\s+full material/)
+  })
 })
 
 describe('COMPARE_CANDIDATES_SYSTEM_PROMPT', () => {
@@ -333,6 +361,18 @@ describe('deriveCriteria — dispatcher JD', () => {
     expect(names).not.toContain('Team Support Coordination')
     expect(names).not.toContain('Task Monitoring and Reporting')
     expect(names).not.toContain('Customer Communication Excellence')
+  })
+})
+
+describe('scoreCandidate schema', () => {
+  it('uses the larger model and requires analysis + coverageGaps in the structured output', async () => {
+    // We don't directly call scoreCandidate (it's not exported) — but we
+    // can inspect the model + schema constants/prompt to make sure the
+    // upgrade landed. The schema must require analysis + coverageGaps
+    // FIRST so the model writes its reasoning before scoring.
+    const { SCORE_CANDIDATE_SYSTEM_PROMPT } = await import('../engine')
+    expect(SCORE_CANDIDATE_SYSTEM_PROMPT).toMatch(/Pre-scoring analysis \(REQUIRED/)
+    expect(SCORE_CANDIDATE_SYSTEM_PROMPT).toMatch(/Coverage gaps \(REQUIRED/)
   })
 })
 

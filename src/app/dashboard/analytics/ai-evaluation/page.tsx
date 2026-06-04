@@ -105,6 +105,12 @@ interface Evaluation {
   // Outcome-driving behaviors the rubric was built from. Null for evals
   // created before the success-factor layer landed.
   roleSuccessFactors?: string[] | null
+  // 4-8 sentence pre-scoring analysis. Null for legacy evals.
+  analysis?: string | null
+  // Missing data modalities that drove the coverage discount.
+  coverageGaps?: string[] | null
+  // OpenAI model used for scoring (`gpt-4o-mini` legacy, `gpt-4o` current).
+  model?: string | null
   positionDescriptionSnapshot: string
   sources?: SourcesSummary
   includeVoice?: boolean
@@ -1088,6 +1094,62 @@ function ComparisonTable({
                       <ul className="text-[11px] text-grey-15 space-y-0.5 list-disc list-inside">
                         {factors.map((f, i) => (
                           <li key={i}>{f}</li>
+                        ))}
+                      </ul>
+                    </td>
+                  )
+                })}
+              </tr>
+            )}
+            {/* Pre-scoring reasoning. The block of prose the model wrote
+                BEFORE committing to scores. Surfacing it here tells the
+                recruiter "this is why each score landed where it did." */}
+            {orderedCandidates.some((c) => !!bySession.get(c.id)?.analysis) && (
+              <tr className="border-b border-surface-border bg-sky-50/30">
+                <td className="px-4 py-2.5 text-[11px] font-mono uppercase text-grey-35 align-top">
+                  Reasoning
+                </td>
+                {orderedCandidates.map((c) => {
+                  const ev = bySession.get(c.id)!
+                  if (!ev.analysis) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-50">
+                        (legacy eval — re-run for reasoning)
+                      </td>
+                    )
+                  }
+                  return (
+                    <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-15 leading-snug">
+                      {ev.analysis}
+                    </td>
+                  )
+                })}
+              </tr>
+            )}
+            {/* Coverage gaps — modalities the candidate didn't have, which
+                drive the coverage discount. Amber so the recruiter sees
+                that a high score on partial material is less certain than
+                a high score on full material. */}
+            {orderedCandidates.some((c) => (bySession.get(c.id)?.coverageGaps?.length ?? 0) > 0) && (
+              <tr className="border-b border-surface-border bg-amber-50/40">
+                <td className="px-4 py-2.5 text-[11px] font-mono uppercase text-amber-700 align-top">
+                  ⚠ Coverage gaps
+                </td>
+                {orderedCandidates.map((c) => {
+                  const ev = bySession.get(c.id)!
+                  const gaps = ev.coverageGaps ?? []
+                  if (gaps.length === 0) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-50">
+                        full material
+                      </td>
+                    )
+                  }
+                  return (
+                    <td key={c.id} className="px-3 py-2.5 align-top">
+                      <ul className="text-[11px] text-amber-800 space-y-0.5 list-disc list-inside">
+                        {gaps.map((g, i) => (
+                          <li key={i}>{g}</li>
                         ))}
                       </ul>
                     </td>

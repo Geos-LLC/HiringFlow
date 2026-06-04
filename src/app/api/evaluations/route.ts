@@ -141,7 +141,10 @@ export async function POST(request: NextRequest) {
         workspaceId: ws.workspaceId,
         sessionId,
         positionDescriptionSnapshot: positionDescription,
-        model: 'gpt-4o-mini',
+        // Records the SCORING model (derivation runs on a smaller one).
+        // Lets the recruiter spot legacy mini-scored evaluations next to
+        // newer gpt-4o-scored ones in the comparison view.
+        model: 'gpt-4o',
         overallScore: result.overallScore,
         recommendation: result.recommendation,
         summary: result.summary,
@@ -149,6 +152,8 @@ export async function POST(request: NextRequest) {
         strengths: result.strengths as any,
         weaknesses: result.weaknesses as any,
         roleSuccessFactors: result.roleSuccessFactors as any,
+        analysis: result.analysis,
+        coverageGaps: result.coverageGaps as any,
         sources: gathered.sources as any,
         includeVoice: !!includeVoice,
         includeVideo: !!includeVideo,
