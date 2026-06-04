@@ -12,8 +12,9 @@ const ASSETS_NAV = [
   { href: '/dashboard/videos', label: 'Media' },
 ]
 
-interface EmailTemplate { id: string; name: string; subject: string; bodyHtml: string; bodyText: string | null; isActive: boolean; updatedAt: string }
-interface SmsTemplate { id: string; name: string; body: string; isActive: boolean; updatedAt: string }
+interface TemplateUsage { ruleIds: string[]; ruleNames: string[] }
+interface EmailTemplate { id: string; name: string; subject: string; bodyHtml: string; bodyText: string | null; isActive: boolean; updatedAt: string; usage?: TemplateUsage }
+interface SmsTemplate { id: string; name: string; body: string; isActive: boolean; updatedAt: string; usage?: TemplateUsage }
 interface AdTemplate { id: string; name: string; source: string; headline: string; bodyText: string; requirements: string | null; benefits: string | null; callToAction: string | null; isActive: boolean; updatedAt: string }
 
 // Source of truth for the "Variables — click to copy" pill bank in the
@@ -394,8 +395,19 @@ export default function ContentPage() {
     setSmsSaving(false); setShowSmsModal(false); refreshSms()
   }
   const deleteSms = async (id: string) => {
-    if (!confirm('Delete this SMS template? Any rule still using it will fall back to its inline body.')) return
-    await fetch(`/api/sms-templates/${id}`, { method: 'DELETE' }); refreshSms()
+    if (!confirm('Delete this SMS template?')) return
+    const res = await fetch(`/api/sms-templates/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => null)
+      if (data?.code === 'template_in_use' && Array.isArray(data?.usage?.ruleNames)) {
+        const names: string[] = data.usage.ruleNames
+        alert(`Can’t delete — this template is still used by:\n\n• ${names.join('\n• ')}\n\nDetach it from those rules first.`)
+      } else {
+        alert(data?.error || 'Delete failed')
+      }
+      return
+    }
+    refreshSms()
   }
 
   // Email CRUD — recruiter composes in plain text; HTML is generated on save.
@@ -423,7 +435,21 @@ export default function ContentPage() {
     else { await fetch('/api/email-templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
     setEmailSaving(false); setShowEmailModal(false); refreshEmails()
   }
-  const deleteEmail = async (id: string) => { if (!confirm('Delete?')) return; await fetch(`/api/email-templates/${id}`, { method: 'DELETE' }); refreshEmails() }
+  const deleteEmail = async (id: string) => {
+    if (!confirm('Delete this email template?')) return
+    const res = await fetch(`/api/email-templates/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => null)
+      if (data?.code === 'template_in_use' && Array.isArray(data?.usage?.ruleNames)) {
+        const names: string[] = data.usage.ruleNames
+        alert(`Can’t delete — this template is still used by:\n\n• ${names.join('\n• ')}\n\nDetach it from those rules first.`)
+      } else {
+        alert(data?.error || 'Delete failed')
+      }
+      return
+    }
+    refreshEmails()
+  }
 
   // Ad CRUD
   const openCreateAd = (starter?: typeof AD_DEFAULTS[0]) => {
@@ -561,6 +587,7 @@ export default function ContentPage() {
                 </div>
                 <h3 className="font-medium text-grey-15 mb-0.5">{t.name}</h3>
                 <p className="text-xs text-grey-40 mb-3 truncate">Subject: {t.subject}</p>
+                <TemplateUsageBadge usage={t.usage} />
                 <div className="flex items-center gap-3">
                   <button onClick={() => setPreviewEmail(t)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">Preview</button>
                   <button onClick={() => openEditEmail(t)} className="text-xs text-grey-35 hover:text-grey-15">Edit</button>
@@ -581,6 +608,7 @@ export default function ContentPage() {
                   </div>
                   <h3 className="font-medium text-grey-15 mb-0.5">{t.name}</h3>
                   <p className="text-xs text-grey-40 mb-3 line-clamp-2 whitespace-pre-wrap">{t.body}</p>
+                  <TemplateUsageBadge usage={t.usage} />
                   <div className="flex items-center gap-3">
                     <button onClick={() => setPreviewSms(t)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">Preview</button>
                     <button onClick={() => openEditSms(t)} className="text-xs text-grey-35 hover:text-grey-15">Edit</button>
@@ -747,6 +775,34 @@ export default function ContentPage() {
 // preview pane). Test recipient is sticky across opens so subsequent
 // tests don't require retyping.
 const TEMPLATE_TEST_EMAIL_KEY = 'hiringflow:template-test-email'
+// Renders the "Used in N rules" / "Not used" pill above each card's action row.
+// Truncates the rule-name preview past 2 names so a heavily-shared template
+// doesn't blow up card height — full list lives in the tooltip.
+function TemplateUsageBadge({ usage }: { usage?: TemplateUsage }) {
+  const names = usage?.ruleNames ?? []
+  if (names.length === 0) {
+    return (
+      <div className="mb-3 text-[11px]">
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-weak text-grey-50 font-medium">
+          Not used
+        </span>
+      </div>
+    )
+  }
+  const preview = names.slice(0, 2).join(', ')
+  const rest = names.length - 2
+  return (
+    <div className="mb-3 text-[11px] text-grey-35" title={names.join('\n')}>
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">
+        Used in {names.length} rule{names.length === 1 ? '' : 's'}
+      </span>
+      <span className="ml-2 text-grey-40 truncate align-middle">
+        {preview}{rest > 0 ? `, +${rest} more` : ''}
+      </span>
+    </div>
+  )
+}
+
 function EmailPreviewModal({ template, onClose }: {
   template: EmailTemplate
   onClose: () => void
