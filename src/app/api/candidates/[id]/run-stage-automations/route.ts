@@ -16,9 +16,11 @@ const RERUN_ADMIN_ROLES = new Set(['admin', 'owner'])
 // given stage, for one candidate. Each stage has zero or more StageTriggers
 // (event + optional targetId). For every trigger event we find active
 // AutomationRules that share the same triggerType and either match the
-// candidate's flowId or have no flow filter, then run them immediately —
-// delays are intentionally ignored: the recruiter is asking for it to fire
-// *now* for *this* candidate.
+// candidate's flowId or have no flow filter, then run their FIRST STEP
+// immediately. Subsequent steps (delayed follow-ups) are NOT fired by this
+// path — recruiters were getting 2 emails at once when a rule had a +2m
+// step and a +3d follow-up, because executeRule used to loop every step
+// inline. The first-step-only policy lives in executeRule itself.
 //
 // GET returns the same matched-rule list without firing, so the UI can show
 // a count / button-enabled state.

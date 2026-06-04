@@ -1871,10 +1871,16 @@ export async function executeStep(
  * its execution status, and because the QStash callback may still be holding
  * old-shape messages with { ruleId, sessionId }.
  *
- * Runs every step inline (ignoring delay) on every channel. The `ignoreActive`
- * flag propagates to executeStep so paused rules can be tested. The
- * `ignoreSentGuard` flag bypasses the per-(step,session,channel) "already
- * sent" check so a recruiter-initiated manual run can intentionally re-send.
+ * Runs the rule's first step inline on every channel. Subsequent steps are
+ * never fired by this path because they represent delayed follow-ups —
+ * "Send Test" and "Run Automations" both mean "send the immediate email now",
+ * not "send the entire 3-day sequence at once". Production triggers go
+ * through dispatchRule → queueStepAtDelay, which queues each step with its
+ * real delay; that path is unaffected.
+ *
+ * The `ignoreActive` flag propagates to executeStep so paused rules can be
+ * tested. `force` bypasses the per-(step,session,channel) "already sent"
+ * check so a recruiter-initiated manual run can intentionally re-send.
  */
 export async function executeRule(
   ruleId: string,
@@ -1897,14 +1903,14 @@ export async function executeRule(
     triggerType: rule.triggerType,
     executionMode: 'immediate',
   }
-  for (const step of rule.steps) {
-    for (const channel of expandChannels(step.channel)) {
-      await executeStep(step.id, sessionId, channel, {
-        ignoreActive: options?.ignoreActive,
-        force: options?.force,
-        dispatchCtx: ctx,
-      })
-    }
+  const firstStep = rule.steps[0]
+  if (!firstStep) return
+  for (const channel of expandChannels(firstStep.channel)) {
+    await executeStep(firstStep.id, sessionId, channel, {
+      ignoreActive: options?.ignoreActive,
+      force: options?.force,
+      dispatchCtx: ctx,
+    })
   }
 }
 
