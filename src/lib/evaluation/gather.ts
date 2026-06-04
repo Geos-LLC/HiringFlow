@@ -18,6 +18,7 @@
  */
 
 import { prisma } from '@/lib/prisma'
+import type { VoiceClipInput, VideoClipInput } from './media-observation'
 
 export interface GatheredMaterial {
   session: {
@@ -91,7 +92,16 @@ async function fetchElevenLabsConversation(apiKey: string, conversationId: strin
 export async function gatherCandidateMaterial(
   sessionId: string,
   workspaceId: string,
-): Promise<{ material: GatheredMaterial; sources: SourcesSummary } | null> {
+): Promise<{
+  material: GatheredMaterial
+  sources: SourcesSummary
+  // Clips eligible for media observation. Same source list as the transcripts
+  // but with the storage refs the observer needs (storageKey / signed URL).
+  // The eval engine only actually fetches/sends these when includeVoice or
+  // includeVideo is set on the request.
+  voiceClips: VoiceClipInput[]
+  videoClips: VideoClipInput[]
+} | null> {
   const session = await prisma.session.findFirst({
     where: { id: sessionId, workspaceId },
     include: {
@@ -118,7 +128,8 @@ export async function gatherCandidateMaterial(
         .filter((c): c is NonNullable<typeof c> => c !== null)
     : []
 
-  const captures = session.captureResponses.map((c) => ({
+  const captureRows = session.captureResponses
+  const captures = captureRows.map((c) => ({
     id: c.id,
     mode: c.mode,
     prompt: c.prompt,
@@ -126,6 +137,59 @@ export async function gatherCandidateMaterial(
     transcript: c.transcript,
     aiSummary: c.aiSummary,
   }))
+
+  // Voice + video clips for the observation engine.
+  //   - Audio captures (mode='audio') feed voice only.
+  //   - Video captures (mode in {video, audio_video}) feed both voice (audio
+  //     track) and video (frames).
+  //   - AI calls feed voice via the ElevenLabs audio endpoint. Latest call
+  //     only — per the product spec ("analyze the latest AI call").
+  //   - Meetings: out of scope for the first PR (Recall.ai download dance is
+  //     not worth blocking voice MVP on).
+  const voiceClips: VoiceClipInput[] = []
+  const videoClips: VideoClipInput[] = []
+
+  for (const c of captureRows) {
+    if (!c.storageKey || !c.mimeType) continue
+    if (c.mode === 'audio') {
+      voiceClips.push({
+        assetType: 'capture',
+        assetId: c.id,
+        durationSec: c.durationSec ?? null,
+        source: { kind: 's3', storageKey: c.storageKey, mimeType: c.mimeType },
+      })
+    } else if (c.mode === 'video' || c.mode === 'audio_video') {
+      voiceClips.push({
+        assetType: 'capture',
+        assetId: c.id,
+        durationSec: c.durationSec ?? null,
+        source: { kind: 's3', storageKey: c.storageKey, mimeType: c.mimeType },
+      })
+      videoClips.push({
+        assetType: 'capture',
+        assetId: c.id,
+        durationSec: c.durationSec ?? null,
+        source: { kind: 's3', storageKey: c.storageKey, mimeType: c.mimeType },
+      })
+    }
+  }
+
+  // Most recent AI call only — per product spec, the latest call is the
+  // representative sample for voice observation.
+  if (apiKey && aiCalls.length > 0) {
+    const latest = aiCalls[aiCalls.length - 1]
+    voiceClips.push({
+      assetType: 'ai_call',
+      assetId: latest.conversationId,
+      durationSec: latest.durationSecs ?? null,
+      source: {
+        kind: 'url',
+        url: `https://api.elevenlabs.io/v1/convai/conversations/${latest.conversationId}/audio`,
+        mimeType: 'audio/mpeg',
+        headers: { 'xi-api-key': apiKey },
+      },
+    })
+  }
 
   const meetings = session.interviewMeetings.map((m) => ({
     id: m.id,
@@ -174,5 +238,5 @@ export async function gatherCandidateMaterial(
     })),
   }
 
-  return { material, sources }
+  return { material, sources, voiceClips, videoClips }
 }

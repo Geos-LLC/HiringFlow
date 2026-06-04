@@ -68,6 +68,28 @@ export async function headObject(
   }
 }
 
+// Server-side download of an object. Returns the raw bytes or null when the
+// object is missing/forbidden. Used by the media observation engine to feed
+// audio/video data straight into the OpenAI multimodal API without proxying
+// through a presigned URL.
+export async function s3Download(key: string): Promise<ArrayBuffer | null> {
+  const s3 = getS3Client()
+  try {
+    const out = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
+    if (!out.Body) return null
+    const chunks: Buffer[] = []
+    for await (const chunk of out.Body as AsyncIterable<Buffer>) {
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks).buffer.slice(0) as ArrayBuffer
+  } catch (err: any) {
+    if (err?.$metadata?.httpStatusCode === 404 || err?.name === 'NoSuchKey') {
+      return null
+    }
+    throw err
+  }
+}
+
 export function getPublicUrl(key: string): string {
   if (process.env.CLOUDFRONT_DOMAIN) {
     return `https://${process.env.CLOUDFRONT_DOMAIN}/${key}`

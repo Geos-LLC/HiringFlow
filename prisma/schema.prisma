@@ -1083,11 +1083,59 @@ model CandidateEvaluation {
   //   aiCalls: [{conversationId, durationSecs, hasTranscript}],
   //   captures: [{id, mode, hasTranscript}] }
   sources                     Json
+  // Whether this run included multimodal media observation (separate from
+  // transcript scoring). Observations are descriptive only — pace, clarity,
+  // hesitation, energy, articulation for voice; camera presence, presentation,
+  // engagement for video. Never claims trustworthiness/honesty/attractiveness.
+  includeVoice                Boolean   @default(false) @map("include_voice")
+  includeVideo                Boolean   @default(false) @map("include_video")
+  // Shape: { clips: [{ assetType: 'capture' | 'ai_call' | 'meeting',
+  //                    assetId, durationSec, pace, clarity, hesitation,
+  //                    energy, articulation, evidence: string[] }],
+  //          summary: string }
+  // Null when includeVoice=false. See src/lib/evaluation/media-observation.ts.
+  voiceObservation            Json?     @map("voice_observation")
+  // Shape: { clips: [{ assetType, assetId, durationSec,
+  //                    cameraPresence, presentation, engagement,
+  //                    evidence: string[] }],
+  //          summary: string }
+  // Null when includeVideo=false.
+  videoObservation            Json?     @map("video_observation")
   createdById                 String?   @map("created_by_id")
   createdAt                   DateTime  @default(now()) @map("created_at")
 
   @@index([workspaceId, sessionId, createdAt(sort: Desc)])
   @@map("candidate_evaluations")
+}
+
+// Cache for multimodal media observation calls. Voice and video observation
+// runs through OpenAI gpt-4o (audio + vision) which is expensive per minute
+// of input. A candidate's self-intro recording doesn't change between
+// evaluation re-runs — so we key the result by (asset, model, version) and
+// reuse it. Recruiter can force-refresh later via a "Re-analyze media"
+// button (out of scope for the first PR).
+//
+// `assetType` is one of: 'capture' (CaptureResponse), 'ai_call' (ElevenLabs
+// conversation), 'meeting' (Recall.ai recording). `assetId` is the source
+// row's id (CaptureResponse.id / conversationId / InterviewMeeting.id).
+// `kind` is 'voice' or 'video' so the same asset can have both cached.
+// `analysisVersion` bumps when the prompt/spec changes — invalidates the
+// whole cache without a manual purge.
+model MediaAnalysisCache {
+  id              String   @id @default(uuid())
+  workspaceId     String   @map("workspace_id")
+  assetType       String   @map("asset_type") // 'capture' | 'ai_call' | 'meeting'
+  assetId         String   @map("asset_id")
+  kind            String   // 'voice' | 'video'
+  model           String   // e.g. 'gpt-4o-audio-preview', 'gpt-4o'
+  analysisVersion Int      @default(1) @map("analysis_version")
+  result          Json
+  durationSec     Float?   @map("duration_sec")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([workspaceId, assetType, assetId, kind, model, analysisVersion])
+  @@index([workspaceId, assetType, assetId])
+  @@map("media_analysis_cache")
 }
 
 // ============ AD TEMPLATES ============

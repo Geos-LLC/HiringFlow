@@ -63,6 +63,36 @@ interface SourcesSummary {
   captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
 }
 
+interface VoiceClipObservation {
+  assetType: string
+  assetId: string
+  durationSec: number | null
+  pace: string
+  clarity: string
+  hesitation: string
+  energy: string
+  articulation: string
+  evidence: string[]
+}
+interface VideoClipObservation {
+  assetType: string
+  assetId: string
+  durationSec: number | null
+  cameraPresence: string
+  presentation: string
+  engagement: string
+  evidence: string[]
+}
+interface VoiceObservation {
+  clips: VoiceClipObservation[]
+  summary: string
+}
+interface VideoObservation {
+  clips: VideoClipObservation[]
+  summary: string
+  unavailableReason?: string
+}
+
 interface Evaluation {
   id: string
   sessionId: string
@@ -74,6 +104,10 @@ interface Evaluation {
   weaknesses: string[]
   positionDescriptionSnapshot: string
   sources?: SourcesSummary
+  includeVoice?: boolean
+  includeVideo?: boolean
+  voiceObservation?: VoiceObservation | null
+  videoObservation?: VideoObservation | null
   createdAt: string
   session?: {
     candidateName: string | null
@@ -210,6 +244,13 @@ export default function AIEvaluationPage() {
   // filtered list. Without this stash, selectedCandidates collapses to []
   // every time the filter narrows.
   const [candidateCache, setCandidateCache] = useState<Map<string, Candidate>>(new Map())
+
+  // AI Media Observation toggles. Apply to every Run action while checked.
+  // Voice is real (gpt-4o-audio-preview on candidate audio). Video stub
+  // returns "frame extraction not yet provisioned" — the checkbox is wired
+  // so the UI is final, the engine is ready, the Lambda lands later.
+  const [includeVoice, setIncludeVoice] = useState(false)
+  const [includeVideo, setIncludeVideo] = useState(false)
 
   // JD override: keyed by sessionId. Undefined = use the default JD; empty
   // string = the recruiter intentionally blanked it. We preload the resolved
@@ -413,9 +454,16 @@ export default function AIEvaluationPage() {
     setRunning((s) => new Set(s).add(sessionId))
     setError(null)
     try {
-      const body: { sessionId: string; positionDescription?: string } = { sessionId }
+      const body: {
+        sessionId: string
+        positionDescription?: string
+        includeVoice?: boolean
+        includeVideo?: boolean
+      } = { sessionId }
       const override = jdOverrides[sessionId]
       if (override !== undefined) body.positionDescription = override
+      if (includeVoice) body.includeVoice = true
+      if (includeVideo) body.includeVideo = true
 
       const res = await fetch('/api/evaluations', {
         method: 'POST',
@@ -624,17 +672,55 @@ export default function AIEvaluationPage() {
               </div>
             ) : (
               <div className="bg-white border border-surface-border rounded-[12px]">
-                <div className="px-4 py-3 border-b border-surface-border flex items-center justify-between">
-                  <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider">
-                    Run evaluation
+                <div className="px-4 py-3 border-b border-surface-border space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[11px] font-mono uppercase text-grey-35 tracking-wider">
+                      Run evaluation
+                    </div>
+                    <button
+                      onClick={runAll}
+                      disabled={running.size > 0}
+                      className="px-3 py-1.5 rounded-[8px] bg-brand-500 text-white text-[12px] font-semibold hover:bg-brand-600 disabled:opacity-50 transition-colors"
+                    >
+                      {running.size > 0 ? `Running ${running.size}…` : `Run all (${selectedCandidates.length})`}
+                    </button>
                   </div>
-                  <button
-                    onClick={runAll}
-                    disabled={running.size > 0}
-                    className="px-3 py-1.5 rounded-[8px] bg-brand-500 text-white text-[12px] font-semibold hover:bg-brand-600 disabled:opacity-50 transition-colors"
-                  >
-                    {running.size > 0 ? `Running ${running.size}…` : `Run all (${selectedCandidates.length})`}
-                  </button>
+                  {/* AI Media Observation toggles. Voice runs gpt-4o-audio
+                      observation on the candidate's audio captures + latest
+                      AI call. Video stub returns "frame extractor not
+                      provisioned" — checkbox is wired for forward
+                      compatibility. */}
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    <label className="inline-flex items-center gap-1.5 text-[12px] text-grey-20 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={includeVoice}
+                        onChange={(e) => setIncludeVoice(e.target.checked)}
+                        className="rounded border-surface-border"
+                      />
+                      🎙️ Include voice observation
+                      <span className="text-[10px] text-grey-50 font-normal">
+                        (pace, clarity, hesitation, energy, articulation)
+                      </span>
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 text-[12px] text-grey-20 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={includeVideo}
+                        onChange={(e) => setIncludeVideo(e.target.checked)}
+                        className="rounded border-surface-border"
+                      />
+                      🎬 Include video observation
+                      <span className="text-[10px] text-grey-50 font-normal">
+                        (camera presence, presentation, engagement)
+                      </span>
+                    </label>
+                    {includeVideo && (
+                      <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                        Video frame extraction not yet provisioned — will skip with notice
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="divide-y divide-surface-border">
                   {selectedCandidates.map((c) => {
@@ -872,6 +958,94 @@ function ComparisonTable({
                 )
               })}
             </tr>
+            {/* Voice observation (AI media observation, descriptive only).
+                Shown only when at least one selected eval had includeVoice. */}
+            {orderedCandidates.some((c) => bySession.get(c.id)?.includeVoice) && (
+              <tr className="border-b border-surface-border">
+                <td className="px-4 py-2.5 text-[11px] font-mono uppercase text-grey-35 align-top">
+                  🎙️ Voice
+                </td>
+                {orderedCandidates.map((c) => {
+                  const ev = bySession.get(c.id)!
+                  const voice = ev.voiceObservation
+                  if (!ev.includeVoice) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-50">
+                        not included
+                      </td>
+                    )
+                  }
+                  if (!voice || voice.clips.length === 0) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-50">
+                        no audio clips
+                      </td>
+                    )
+                  }
+                  // Aggregate one short line per dimension from the first clip
+                  // (most representative). Click to drill into a tooltip.
+                  const first = voice.clips[0]
+                  return (
+                    <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-15">
+                      {voice.summary && (
+                        <div className="mb-1.5 italic text-grey-25">{voice.summary}</div>
+                      )}
+                      <dl className="space-y-0.5">
+                        <div><dt className="inline font-semibold text-grey-20">Pace: </dt><dd className="inline">{first.pace}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Clarity: </dt><dd className="inline">{first.clarity}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Hesitation: </dt><dd className="inline">{first.hesitation}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Energy: </dt><dd className="inline">{first.energy}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Articulation: </dt><dd className="inline">{first.articulation}</dd></div>
+                      </dl>
+                      {voice.clips.length > 1 && (
+                        <div className="text-[10px] text-grey-50 mt-1">+ {voice.clips.length - 1} more clip{voice.clips.length === 2 ? '' : 's'}</div>
+                      )}
+                    </td>
+                  )
+                })}
+              </tr>
+            )}
+            {/* Video observation. Stubbed for now — surfaces the unavailable
+                reason so the recruiter sees that "video frame extraction
+                pipeline is not provisioned yet". */}
+            {orderedCandidates.some((c) => bySession.get(c.id)?.includeVideo) && (
+              <tr className="border-b border-surface-border">
+                <td className="px-4 py-2.5 text-[11px] font-mono uppercase text-grey-35 align-top">
+                  🎬 Video
+                </td>
+                {orderedCandidates.map((c) => {
+                  const ev = bySession.get(c.id)!
+                  if (!ev.includeVideo) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-50">
+                        not included
+                      </td>
+                    )
+                  }
+                  const video = ev.videoObservation
+                  if (!video || video.clips.length === 0) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-amber-700">
+                        {video?.unavailableReason ?? 'Not available'}
+                      </td>
+                    )
+                  }
+                  const first = video.clips[0]
+                  return (
+                    <td key={c.id} className="px-3 py-2.5 align-top text-[11px] text-grey-15">
+                      {video.summary && (
+                        <div className="mb-1.5 italic text-grey-25">{video.summary}</div>
+                      )}
+                      <dl className="space-y-0.5">
+                        <div><dt className="inline font-semibold text-grey-20">Presentation: </dt><dd className="inline">{first.presentation}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Camera presence: </dt><dd className="inline">{first.cameraPresence}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Engagement: </dt><dd className="inline">{first.engagement}</dd></div>
+                      </dl>
+                    </td>
+                  )
+                })}
+              </tr>
+            )}
             {criteriaNames.map((name) => (
               <tr key={name} className="border-b border-surface-border">
                 <td className="px-4 py-2.5 text-[12px] text-ink font-medium">{name}</td>

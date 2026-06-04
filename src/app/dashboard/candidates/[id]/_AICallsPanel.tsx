@@ -34,6 +34,33 @@ interface SourcesSummary {
   captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
 }
 
+interface VoiceClipObservation {
+  assetType: string
+  assetId: string
+  durationSec: number | null
+  pace: string
+  clarity: string
+  hesitation: string
+  energy: string
+  articulation: string
+  evidence: string[]
+}
+interface VideoClipObservation {
+  assetType: string
+  assetId: string
+  durationSec: number | null
+  cameraPresence: string
+  presentation: string
+  engagement: string
+  evidence: string[]
+}
+interface VoiceObservation { clips: VoiceClipObservation[]; summary: string }
+interface VideoObservation {
+  clips: VideoClipObservation[]
+  summary: string
+  unavailableReason?: string
+}
+
 interface Evaluation {
   id: string
   overallScore: number
@@ -44,6 +71,10 @@ interface Evaluation {
   weaknesses: string[]
   positionDescriptionSnapshot: string
   sources?: SourcesSummary
+  includeVoice?: boolean
+  includeVideo?: boolean
+  voiceObservation?: VoiceObservation | null
+  videoObservation?: VideoObservation | null
   createdAt: string
 }
 
@@ -106,6 +137,8 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
   const [evalError, setEvalError] = useState<string | null>(null)
   const [jd, setJd] = useState<string | null>(null)
   const [jdEditing, setJdEditing] = useState(false)
+  const [includeVoice, setIncludeVoice] = useState(false)
+  const [includeVideo, setIncludeVideo] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -204,8 +237,15 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
     setEvalRunning(true)
     setEvalError(null)
     try {
-      const body: { sessionId: string; positionDescription?: string } = { sessionId }
+      const body: {
+        sessionId: string
+        positionDescription?: string
+        includeVoice?: boolean
+        includeVideo?: boolean
+      } = { sessionId }
       if (jdEditing && jd !== null) body.positionDescription = jd
+      if (includeVoice) body.includeVoice = true
+      if (includeVideo) body.includeVideo = true
       const res = await fetch('/api/evaluations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -390,6 +430,37 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
           </div>
         </div>
 
+        {/* AI Media Observation toggles — descriptive observations on the
+            candidate's audio (voice) and video clips. Voice runs against
+            real audio via gpt-4o-audio-preview; video stub returns
+            "frame extraction pipeline not yet provisioned" until the
+            Lambda lands. */}
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-grey-20 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={includeVoice}
+              onChange={(e) => setIncludeVoice(e.target.checked)}
+              className="rounded border-surface-border"
+            />
+            🎙️ Include voice observation
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-grey-20 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={includeVideo}
+              onChange={(e) => setIncludeVideo(e.target.checked)}
+              className="rounded border-surface-border"
+            />
+            🎬 Include video observation
+          </label>
+          {includeVideo && (
+            <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+              Video frame extraction not yet provisioned
+            </span>
+          )}
+        </div>
+
         {jdEditing && (
           <div className="mb-3">
             <textarea
@@ -496,6 +567,62 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
                 </div>
               )}
             </div>
+            {/* Voice observation block — only shown when this run included
+                voice observation. Descriptive, evidence-based only. */}
+            {evaluation.includeVoice && evaluation.voiceObservation && (
+              <div className="mt-3 px-3 py-2.5 bg-surface/40 rounded-[8px] border border-surface-border">
+                <div className="text-[10px] font-mono uppercase text-grey-35 tracking-wider mb-1.5">
+                  🎙️ Voice observation
+                </div>
+                {evaluation.voiceObservation.clips.length === 0 ? (
+                  <div className="text-[11px] text-grey-50">No audio clips were available.</div>
+                ) : (
+                  <>
+                    {evaluation.voiceObservation.summary && (
+                      <div className="text-[11px] italic text-grey-25 mb-2">
+                        {evaluation.voiceObservation.summary}
+                      </div>
+                    )}
+                    {evaluation.voiceObservation.clips.map((c, i) => (
+                      <dl key={i} className="text-[11px] text-grey-15 space-y-0.5 mb-2 last:mb-0">
+                        <div><dt className="inline font-semibold text-grey-20">Pace: </dt><dd className="inline">{c.pace}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Clarity: </dt><dd className="inline">{c.clarity}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Hesitation: </dt><dd className="inline">{c.hesitation}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Energy: </dt><dd className="inline">{c.energy}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Articulation: </dt><dd className="inline">{c.articulation}</dd></div>
+                      </dl>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+            {evaluation.includeVideo && (
+              <div className="mt-3 px-3 py-2.5 bg-surface/40 rounded-[8px] border border-surface-border">
+                <div className="text-[10px] font-mono uppercase text-grey-35 tracking-wider mb-1.5">
+                  🎬 Video observation
+                </div>
+                {evaluation.videoObservation?.clips?.length ? (
+                  <>
+                    {evaluation.videoObservation.summary && (
+                      <div className="text-[11px] italic text-grey-25 mb-2">
+                        {evaluation.videoObservation.summary}
+                      </div>
+                    )}
+                    {evaluation.videoObservation.clips.map((c, i) => (
+                      <dl key={i} className="text-[11px] text-grey-15 space-y-0.5 mb-2 last:mb-0">
+                        <div><dt className="inline font-semibold text-grey-20">Presentation: </dt><dd className="inline">{c.presentation}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Camera presence: </dt><dd className="inline">{c.cameraPresence}</dd></div>
+                        <div><dt className="inline font-semibold text-grey-20">Engagement: </dt><dd className="inline">{c.engagement}</dd></div>
+                      </dl>
+                    ))}
+                  </>
+                ) : (
+                  <div className="text-[11px] text-amber-700">
+                    {evaluation.videoObservation?.unavailableReason ?? 'Video observation unavailable.'}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="text-[10px] text-grey-50 mt-3">
               Last run {new Date(evaluation.createdAt).toLocaleString()}
             </div>

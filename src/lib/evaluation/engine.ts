@@ -17,6 +17,7 @@
 
 import { openai } from '@/lib/openai'
 import type { GatheredMaterial } from './gather'
+import type { VoiceObservationResult, VideoObservationResult } from './media-observation'
 
 const MODEL = 'gpt-4o-mini'
 
@@ -168,11 +169,42 @@ function renderTranscriptsForPrompt(material: GatheredMaterial): string {
   return parts.join('\n')
 }
 
+function renderObservationsForPrompt(
+  voice: VoiceObservationResult | null,
+  video: VideoObservationResult | null,
+): string {
+  if (!voice && !video) return ''
+  const parts: string[] = [`\n# AI Media Observation (descriptive, not psychometric)`]
+  if (voice && voice.clips.length > 0) {
+    parts.push(`\n## Voice observations`)
+    parts.push(voice.summary || '(no summary)')
+    for (const c of voice.clips) {
+      parts.push(`- [${c.assetType}/${c.assetId.slice(0, 8)}] pace: ${c.pace}; clarity: ${c.clarity}; hesitation: ${c.hesitation}; energy: ${c.energy}; articulation: ${c.articulation}`)
+      for (const e of c.evidence) parts.push(`    evidence: ${e}`)
+    }
+  }
+  if (video && video.clips.length > 0) {
+    parts.push(`\n## Video observations`)
+    parts.push(video.summary || '(no summary)')
+    for (const c of video.clips) {
+      parts.push(`- [${c.assetType}/${c.assetId.slice(0, 8)}] presentation: ${c.presentation}; camera presence: ${c.cameraPresence}; engagement: ${c.engagement}`)
+      for (const e of c.evidence) parts.push(`    evidence: ${e}`)
+    }
+  } else if (video?.unavailableReason) {
+    parts.push(`\n## Video observations`)
+    parts.push(`(unavailable: ${video.unavailableReason})`)
+  }
+  return parts.join('\n')
+}
+
 async function scoreCandidate(
   positionDescription: string,
   criteria: DerivedCriterion[],
   material: GatheredMaterial,
+  voice: VoiceObservationResult | null,
+  video: VideoObservationResult | null,
 ): Promise<EvaluationResult> {
+  const observationBlock = renderObservationsForPrompt(voice, video)
   const completion = await openai.chat.completions.create({
     model: MODEL,
     temperature: 0.2,
@@ -214,7 +246,7 @@ async function scoreCandidate(
       {
         role: 'system',
         content:
-          'You are an experienced hiring manager scoring a candidate against a fixed rubric using only the provided material. For each criterion: give a 0-100 score and a one-sentence evidence quote from the transcript (or "no evidence" if the material did not cover that criterion — penalize the score in that case). Compute overallScore as the weight-weighted average of criterion scores. Recommendation thresholds: ≥85=strong_hire, 70-84=hire, 55-69=borderline, <55=no_hire. Be specific and honest — bland praise is worse than no feedback.',
+          'You are an experienced hiring manager scoring a candidate against a fixed rubric using only the provided material. For each criterion: give a 0-100 score and a one-sentence evidence quote from the transcript or observation (or "no evidence" if the material did not cover that criterion — penalize the score in that case). Compute overallScore as the weight-weighted average of criterion scores. Recommendation thresholds: ≥85=strong_hire, 70-84=hire, 55-69=borderline, <55=no_hire. Be specific and honest — bland praise is worse than no feedback. When AI Media Observation is provided, treat it as descriptive evidence (pace, clarity, hesitation, energy, articulation, presentation) — never as a measure of trustworthiness, honesty, or personality, and never reject a candidate solely on observation findings.',
       },
       {
         role: 'user',
@@ -222,7 +254,7 @@ async function scoreCandidate(
           criteria,
           null,
           2,
-        )}\n\nCandidate material:\n\n${renderTranscriptsForPrompt(material)}`,
+        )}\n\nCandidate material:\n\n${renderTranscriptsForPrompt(material)}${observationBlock}`,
       },
     ],
   })
@@ -235,7 +267,9 @@ async function scoreCandidate(
 export async function runEvaluation(
   positionDescription: string,
   material: GatheredMaterial,
+  voice?: VoiceObservationResult | null,
+  video?: VideoObservationResult | null,
 ): Promise<EvaluationResult> {
   const criteria = await deriveCriteria(positionDescription)
-  return scoreCandidate(positionDescription, criteria, material)
+  return scoreCandidate(positionDescription, criteria, material, voice ?? null, video ?? null)
 }

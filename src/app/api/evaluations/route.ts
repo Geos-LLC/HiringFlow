@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { gatherCandidateMaterial } from '@/lib/evaluation/gather'
 import { runEvaluation } from '@/lib/evaluation/engine'
 import { buildPositionDescription } from '@/lib/evaluation/position-description'
+import { observeVoice, observeVideo } from '@/lib/evaluation/media-observation'
 
 /**
  * GET /api/evaluations?sessionIds=a,b,c
@@ -67,7 +68,17 @@ export async function POST(request: NextRequest) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
 
-  const { sessionId, positionDescription: override } = await request.json()
+  const {
+    sessionId,
+    positionDescription: override,
+    includeVoice,
+    includeVideo,
+  } = (await request.json()) as {
+    sessionId: string
+    positionDescription?: string
+    includeVoice?: boolean
+    includeVideo?: boolean
+  }
   if (!sessionId || typeof sessionId !== 'string') {
     return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
   }
@@ -105,7 +116,18 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = await runEvaluation(positionDescription, gathered.material)
+    // Run media observation passes BEFORE scoring so their findings can be
+    // folded into the scoring prompt as additional evidence. Each pass
+    // checks MediaAnalysisCache and only spends OpenAI tokens on clips that
+    // haven't been observed at this analysisVersion yet.
+    const voice = includeVoice
+      ? await observeVoice(ws.workspaceId, gathered.voiceClips)
+      : null
+    const video = includeVideo
+      ? await observeVideo(ws.workspaceId, gathered.videoClips)
+      : null
+
+    const result = await runEvaluation(positionDescription, gathered.material, voice, video)
 
     const row = await prisma.candidateEvaluation.create({
       data: {
@@ -120,6 +142,10 @@ export async function POST(request: NextRequest) {
         strengths: result.strengths as any,
         weaknesses: result.weaknesses as any,
         sources: gathered.sources as any,
+        includeVoice: !!includeVoice,
+        includeVideo: !!includeVideo,
+        voiceObservation: voice as any,
+        videoObservation: video as any,
         createdById: ws.userId,
       },
     })
