@@ -33,14 +33,35 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
-  const t = await prisma.smsTemplate.findFirst({ where: { id: params.id, workspaceId: ws.workspaceId } })
-  if (!t) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  // Detach any steps that referenced this template — they'll fall back to
-  // step.smsBody (which holds a cached copy of the last rendered body).
-  await prisma.automationStep.updateMany({
-    where: { smsTemplateId: params.id },
-    data: { smsTemplateId: null },
+
+  const t = await prisma.smsTemplate.findFirst({
+    where: { id: params.id, workspaceId: ws.workspaceId },
+    include: { steps: { select: { rule: { select: { id: true, name: true } } } } },
   })
+  if (!t) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  // Guard: refuse if any rule still references this template. The legacy
+  // auto-detach behaviour ("any rule still using it will fall back to its
+  // inline SMS body") was confusing — a recruiter would delete the template
+  // and not realise the SMS body had silently been frozen at whatever cached
+  // string was on the step row. Forcing them to detach explicitly first
+  // makes the consequence visible.
+  const refs = new Map<string, string>()
+  for (const s of t.steps) refs.set(s.rule.id, s.rule.name)
+  if (refs.size > 0) {
+    return NextResponse.json(
+      {
+        error: `Template is used by ${refs.size} automation rule${refs.size === 1 ? '' : 's'}`,
+        code: 'template_in_use',
+        usage: {
+          ruleIds: Array.from(refs.keys()),
+          ruleNames: Array.from(refs.values()),
+        },
+      },
+      { status: 409 },
+    )
+  }
+
   await prisma.smsTemplate.delete({ where: { id: params.id } })
   return NextResponse.json({ success: true })
 }

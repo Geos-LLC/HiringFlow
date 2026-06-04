@@ -35,8 +35,37 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
-  const t = await prisma.emailTemplate.findFirst({ where: { id: params.id, workspaceId: ws.workspaceId } })
+
+  const t = await prisma.emailTemplate.findFirst({
+    where: { id: params.id, workspaceId: ws.workspaceId },
+    include: {
+      automations: { select: { id: true, name: true } },
+      steps: { select: { rule: { select: { id: true, name: true } } } },
+    },
+  })
   if (!t) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  // Refuse to delete if anything still references this template. Without
+  // this guard the FK constraint would 500; surface a clear 409 with the
+  // referencing rule names so the UI can show "still used by … — detach
+  // from those rules first".
+  const refs = new Map<string, string>()
+  for (const r of t.automations) refs.set(r.id, r.name)
+  for (const s of t.steps) refs.set(s.rule.id, s.rule.name)
+  if (refs.size > 0) {
+    return NextResponse.json(
+      {
+        error: `Template is used by ${refs.size} automation rule${refs.size === 1 ? '' : 's'}`,
+        code: 'template_in_use',
+        usage: {
+          ruleIds: Array.from(refs.keys()),
+          ruleNames: Array.from(refs.values()),
+        },
+      },
+      { status: 409 },
+    )
+  }
+
   await prisma.emailTemplate.delete({ where: { id: params.id } })
   return NextResponse.json({ success: true })
 }

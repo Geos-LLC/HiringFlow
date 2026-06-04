@@ -5,8 +5,9 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MANUAL_MEETING_NUDGE_TEMPLATE_NAME } from '@/lib/email-templates-seed'
 
-interface EmailTemplate { id: string; name: string; subject: string; bodyHtml: string; bodyText: string | null; isActive: boolean; updatedAt: string }
-interface SmsTemplate { id: string; name: string; body: string; isActive: boolean; updatedAt: string }
+interface TemplateUsage { ruleIds: string[]; ruleNames: string[] }
+interface EmailTemplate { id: string; name: string; subject: string; bodyHtml: string; bodyText: string | null; isActive: boolean; updatedAt: string; usage?: TemplateUsage }
+interface SmsTemplate { id: string; name: string; body: string; isActive: boolean; updatedAt: string; usage?: TemplateUsage }
 
 // Source of truth: src/lib/automation.ts executeStep — when adding a
 // new merge token in the variables map there, mirror it here so the
@@ -91,7 +92,20 @@ function TemplatesContent() {
   }
   const removeEmail = async (id: string) => {
     if (!confirm('Delete this email template?')) return
-    await fetch(`/api/email-templates/${id}`, { method: 'DELETE' }); refreshEmail()
+    const res = await fetch(`/api/email-templates/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      // Server-side delete-guard surfaces "still used by …" — show the rule
+      // list so the recruiter can unhook them before retrying.
+      const data = await res.json().catch(() => null)
+      if (data?.code === 'template_in_use' && Array.isArray(data?.usage?.ruleNames)) {
+        const names: string[] = data.usage.ruleNames
+        alert(`Can’t delete — this template is still used by:\n\n• ${names.join('\n• ')}\n\nDetach it from those rules first.`)
+      } else {
+        alert(data?.error || 'Delete failed')
+      }
+      return
+    }
+    refreshEmail()
   }
 
   // ─── SMS ───────────────────────────────────────────────────────────────
@@ -113,8 +127,19 @@ function TemplatesContent() {
     setSaving(false); setShowSmsModal(false); refreshSms()
   }
   const removeSms = async (id: string) => {
-    if (!confirm('Delete this SMS template? Any rule still using it will fall back to its inline SMS body.')) return
-    await fetch(`/api/sms-templates/${id}`, { method: 'DELETE' }); refreshSms()
+    if (!confirm('Delete this SMS template?')) return
+    const res = await fetch(`/api/sms-templates/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => null)
+      if (data?.code === 'template_in_use' && Array.isArray(data?.usage?.ruleNames)) {
+        const names: string[] = data.usage.ruleNames
+        alert(`Can’t delete — this template is still used by:\n\n• ${names.join('\n• ')}\n\nDetach it from those rules first.`)
+      } else {
+        alert(data?.error || 'Delete failed')
+      }
+      return
+    }
+    refreshSms()
   }
 
   if (loading) return <div className="text-center py-12 text-grey-40">Loading...</div>
@@ -177,6 +202,7 @@ function TemplatesContent() {
                   <span className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-brand-50 text-brand-700">Email</span>
                 </div>
                 <p className="text-sm text-grey-40 mb-3 truncate">Subject: {t.subject}</p>
+                <UsageBadge usage={t.usage} />
                 <div className="flex items-center gap-3">
                   <button onClick={() => openEditEmail(t)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">Edit</button>
                   <button onClick={() => removeEmail(t.id)} className="text-xs text-grey-35 hover:text-grey-15">Delete</button>
@@ -207,6 +233,7 @@ function TemplatesContent() {
                   <span className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">SMS</span>
                 </div>
                 <p className="text-sm text-grey-40 mb-3 line-clamp-2 whitespace-pre-wrap">{t.body}</p>
+                <UsageBadge usage={t.usage} />
                 <div className="flex items-center gap-3">
                   <button onClick={() => openEditSms(t)} className="text-xs text-purple-700 hover:text-purple-900 font-medium">Edit</button>
                   <button onClick={() => removeSms(t.id)} className="text-xs text-grey-35 hover:text-grey-15">Delete</button>
@@ -304,6 +331,35 @@ function TemplatesContent() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Renders the "Used in N rules" or "Not used" pill above the Edit/Delete row.
+// Truncates the rule-name list past 2 names so a heavily-shared template
+// doesn't blow up the card height — the full list is in the tooltip.
+function UsageBadge({ usage }: { usage?: TemplateUsage }) {
+  const names = usage?.ruleNames ?? []
+  if (names.length === 0) {
+    return (
+      <div className="mb-3 text-[11px] text-grey-50">
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-grey-100 text-grey-50">
+          Not used
+        </span>
+      </div>
+    )
+  }
+  const preview = names.slice(0, 2).join(', ')
+  const rest = names.length - 2
+  const tooltip = names.join('\n')
+  return (
+    <div className="mb-3 text-[11px] text-grey-35" title={tooltip}>
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-50 text-green-700 font-medium">
+        Used in {names.length} rule{names.length === 1 ? '' : 's'}
+      </span>
+      <span className="ml-2 text-grey-40 truncate align-middle">
+        {preview}{rest > 0 ? `, +${rest} more` : ''}
+      </span>
     </div>
   )
 }

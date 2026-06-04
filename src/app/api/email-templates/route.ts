@@ -3,11 +3,44 @@ import { Prisma } from '@prisma/client'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 
+// Shape of the `usage` field returned on every template row. Empty arrays
+// mean "not referenced anywhere" — the UI uses that as the trigger for the
+// "Not used" badge and the unguarded delete affordance.
+export interface TemplateUsage {
+  ruleIds: string[]
+  ruleNames: string[]
+}
+
 export async function GET() {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
-  const templates = await prisma.emailTemplate.findMany({ where: { workspaceId: ws.workspaceId }, orderBy: { updatedAt: 'desc' } })
-  return NextResponse.json(templates)
+
+  const templates = await prisma.emailTemplate.findMany({
+    where: { workspaceId: ws.workspaceId },
+    orderBy: { updatedAt: 'desc' },
+    include: {
+      // Rules that point directly at this template (legacy single-step
+      // rules) — referenced via `AutomationRule.emailTemplateId`.
+      automations: { select: { id: true, name: true } },
+      // Steps inside multi-step rules that use this template — we want the
+      // PARENT rule's id+name so the "Used in" pill names the rule, not the
+      // anonymous step.
+      steps: { select: { rule: { select: { id: true, name: true } } } },
+    },
+  })
+
+  const withUsage = templates.map((t) => {
+    const refs = new Map<string, string>()
+    for (const r of t.automations) refs.set(r.id, r.name)
+    for (const s of t.steps) refs.set(s.rule.id, s.rule.name)
+    const ruleIds = Array.from(refs.keys())
+    const ruleNames = Array.from(refs.values())
+    // Strip the relation arrays before returning — the UI only needs `usage`.
+    const { automations: _a, steps: _s, ...rest } = t
+    return { ...rest, usage: { ruleIds, ruleNames } as TemplateUsage }
+  })
+
+  return NextResponse.json(withUsage)
 }
 
 export async function POST(request: NextRequest) {
@@ -21,9 +54,7 @@ export async function POST(request: NextRequest) {
     })
     return NextResponse.json(template)
   } catch (err) {
-    // P2002 = unique constraint violation. We have a (workspaceId, name)
-    // unique index — surface it as a 409 with a stable code so the UI can
-    // detect it and prompt for a different name.
+    // P2002 = unique constraint violation on (workspaceId, name).
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       return NextResponse.json(
         { error: 'A template with this name already exists', code: 'duplicate_name' },
