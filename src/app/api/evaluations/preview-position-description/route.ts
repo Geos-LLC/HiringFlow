@@ -23,13 +23,11 @@ export async function GET(request: NextRequest) {
   })
   if (!session) return NextResponse.json({ error: 'Candidate not found' }, { status: 404 })
 
+  const { text, source } = await buildPositionDescription(session)
   return NextResponse.json({
-    positionDescription: buildPositionDescription(session),
-    source: session.flow?.positionDescription
-      ? 'flow'
-      : session.ad
-        ? 'ad'
-        : 'fallback',
+    positionDescription: text,
+    source,
     flowId: session.flowId,
+    flowName: session.flow?.name ?? null,
   })
 }

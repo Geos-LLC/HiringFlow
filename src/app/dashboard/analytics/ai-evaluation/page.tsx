@@ -57,6 +57,12 @@ interface ScoredCriterion {
   evidence: string
 }
 
+interface SourcesSummary {
+  meetings: Array<{ id: string; durationSec: number | null; attended: boolean }>
+  aiCalls: Array<{ conversationId: string; durationSecs: number; hasTranscript: boolean }>
+  captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
+}
+
 interface Evaluation {
   id: string
   sessionId: string
@@ -67,8 +73,86 @@ interface Evaluation {
   strengths: string[]
   weaknesses: string[]
   positionDescriptionSnapshot: string
+  sources?: SourcesSummary
   createdAt: string
   session?: { candidateName: string | null; candidateEmail: string | null }
+}
+
+type JdSource = 'override' | 'flow' | 'ad' | 'fallback_ad' | 'flow_start' | 'flow_name'
+const JD_SOURCE_LABEL: Record<JdSource, string> = {
+  override: 'Custom override',
+  flow: 'Saved on flow',
+  ad: 'Linked ad copy',
+  fallback_ad: 'Flow ad copy',
+  flow_start: 'Flow start message',
+  flow_name: 'Flow name only',
+}
+const JD_SOURCE_TONE: Record<JdSource, string> = {
+  override: 'bg-violet-50 text-violet-700 border-violet-200',
+  flow: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  ad: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  fallback_ad: 'bg-sky-50 text-sky-700 border-sky-200',
+  flow_start: 'bg-amber-50 text-amber-700 border-amber-200',
+  flow_name: 'bg-red-50 text-red-700 border-red-200',
+}
+
+// Render the data-sources summary as small icon badges. Used inline anywhere
+// we want to show "what got fed to the model". Format: 🎙️ 2 AI calls (3m)
+// · 🎬 1 video · 📋 form etc.
+function describeSources(s: SourcesSummary | undefined): Array<{ icon: string; label: string; ok: boolean }> {
+  if (!s) return []
+  const out: Array<{ icon: string; label: string; ok: boolean }> = []
+
+  const aiCallTotal = s.aiCalls.length
+  const aiCallWithTranscript = s.aiCalls.filter((c) => c.hasTranscript).length
+  if (aiCallTotal > 0) {
+    const mins = Math.round(s.aiCalls.reduce((a, b) => a + (b.durationSecs ?? 0), 0) / 60)
+    out.push({
+      icon: '🎙️',
+      label: `${aiCallTotal} AI call${aiCallTotal === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
+      ok: aiCallWithTranscript > 0,
+    })
+  }
+
+  const videoCaptures = s.captures.filter((c) => c.mode === 'video' || c.mode === 'audio_video')
+  const audioCaptures = s.captures.filter((c) => c.mode === 'audio')
+  const textCaptures = s.captures.filter((c) => c.mode === 'text' || c.mode === 'upload')
+  if (videoCaptures.length > 0) {
+    out.push({
+      icon: '🎬',
+      label: `${videoCaptures.length} video${videoCaptures.length === 1 ? '' : 's'}`,
+      ok: videoCaptures.some((c) => c.hasTranscript),
+    })
+  }
+  if (audioCaptures.length > 0) {
+    out.push({
+      icon: '🎧',
+      label: `${audioCaptures.length} audio`,
+      ok: audioCaptures.some((c) => c.hasTranscript),
+    })
+  }
+  if (textCaptures.length > 0) {
+    out.push({ icon: '📝', label: `${textCaptures.length} text`, ok: true })
+  }
+
+  const meetingsAttended = s.meetings.filter((m) => m.attended).length
+  if (meetingsAttended > 0) {
+    out.push({
+      icon: '🗓️',
+      label: `${meetingsAttended} meeting${meetingsAttended === 1 ? '' : 's'}`,
+      ok: true,
+    })
+  }
+  return out
+}
+
+function timeAgo(iso: string): string {
+  const d = new Date(iso).getTime()
+  const diff = Date.now() - d
+  if (diff < 60_000) return 'just now'
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  return `${Math.floor(diff / 86_400_000)}d ago`
 }
 
 const RECOMMENDATION_LABEL: Record<Evaluation['recommendation'], string> = {
@@ -123,11 +207,17 @@ export default function AIEvaluationPage() {
   // every time the filter narrows.
   const [candidateCache, setCandidateCache] = useState<Map<string, Candidate>>(new Map())
 
-  // JD override: keyed by sessionId. Empty string = use the default JD.
-  // We preload the default JD into the textarea so the recruiter can edit
-  // before running.
+  // JD override: keyed by sessionId. Undefined = use the default JD; empty
+  // string = the recruiter intentionally blanked it. We preload the resolved
+  // default JD into the textarea so the recruiter can edit before running.
   const [jdOverrides, setJdOverrides] = useState<Record<string, string>>({})
+  // JD source + originating flowId per candidate, so the UI can show
+  // "Saved on flow / Linked ad copy / Flow ad copy / Flow name only" and
+  // the Save-to-flow button can target the correct flow.
+  const [jdMeta, setJdMeta] = useState<Record<string, { source: JdSource; flowId: string | null }>>({})
   const [expandedJd, setExpandedJd] = useState<string | null>(null)
+  const [savingJd, setSavingJd] = useState<string | null>(null)
+  const [savedJdAt, setSavedJdAt] = useState<Record<string, number>>({})
 
   // Initial load: pipelines + first candidates page + existing evaluations.
   useEffect(() => {
@@ -257,19 +347,61 @@ export default function AIEvaluationPage() {
     })
   }
 
-  const previewJd = useCallback(async (sessionId: string) => {
-    if (jdOverrides[sessionId] !== undefined) return jdOverrides[sessionId]
-    const res = await fetch(`/api/evaluations/preview-position-description?sessionId=${sessionId}`)
-    if (!res.ok) return ''
-    const data = await res.json()
-    return data.positionDescription as string
-  }, [jdOverrides])
+  const previewJd = useCallback(
+    async (sessionId: string) => {
+      if (jdOverrides[sessionId] !== undefined && jdMeta[sessionId]) {
+        return { text: jdOverrides[sessionId], source: jdMeta[sessionId].source, flowId: jdMeta[sessionId].flowId }
+      }
+      const res = await fetch(`/api/evaluations/preview-position-description?sessionId=${sessionId}`)
+      if (!res.ok) return { text: '', source: 'flow_name' as JdSource, flowId: null }
+      const data = await res.json()
+      return {
+        text: data.positionDescription as string,
+        source: (data.source as JdSource) ?? 'flow_name',
+        flowId: (data.flowId as string | null) ?? null,
+      }
+    },
+    [jdOverrides, jdMeta],
+  )
 
   const openJdEditor = async (sessionId: string) => {
     setExpandedJd(sessionId)
     if (jdOverrides[sessionId] === undefined) {
-      const jd = await previewJd(sessionId)
-      setJdOverrides((cur) => ({ ...cur, [sessionId]: jd }))
+      const { text, source, flowId } = await previewJd(sessionId)
+      setJdOverrides((cur) => ({ ...cur, [sessionId]: text }))
+      setJdMeta((cur) => ({ ...cur, [sessionId]: { source, flowId } }))
+    }
+  }
+
+  // Save the current JD draft to the candidate's flow so every future eval
+  // run on candidates of that flow inherits it (no override needed). PATCHes
+  // Flow.positionDescription. Refreshes the source label to 'flow' on success.
+  const saveJdToFlow = async (sessionId: string) => {
+    const meta = jdMeta[sessionId]
+    if (!meta?.flowId) return
+    const text = jdOverrides[sessionId]
+    if (text === undefined) return
+    setSavingJd(sessionId)
+    try {
+      const res = await fetch(`/api/flows/${meta.flowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ positionDescription: text }),
+      })
+      if (!res.ok) throw new Error('save failed')
+      setJdMeta((cur) => ({ ...cur, [sessionId]: { ...meta, source: 'flow' } }))
+      setSavedJdAt((cur) => ({ ...cur, [sessionId]: Date.now() }))
+      setTimeout(() => {
+        setSavedJdAt((cur) => {
+          const next = { ...cur }
+          delete next[sessionId]
+          return next
+        })
+      }, 2500)
+    } catch {
+      setError('Failed to save JD to flow')
+    } finally {
+      setSavingJd(null)
     }
   }
 
@@ -490,6 +622,8 @@ export default function AIEvaluationPage() {
                   {selectedCandidates.map((c) => {
                     const ev = evaluations[c.id]
                     const isRunning = running.has(c.id)
+                    const meta = jdMeta[c.id]
+                    const sourceBadges = describeSources(ev?.sources)
                     return (
                       <div key={c.id} className="px-4 py-3">
                         <div className="flex items-center gap-3">
@@ -520,10 +654,43 @@ export default function AIEvaluationPage() {
                             {isRunning ? 'Running…' : ev ? 'Re-run' : 'Run'}
                           </button>
                         </div>
+                        {/* Saved-eval surface: timestamp + sources fed to the
+                            model. Lets the recruiter open a candidate and see
+                            "what got scored" without clicking Run again. */}
+                        {ev && (
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            <span className="text-[10px] font-mono uppercase text-grey-40 tracking-wider">
+                              Saved · {timeAgo(ev.createdAt)}
+                            </span>
+                            {sourceBadges.length === 0 && (
+                              <span className="text-[10px] text-grey-50">no sources captured</span>
+                            )}
+                            {sourceBadges.map((b, i) => (
+                              <span
+                                key={i}
+                                className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                                  b.ok
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                                }`}
+                                title={b.ok ? 'Transcript available' : 'No transcript — metadata only'}
+                              >
+                                {b.icon} {b.label}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                         {expandedJd === c.id && (
                           <div className="mt-3">
-                            <div className="text-[10px] font-mono uppercase text-grey-35 tracking-wider mb-1.5 flex items-center justify-between">
-                              <span>Position description</span>
+                            <div className="text-[10px] font-mono uppercase text-grey-35 tracking-wider mb-1.5 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <span>Position description</span>
+                                {meta && (
+                                  <span className={`px-1.5 py-0.5 rounded-full border text-[10px] normal-case font-normal ${JD_SOURCE_TONE[meta.source]}`}>
+                                    {JD_SOURCE_LABEL[meta.source]}
+                                  </span>
+                                )}
+                              </div>
                               <button
                                 onClick={() => setExpandedJd(null)}
                                 className="text-grey-40 hover:text-ink"
@@ -540,6 +707,28 @@ export default function AIEvaluationPage() {
                               className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-[12px] font-mono focus:outline-none focus:border-brand-500"
                               placeholder="Paste a custom JD for this candidate, or leave the default…"
                             />
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <div className="text-[10px] text-grey-50">
+                                {meta?.source === 'flow' || meta?.source === 'ad'
+                                  ? 'This JD already has rich content. Edit and save to flow to persist for all candidates of this flow.'
+                                  : meta?.source === 'flow_name'
+                                    ? '⚠ Falling back to the flow name only. Save a real JD to the flow for better evaluations.'
+                                    : 'Paste a richer JD if needed, then save to flow so future candidates inherit it.'}
+                              </div>
+                              {meta?.flowId && (
+                                <button
+                                  onClick={() => saveJdToFlow(c.id)}
+                                  disabled={savingJd === c.id}
+                                  className="shrink-0 text-[11px] px-2.5 py-1 rounded-[6px] bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+                                >
+                                  {savingJd === c.id
+                                    ? 'Saving…'
+                                    : savedJdAt[c.id]
+                                      ? 'Saved!'
+                                      : 'Save to flow'}
+                                </button>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -622,6 +811,44 @@ function ComparisonTable({
                       <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${RECOMMENDATION_COLOR[ev.recommendation]}`}>
                         {RECOMMENDATION_LABEL[ev.recommendation]}
                       </span>
+                    </div>
+                  </td>
+                )
+              })}
+            </tr>
+            {/* Data sources fed to the model. Empty/amber badges = no transcript
+                or metadata-only — eval was constrained by what was actually
+                captured. */}
+            <tr className="border-b border-surface-border">
+              <td className="px-4 py-2.5 text-[11px] font-mono uppercase text-grey-35 align-top">
+                Sources evaluated
+              </td>
+              {orderedCandidates.map((c) => {
+                const ev = bySession.get(c.id)!
+                const badges = describeSources(ev.sources)
+                return (
+                  <td key={c.id} className="px-3 py-2.5">
+                    {badges.length === 0 ? (
+                      <span className="text-[11px] text-grey-50">No recorded material</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {badges.map((b, i) => (
+                          <span
+                            key={i}
+                            className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                              b.ok
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}
+                            title={b.ok ? 'Transcript available' : 'No transcript — metadata only'}
+                          >
+                            {b.icon} {b.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="text-[10px] text-grey-50 mt-1.5">
+                      Saved {timeAgo(ev.createdAt)}
                     </div>
                   </td>
                 )

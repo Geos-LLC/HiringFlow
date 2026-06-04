@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
   })
   if (!session) return NextResponse.json({ error: 'Candidate not found' }, { status: 404 })
 
-  const positionDescription = buildPositionDescription(session, override)
+  const { text: positionDescription } = await buildPositionDescription(session, override)
   if (!positionDescription.trim()) {
     return NextResponse.json(
       { error: 'No position description available — paste one in the override field or set it on the flow.' },

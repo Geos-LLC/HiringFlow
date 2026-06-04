@@ -28,6 +28,12 @@ interface LinkedAICandidate {
 interface AICandidateAny extends LinkedAICandidate {
   sessionId?: string | null
 }
+interface SourcesSummary {
+  meetings: Array<{ id: string; durationSec: number | null; attended: boolean }>
+  aiCalls: Array<{ conversationId: string; durationSecs: number; hasTranscript: boolean }>
+  captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
+}
+
 interface Evaluation {
   id: string
   overallScore: number
@@ -37,7 +43,30 @@ interface Evaluation {
   strengths: string[]
   weaknesses: string[]
   positionDescriptionSnapshot: string
+  sources?: SourcesSummary
   createdAt: string
+}
+
+function describeSources(s: SourcesSummary | undefined): Array<{ icon: string; label: string; ok: boolean }> {
+  if (!s) return []
+  const out: Array<{ icon: string; label: string; ok: boolean }> = []
+  if (s.aiCalls.length > 0) {
+    const mins = Math.round(s.aiCalls.reduce((a, b) => a + (b.durationSecs ?? 0), 0) / 60)
+    out.push({
+      icon: '🎙️',
+      label: `${s.aiCalls.length} AI call${s.aiCalls.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
+      ok: s.aiCalls.some((c) => c.hasTranscript),
+    })
+  }
+  const video = s.captures.filter((c) => c.mode === 'video' || c.mode === 'audio_video')
+  const audio = s.captures.filter((c) => c.mode === 'audio')
+  const text = s.captures.filter((c) => c.mode === 'text' || c.mode === 'upload')
+  if (video.length > 0) out.push({ icon: '🎬', label: `${video.length} video${video.length === 1 ? '' : 's'}`, ok: video.some((c) => c.hasTranscript) })
+  if (audio.length > 0) out.push({ icon: '🎧', label: `${audio.length} audio`, ok: audio.some((c) => c.hasTranscript) })
+  if (text.length > 0) out.push({ icon: '📝', label: `${text.length} text`, ok: true })
+  const attended = s.meetings.filter((m) => m.attended).length
+  if (attended > 0) out.push({ icon: '🗓️', label: `${attended} meeting${attended === 1 ? '' : 's'}`, ok: true })
+  return out
 }
 
 const RECOMMENDATION_LABEL: Record<Evaluation['recommendation'], string> = {
@@ -384,7 +413,7 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
 
         {evaluation ? (
           <div>
-            <div className="flex items-center gap-3 mb-3">
+            <div className="flex items-center gap-3 mb-2">
               <div className={`text-2xl font-bold tabular-nums ${scoreColor(evaluation.overallScore)}`}>
                 {evaluation.overallScore}
                 <span className="text-[12px] text-grey-50 font-normal">/100</span>
@@ -399,6 +428,29 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
                 Compare in Analytics →
               </Link>
             </div>
+            {/* Source badges — confirms which transcripts/recordings actually
+                got fed to the model. Amber = no transcript available so only
+                metadata reached the prompt. */}
+            {describeSources(evaluation.sources).length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                <span className="text-[10px] font-mono uppercase text-grey-40 tracking-wider">
+                  Evaluated:
+                </span>
+                {describeSources(evaluation.sources).map((b, i) => (
+                  <span
+                    key={i}
+                    className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                      b.ok
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                    }`}
+                    title={b.ok ? 'Transcript available' : 'No transcript — metadata only'}
+                  >
+                    {b.icon} {b.label}
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="text-[12px] text-grey-15 mb-3">{evaluation.summary}</div>
             <div className="space-y-1.5">
               {evaluation.criteria.map((c) => (
