@@ -116,12 +116,20 @@ interface Evaluation {
   }
 }
 
-type JdSource = 'override' | 'flow' | 'ad' | 'fallback_ad' | 'flow_start' | 'flow_name'
+type JdSource =
+  | 'override'
+  | 'flow'
+  | 'ad'
+  | 'fallback_ad'
+  | 'workspace_ad'
+  | 'flow_start'
+  | 'flow_name'
 const JD_SOURCE_LABEL: Record<JdSource, string> = {
   override: 'Custom override',
   flow: 'Saved on flow',
   ad: 'Linked ad copy',
   fallback_ad: 'Flow ad copy',
+  workspace_ad: 'Matched campaign copy',
   flow_start: 'Flow start message',
   flow_name: 'Flow name only',
 }
@@ -130,6 +138,7 @@ const JD_SOURCE_TONE: Record<JdSource, string> = {
   flow: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   ad: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   fallback_ad: 'bg-sky-50 text-sky-700 border-sky-200',
+  workspace_ad: 'bg-sky-50 text-sky-700 border-sky-200',
   flow_start: 'bg-amber-50 text-amber-700 border-amber-200',
   flow_name: 'bg-red-50 text-red-700 border-red-200',
 }
