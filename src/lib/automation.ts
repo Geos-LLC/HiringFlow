@@ -1100,6 +1100,18 @@ async function upsertExecution(opts: {
     orderBy: { createdAt: 'desc' },
   })
   if (existing) {
+    // When we're starting a fresh send attempt (status flipping to
+    // 'pending') and the row already carries delivery telemetry from a
+    // prior send, clear the telemetry. Otherwise a manual rerun of a
+    // previously-bounced execution shows stale "blocked" in the UI until
+    // the new SendGrid webhook event arrives — which can be minutes, and
+    // the priority ladder would otherwise refuse to downgrade if the new
+    // send actually succeeded ('delivered' < 'blocked' on the ladder).
+    const isFreshSendAttempt = opts.status === 'pending' && (
+      existing.deliveryStatus != null ||
+      existing.status === 'sent' ||
+      existing.status === 'failed'
+    )
     return prisma.automationExecution.update({
       where: { id: existing.id },
       data: {
@@ -1115,6 +1127,21 @@ async function upsertExecution(opts: {
         // executionMode is upserted whenever the caller provides one so
         // we capture which path actually produced the current state.
         ...(opts.executionMode ? { executionMode: opts.executionMode } : {}),
+        ...(isFreshSendAttempt
+          ? {
+              deliveryStatus: null,
+              deliveryStatusAt: null,
+              deliveryErrorMessage: null,
+              sendgridMessageId: null,
+              sendgridEventId: null,
+              deliveryRaw: null,
+              // A fresh send attempt gets its own retry chance — without
+              // resetting this, the bounce-retry path would refuse to
+              // retry the new attempt because the previous one already
+              // had bounceRetriedAt set.
+              bounceRetriedAt: null,
+            }
+          : {}),
       },
     })
   }
