@@ -101,6 +101,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       step: {
         select: {
           id: true, order: true, channel: true, delayMinutes: true,
+          // Read so the timeline's deadline synthesis can skip meeting-
+          // relative steps (a "1h before meeting" reminder presupposes a
+          // meeting already exists — synthesising "waiting for candidate
+          // to book" against those produces false positives).
+          timingMode: true,
           nextStepType: true, emailDestination: true, emailDestinationAddress: true,
           training: { select: { title: true, slug: true } },
           schedulingConfig: { select: { name: true, schedulingUrl: true } },

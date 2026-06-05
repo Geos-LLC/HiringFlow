@@ -88,6 +88,7 @@ interface AutomationExec {
   }
   step: {
     id: string; order: number; channel: string; delayMinutes: number
+    timingMode: string | null
     nextStepType: string | null
     emailDestination: string; emailDestinationAddress: string | null
     training: { title: string; slug: string } | null
@@ -1015,6 +1016,16 @@ export default function CandidateDetailPage() {
 
   ;(candidate.automationExecutions || [])
     .filter(e => e.status === 'sent' && e.sentAt && e.step?.nextStepType)
+    // Meeting-relative steps (timingMode='before_meeting'/'after_meeting')
+    // presuppose a meeting already exists. A "1h before meeting" reminder
+    // marked nextStepType='scheduling' is meant to RE-share the booking
+    // link as a courtesy, not gate on a fresh booking. Synthesising
+    // "Waiting for candidate to book" against those produces a row dated
+    // for after the meeting itself has already happened — pure noise.
+    .filter(e => {
+      const tm = e.step?.timingMode
+      return tm !== 'before_meeting' && tm !== 'after_meeting'
+    })
     .forEach(e => {
       const nextType = e.step!.nextStepType!
       const sentAt = new Date(e.sentAt!).getTime()
@@ -1025,8 +1036,13 @@ export default function CandidateDetailPage() {
       if (nextType === 'scheduling') {
         label = 'book a meeting'
         deadlineMs = sentAt + schedulingHours * 3600_000
-        completed = (candidate.interviewMeetings ?? []).some(m => new Date(m.createdAt).getTime() >= sentAt)
-          || candidate.schedulingEvents.some(ev => ev.eventType === 'meeting_scheduled' && new Date(ev.eventAt).getTime() >= sentAt)
+        // Once the candidate has any meeting on record, count this nextStep
+        // as satisfied regardless of when the meeting was created relative
+        // to sentAt. The "after sentAt" filter from the original design
+        // missed the case where a fresh scheduling-invite was sent against
+        // an already-booked candidate (e.g. rebooking flow).
+        completed = (candidate.interviewMeetings ?? []).length > 0
+          || candidate.schedulingEvents.some(ev => ev.eventType === 'meeting_scheduled')
       } else if (nextType === 'training') {
         label = 'open training'
         deadlineMs = sentAt + trainingDays * 86400_000
