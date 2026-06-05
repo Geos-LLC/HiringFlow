@@ -53,11 +53,19 @@ interface CurrentActivityCardProps {
   flowStepCount: number
   answersCount: number
   trainingEnrollments: TrainingEnrollment[]
-  // Recruiter clicks "Revoke access" on a training row. Parent owns the
-  // confirmation prompt + API call + refetch so this card stays a dumb
-  // renderer.
+  // Per-training access state from /api/candidates/[id]. Drives the
+  // "Access revoked" badge + Revoke/Restore button label. Map key is
+  // Training.id; value is 'active' when at least one TrainingAccessToken
+  // is live, 'revoked' when all tokens have been flipped, 'none' when
+  // no tokens exist (public-mode trainings the candidate self-served).
+  trainingAccessStatus?: Record<string, 'active' | 'revoked' | 'none'>
+  // Parent owns the confirmation prompt + API call + refetch so this card
+  // stays a dumb renderer.
   onRevokeTrainingAccess?: (trainingId: string, trainingTitle: string) => void
-  revokingTrainingId?: string | null
+  onRestoreTrainingAccess?: (trainingId: string, trainingTitle: string) => void
+  // Set to the training id whose toggle is in flight, so the row's button
+  // can render its loading state.
+  pendingTrainingId?: string | null
 }
 
 function relativeTime(iso: string | null): { text: string; tone: 'live' | 'recent' | 'idle' | 'stale' } {
@@ -94,8 +102,10 @@ export function CurrentActivityCard({
   flowStepCount,
   answersCount,
   trainingEnrollments,
+  trainingAccessStatus,
   onRevokeTrainingAccess,
-  revokingTrainingId,
+  onRestoreTrainingAccess,
+  pendingTrainingId,
 }: CurrentActivityCardProps) {
   // Re-tick the relative-time label every 30s so "Last active 4 min ago"
   // doesn't go stale while the recruiter is staring at the page.
@@ -230,11 +240,25 @@ export function CurrentActivityCard({
       {/* Trainings */}
       {trainingRows.length > 0 && (
         <div className="space-y-3 pt-3 border-t border-surface-divider">
-          {trainingRows.map((t) => (
+          {trainingRows.map((t) => {
+            const accessState = trainingAccessStatus?.[t.trainingId] ?? 'none'
+            const isRevoked = accessState === 'revoked'
+            const isPending = pendingTrainingId === t.trainingId
+            return (
             <div key={t.id}>
               <div className="flex items-center justify-between mb-1.5 gap-2">
-                <span className="text-xs font-medium text-grey-20 truncate" title={t.title}>
-                  Training: <span className="text-grey-15">{t.title}</span>
+                <span className="text-xs font-medium text-grey-20 truncate flex items-center gap-2 min-w-0" title={t.title}>
+                  <span className="truncate">
+                    Training: <span className="text-grey-15">{t.title}</span>
+                  </span>
+                  {isRevoked && (
+                    <span
+                      className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full border border-red-200 bg-red-50 text-red-700 font-semibold uppercase tracking-wide shrink-0"
+                      title="This candidate's training links have been revoked. The link returns Access unavailable until restored."
+                    >
+                      Access revoked
+                    </span>
+                  )}
                 </span>
                 <div className="flex items-center gap-2 shrink-0">
                   <span
@@ -250,17 +274,29 @@ export function CurrentActivityCard({
                       ? 'Completed'
                       : `${t.done} of ${t.total} sections`}
                   </span>
-                  {onRevokeTrainingAccess && (
-                    <button
-                      type="button"
-                      onClick={() => onRevokeTrainingAccess(t.trainingId, t.title)}
-                      disabled={revokingTrainingId === t.trainingId}
-                      className="text-[11px] px-2 py-0.5 rounded-[6px] border border-red-200 bg-white text-red-700 hover:bg-red-50 font-medium disabled:opacity-50"
-                      title="Invalidate every training link this candidate received for this training"
-                    >
-                      {revokingTrainingId === t.trainingId ? 'Revoking…' : 'Revoke access'}
-                    </button>
-                  )}
+                  {isRevoked
+                    ? onRestoreTrainingAccess && (
+                        <button
+                          type="button"
+                          onClick={() => onRestoreTrainingAccess(t.trainingId, t.title)}
+                          disabled={isPending}
+                          className="text-[11px] px-2 py-0.5 rounded-[6px] border border-green-200 bg-white text-green-700 hover:bg-green-50 font-medium disabled:opacity-50"
+                          title="Re-enable the candidate's existing training link"
+                        >
+                          {isPending ? 'Restoring…' : 'Restore access'}
+                        </button>
+                      )
+                    : onRevokeTrainingAccess && (
+                        <button
+                          type="button"
+                          onClick={() => onRevokeTrainingAccess(t.trainingId, t.title)}
+                          disabled={isPending}
+                          className="text-[11px] px-2 py-0.5 rounded-[6px] border border-red-200 bg-white text-red-700 hover:bg-red-50 font-medium disabled:opacity-50"
+                          title="Invalidate every training link this candidate received for this training"
+                        >
+                          {isPending ? 'Revoking…' : 'Revoke access'}
+                        </button>
+                      )}
                 </div>
               </div>
               <ProgressBar pct={t.isCompleted ? 100 : t.pct} tone={t.isCompleted ? 'green' : 'brand'} />
@@ -284,7 +320,8 @@ export function CurrentActivityCard({
                 </div>
               )}
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

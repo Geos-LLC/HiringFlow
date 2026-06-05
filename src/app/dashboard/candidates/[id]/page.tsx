@@ -156,6 +156,10 @@ interface CandidateDetail {
   formFieldLabels?: Record<string, string>
   isRebook?: boolean
   siblingSessions?: SiblingSession[]
+  // Per-training access status computed server-side from TrainingAccessToken
+  // rows. Drives the "Access revoked" badge + Revoke/Restore toggle on the
+  // Current Activity card.
+  trainingAccessStatus?: Record<string, 'active' | 'revoked' | 'none'>
 }
 
 const REJECTION_PRESETS = ['No-show', 'Not qualified', 'Wrong schedule', 'Declined offer', 'Wrong location', 'Pay expectations']
@@ -391,15 +395,16 @@ export default function CandidateDetailPage() {
     setCandidate(prev => prev ? { ...prev, outcome, ...(outcome === 'passed' ? { pipelineStatus: 'passed' } : outcome === 'failed' ? { pipelineStatus: 'failed' } : {}) } : null)
   }
 
-  // Revoke every training access link this candidate has received for a
-  // training. Public training routes only honor 'active'|'used' tokens — once
-  // flipped to 'revoked' the candidate's link returns TOKEN_INVALID. Past
-  // progress / completion events stay on the timeline.
-  const [revokingTrainingId, setRevokingTrainingId] = useState<string | null>(null)
+  // Revoke / restore training access for a candidate. Public training routes
+  // only honor 'active'|'used' tokens — once flipped to 'revoked' the
+  // candidate's existing link returns TOKEN_INVALID, and restore puts each
+  // token back to its prior used/active state. Past progress and completion
+  // events stay on the timeline either way.
+  const [pendingTrainingId, setPendingTrainingId] = useState<string | null>(null)
   const revokeTrainingAccess = async (trainingId: string, trainingTitle: string) => {
-    if (revokingTrainingId) return
+    if (pendingTrainingId) return
     if (!confirm(`Revoke ${trainingTitle} access for this candidate? Their existing training link will stop working. Past progress will remain visible.`)) return
-    setRevokingTrainingId(trainingId)
+    setPendingTrainingId(trainingId)
     try {
       const res = await fetch(`/api/candidates/${id}/trainings/${trainingId}/revoke`, { method: 'POST' })
       const data = await res.json().catch(() => ({} as { revokedCount?: number; accessMode?: string; error?: string }))
@@ -409,9 +414,6 @@ export default function CandidateDetailPage() {
       }
       const count = typeof data?.revokedCount === 'number' ? data.revokedCount : 0
       if (count === 0) {
-        // Most common cause: training is accessMode='public', so tokens are
-        // irrelevant. Tell the recruiter so they don't think the button was
-        // a no-op silently.
         if (data?.accessMode === 'public') {
           alert(`No links to revoke — "${trainingTitle}" is set to public access, so anyone with the URL can view it regardless of tokens.`)
         } else {
@@ -420,7 +422,26 @@ export default function CandidateDetailPage() {
       }
       await loadCandidate()
     } finally {
-      setRevokingTrainingId(null)
+      setPendingTrainingId(null)
+    }
+  }
+  const restoreTrainingAccess = async (trainingId: string, trainingTitle: string) => {
+    if (pendingTrainingId) return
+    setPendingTrainingId(trainingId)
+    try {
+      const res = await fetch(`/api/candidates/${id}/trainings/${trainingId}/restore`, { method: 'POST' })
+      const data = await res.json().catch(() => ({} as { restoredCount?: number; error?: string }))
+      if (!res.ok) {
+        alert(data?.error || 'Failed to restore training access')
+        return
+      }
+      const count = typeof data?.restoredCount === 'number' ? data.restoredCount : 0
+      if (count === 0) {
+        alert(`No revoked links found for "${trainingTitle}" to restore.`)
+      }
+      await loadCandidate()
+    } finally {
+      setPendingTrainingId(null)
     }
   }
 
@@ -1539,8 +1560,10 @@ export default function CandidateDetailPage() {
         flowStepCount={candidate.flowStepCount}
         answersCount={candidate.answers.length}
         trainingEnrollments={candidate.trainingEnrollments}
+        trainingAccessStatus={candidate.trainingAccessStatus}
         onRevokeTrainingAccess={revokeTrainingAccess}
-        revokingTrainingId={revokingTrainingId}
+        onRestoreTrainingAccess={restoreTrainingAccess}
+        pendingTrainingId={pendingTrainingId}
       />
 
       {/* Status panel — orthogonal axis (active/stalled/lost/...). Sits

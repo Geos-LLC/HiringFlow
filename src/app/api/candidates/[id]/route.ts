@@ -243,6 +243,25 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     .filter((d): d is Date => d instanceof Date && !isNaN(d.getTime()))
     .reduce<Date | null>((best, d) => (best == null || d.getTime() > best.getTime() ? d : best), null)
 
+  // Per-training access status for the activity card. 'revoked' iff this
+  // candidate has at least one TrainingAccessToken for the training and
+  // all of them are in status='revoked'. 'active' iff any token is
+  // 'active' or 'used'. 'none' iff no tokens exist (e.g. accessMode='public'
+  // training the candidate self-served into). The activity card uses this
+  // to swap the "Revoke access" button to a "Restore access" button + show
+  // a red "Access revoked" badge.
+  const accessTokens = await prisma.trainingAccessToken.findMany({
+    where: { candidateId: session.id },
+    select: { trainingId: true, status: true },
+  })
+  const trainingAccessStatus: Record<string, 'active' | 'revoked' | 'none'> = {}
+  for (const t of accessTokens) {
+    const prev = trainingAccessStatus[t.trainingId]
+    const isLive = t.status === 'active' || t.status === 'used'
+    if (prev === 'active') continue
+    trainingAccessStatus[t.trainingId] = isLive ? 'active' : 'revoked'
+  }
+
   // Resolve which pipeline applies to this candidate. The detail page renders
   // its kanban-style status panel against these stages, not the legacy
   // workspace.settings.funnelStages — so a Dispatcher candidate gets the
@@ -268,6 +287,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       isDefault: pipeline.isDefault,
       stages: stagesFor(pipeline),
     },
+    trainingAccessStatus,
     effectiveLastActivityAt: effectiveLastActivityAt?.toISOString() ?? null,
   })
 }
