@@ -335,7 +335,17 @@ async function matchSession(
     if (match) return match.id
   }
 
+  // Skip:
+  //  - Calendar resource accounts (rooms etc).
+  //  - The organizer / self attendee — that's the workspace's connected
+  //    Google account, NOT the candidate. Calendly puts the connected
+  //    account on every event it creates. If the workspace owner has ever
+  //    submitted a test application using their own Gmail (very common
+  //    during onboarding), their email matches a candidateEmail in the
+  //    workspace and EVERY Calendly booking gets misattributed to that
+  //    test session — real candidates lose their meeting attribution.
   const attendeeEmails = (event.attendees || [])
+    .filter((a) => !a.organizer && !a.self)
     .map((a) => a.email)
     .filter((e): e is string => !!e && !e.includes('calendar.google.com'))
 
