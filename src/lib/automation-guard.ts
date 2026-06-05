@@ -376,9 +376,8 @@ const PREREQUISITES: Record<string, PrerequisitePredicate> = {
  *   1. Halt — session.automationsHaltedAt set.
  *   2. Lifecycle status — session.status in BLOCKING_STATUSES unless
  *      rule.allowedForStatuses opts in.
- *   3. Stage match — rule.stageId, if set, must equal session.pipelineStatus.
- *      Enforced only for executionMode='delayed_callback' (staleness check
- *      on QStash-delayed sends). Same-tick paths trust the rule's trigger.
+ *   3. (removed 2026-06-04) Stage match. Automations and pipeline stages
+ *      are independent concerns; rule.stageId is now metadata only.
  *   4. Prerequisite predicate for the triggerType.
  *   5. Idempotency — existing 'sent' execution for (step, session, channel).
  *
@@ -422,39 +421,24 @@ export async function canExecuteAutomationStep(ctx: GuardCtx): Promise<GuardResu
     }
   }
 
-  // 3. Stage match — staleness protection for *delayed* sends only. A 24h
-  //    reminder queued while the candidate was in "training_sent" should NOT
-  //    fire if they've since moved on. For same-tick dispatches (immediate,
-  //    chained, cron, public_trigger, debug) the rule's triggerType is
-  //    authoritative: the event just happened, the rule is wired to it, so
-  //    fire. Without this carve-out, rules wired to a stage that the
-  //    candidate's pipeline never auto-advances them into (e.g. Dispatcher
-  //    pipeline with no entry triggers configured) silently skip every send.
+  // 3. Stage match — REMOVED 2026-06-04.
+  //    Per project decision: automations and pipeline stages are two
+  //    different concerns and should not gate each other. The trigger event
+  //    (flow_completed, training_completed, meeting_scheduled, etc.) is the
+  //    authoritative signal that the rule should fire; the candidate's stage
+  //    at the moment a delayed callback lands is irrelevant.
   //
-  //    The match passes if EITHER the current pipelineStatus matches OR the
-  //    pre-applyStageTrigger snapshot does. The snapshot accommodates rules
-  //    pinned to a stage that the trigger event itself auto-advances out of:
-  //    e.g. `training_completed` with `stageId=stage_5` where stage_5 has
-  //    `training_started` as its entry trigger, so the completion-pair
-  //    runtime moves the candidate to the next stage before the delayed
-  //    send fires. The rule WAS valid at trigger time — the snapshot
-  //    captures that. See ctx.triggerStageSnapshot for the full motivation.
-  if (
-    rule.stageId &&
-    executionMode === 'delayed_callback' &&
-    session.pipelineStatus !== rule.stageId &&
-    (ctx.triggerStageSnapshot ?? null) !== rule.stageId
-  ) {
-    return {
-      allowed: false,
-      reason: 'skipped_wrong_stage',
-      currentState: {
-        pipelineStatus: session.pipelineStatus ?? null,
-        triggerStageSnapshot: ctx.triggerStageSnapshot ?? null,
-      },
-      requiredState: { pipelineStatus: rule.stageId },
-    }
-  }
+  //    Previously this checked `rule.stageId === session.pipelineStatus` for
+  //    `executionMode='delayed_callback'` as "staleness protection" for
+  //    QStash-delayed sends. In practice it caused recurring breakage: any
+  //    rule pinned to a stage the trigger event auto-advances out of (the
+  //    common pattern) would skip with `skipped_wrong_stage` 100% of the
+  //    time. The remediation kept being "remove the stage pin" — i.e. the
+  //    check itself was the bug. Now `rule.stageId` is metadata only,
+  //    ignored by the runtime.
+  //
+  //    If staleness control comes back as a need, do it per-rule via an
+  //    explicit max-age field on the step, not via stage identity.
 
   // 4. Prerequisite — only enforced for triggers with a registered predicate.
   //    Open triggers (no entry in the map) are assumed valid by design.
