@@ -1181,7 +1181,13 @@ async function queueStepAtDelay(
     where: { stepId, sessionId, channel, stageEntryId },
     orderBy: { createdAt: 'desc' },
   })
-  if (existing?.status === 'sent') return false
+  // Manual rerun bypasses the queue-time idempotency check. Recruiter clicked
+  // "Run again" on a candidate where a previous send already landed — they
+  // want it re-fired. Without this carve-out, queueStepAtDelay would bail
+  // silently here and the click would appear to do nothing (no execution
+  // row, no QStash msg). The executionMode also has to travel through the
+  // QStash payload below so the callback-time guard honours the bypass too.
+  if (existing?.status === 'sent' && ctx.executionMode !== 'manual_rerun') return false
   // Delete any previously-queued QStash msg for this row before re-publishing.
   // Without this, a second meeting_scheduled (rebooking, in-app re-create)
   // overwrites qstashMessageId in the DB but leaves the old QStash msg live —
@@ -1231,6 +1237,11 @@ async function queueStepAtDelay(
         // stage-at-trigger-time even if the trigger event itself
         // auto-advanced them off it.
         triggerStageSnapshot: ctx.triggerStageSnapshot ?? null,
+        // Preserve executionMode across the QStash hop. The callback handler
+        // restores it so manual_rerun-originated queued steps keep their
+        // guard bypass at fire time (otherwise the callback re-hardcodes
+        // 'delayed_callback' and the idempotency check blocks the resend).
+        executionMode: ctx.executionMode,
       },
       delay: delaySeconds,
     })

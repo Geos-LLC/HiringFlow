@@ -33,13 +33,21 @@ async function handler(request: NextRequest) {
     // of having to re-derive it from the rule alone.
     if (payload.stepId && payload.sessionId) {
       const channel = payload.channel === 'sms' ? 'sms' : 'email'
+      // Preserve manual_rerun across the QStash hop — without this, a
+      // recruiter-initiated re-fire of a delayed step would land here as
+      // a generic delayed_callback and the guard's idempotency check would
+      // block the resend. All other modes are forced to 'delayed_callback'
+      // because that's what the callback semantically IS for them — the
+      // original immediate/cron/public_trigger context no longer applies
+      // by the time the queued send fires.
+      const preservedMode = payload.executionMode === 'manual_rerun' ? 'manual_rerun' : 'delayed_callback'
       await executeStep(payload.stepId, payload.sessionId, channel, {
         dispatchCtx: {
           triggerType: typeof payload.triggerType === 'string' ? payload.triggerType : 'unknown',
           triggerContext: typeof payload.triggerContext === 'object' && payload.triggerContext !== null
             ? payload.triggerContext
             : undefined,
-          executionMode: 'delayed_callback',
+          executionMode: preservedMode,
           // Rehydrate the StageEntry pin set by queueStepAtDelay so the
           // delayed send's idempotency and execution row land on the same
           // StageEntry as the enqueue-time decision. Missing/null in the
