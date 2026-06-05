@@ -42,8 +42,18 @@ export interface DerivedCriterion {
 }
 
 export interface ScoredCriterion extends DerivedCriterion {
-  score: number // 0..100
+  // Null when the criterion couldn't be evaluated because the required
+  // data modality wasn't available (e.g. a video-presentation criterion
+  // for a candidate with no video). Null scores are EXCLUDED from the
+  // overall score and the comparison view shows them as N/A. Missing
+  // data does NOT penalize the candidate, but it also doesn't count
+  // toward a perfect score — the overall is computed over the criteria
+  // that WERE scored, with their weights renormalized to sum to 100.
+  score: number | null // 0..100 or null when not scored
   evidence: string
+  // Short reason when score is null ("no video recording", "no AI-call
+  // transcript"). Empty string when the criterion was actually scored.
+  notScoredReason: string
 }
 
 export interface RubricDerivation {
@@ -386,36 +396,43 @@ Evidence rules:
     presence, engagement). It informs but never decides — and is NEVER used
     as a measure of trustworthiness, honesty, or personality.
 
-Coverage discount (CRITICAL — applies BEFORE finalizing the overall score):
-  - If entire DATA MODALITIES are missing for this candidate, you MUST
-    discount the overall score and explicitly downgrade confidence. Missing
-    data is NOT the same as 100% on the missing dimension.
+Missing data — SKIP, don't penalize (CRITICAL):
+  - If a criterion's required data modality isn't available for this
+    candidate, set its score to null and fill notScoredReason with a
+    short explanation ("no video recording", "no AI-call transcript",
+    "no interview meeting attended"). DO NOT guess a score and DO NOT
+    penalize the candidate for the gap. Missing data is just missing.
   - Concretely:
-      • No AI-call / phone-roleplay transcript for a phone-intake / sales
-        / dispatcher role → the role's main behaviors (Booking Control,
-        Pricing Delivery, Objection Handling, Complaint Recovery) cannot
-        be verified. Score those criteria conservatively (50-65 cap, not
-        80+) and discount the overall score 5-15 points relative to a
-        candidate with comparable strengths who DID have a verified call.
-      • No video / self-intro recording for an in-home / customer-facing
-        role → presentation, camera presence, engagement can't be checked.
-        Penalize the relevant criteria the same way.
-      • No interview meeting attendance for a role where the interview is
-        in the rubric → flag accordingly.
-  - When a peer candidate HAS the missing material and demonstrated the
-    behavior, the gap matters MORE: the candidate without coverage cannot
-    out-rank a peer who verifiably executed the behavior.
-  - Write the coverage gap into the summary ("scoring is uncertain because
-    no AI-call transcript was available — verify before hire") so the
-    recruiter sees it.
+      • No AI-call / phone-roleplay transcript → criteria that can only
+        be observed on a live call (Booking Control, Pricing Delivery,
+        Objection Handling, Complaint Recovery, Lead Qualification by
+        phone) get score=null with notScoredReason="no AI-call transcript".
+      • No video / self-intro recording → camera-presence / presentation
+        / engagement criteria get score=null with notScoredReason="no
+        video recording".
+      • No interview meeting attended → meeting-only criteria get
+        score=null.
+  - DO score the criteria you CAN observe. If a candidate has a strong
+    AI-call but no video, they're scored on the phone behaviors and the
+    video-only criteria are null. Their overall reflects their actual
+    demonstrated performance on the criteria that were evaluable — no
+    artificial cap, no artificial floor.
+  - The OUTPUT overallScore field is for YOUR weighted average of the
+    SCORED criteria. The engine will renormalize weights so the criteria
+    you scored sum to 100; you don't need to do that math. Just compute
+    the weighted average over the criteria you actually scored.
+  - Populate coverageGaps with the list of missing modalities so the UI
+    can show what wasn't evaluated. Empty array when the candidate had
+    full material for the rubric.
 
 Overall score & recommendation:
-  - overallScore is the weight-weighted average of the criterion scores,
-    THEN reduced by the coverage discount above if material was missing.
-    Round to integer.
+  - overallScore: weighted average over the criteria you actually scored
+    (skip the nulls). Round to integer. The engine renormalizes weights
+    server-side as a safety net.
   - Recommendation thresholds: ≥85 strong_hire, 70-84 hire, 55-69 borderline,
-    <55 no_hire. A candidate with major coverage gaps should rarely reach
-    strong_hire even on excellent partial evidence.
+    <55 no_hire. When more than ~⅓ of the rubric weight couldn't be
+    scored, lean toward borderline rather than strong_hire — the high
+    score is on partial evidence and the recruiter should verify.
 
 Pre-scoring analysis (REQUIRED — write this FIRST, before the criterion
 scores):
@@ -494,16 +511,30 @@ async function scoreCandidate(
               items: {
                 type: 'object',
                 additionalProperties: false,
-                required: ['name', 'description', 'weight', 'score', 'evidence'],
+                required: ['name', 'description', 'weight', 'score', 'evidence', 'notScoredReason'],
                 properties: {
                   name: { type: 'string' },
                   description: { type: 'string' },
                   weight: { type: 'integer' },
-                  score: { type: 'integer', minimum: 0, maximum: 100 },
+                  // Nullable score — null when the data modality the
+                  // criterion needs is absent for this candidate. Skip
+                  // and renormalize, don't penalize.
+                  score: {
+                    type: ['integer', 'null'],
+                    minimum: 0,
+                    maximum: 100,
+                    description:
+                      'Null when the criterion could not be evaluated due to missing data modality. The engine excludes nulls from the overall and renormalizes weights of the rest.',
+                  },
                   evidence: {
                     type: 'string',
                     description:
                       'Direct quote, summarized multi-turn behavior, or literal "no evidence". Must justify the score; never cherry-picked.',
+                  },
+                  notScoredReason: {
+                    type: 'string',
+                    description:
+                      'Short reason when score is null (e.g. "no video recording"). Empty string when score is a number.',
                   },
                 },
               },
@@ -530,7 +561,36 @@ async function scoreCandidate(
   const raw = completion.choices[0]?.message?.content
   if (!raw) throw new Error('Empty evaluation response from model')
   const parsed = JSON.parse(raw) as Omit<EvaluationResult, 'roleSuccessFactors'>
-  return { ...parsed, roleSuccessFactors: derivation.roleSuccessFactors }
+
+  return {
+    ...parsed,
+    overallScore: computeOverallFromScoredCriteria(parsed.criteria),
+    roleSuccessFactors: derivation.roleSuccessFactors,
+  }
+}
+
+/**
+ * Server-side overall computation. Skips null-scored criteria entirely (the
+ * candidate didn't have the data modality for them), then computes a
+ * weight-weighted average over the criteria that DID get scored, with their
+ * weights renormalized to sum to 100. Returns 0 when no criterion was scored
+ * (so the recommendation logic still has a number to act on, though that's
+ * an edge case — a candidate with no evaluable material shouldn't get a
+ * meaningful overall).
+ *
+ * This is the "missing data = skip, not penalize" rule the recruiter asked
+ * for. Exported so the test suite can verify the renormalization math.
+ */
+export function computeOverallFromScoredCriteria(
+  criteria: Array<{ score: number | null; weight: number }>,
+): number {
+  const scored = criteria.filter(
+    (c): c is { score: number; weight: number } => typeof c.score === 'number',
+  )
+  if (scored.length === 0) return 0
+  const weightSum = scored.reduce((s, c) => s + c.weight, 0) || 1
+  const weighted = scored.reduce((s, c) => s + (c.score * c.weight) / weightSum, 0)
+  return Math.round(weighted)
 }
 
 export async function runEvaluation(

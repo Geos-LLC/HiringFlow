@@ -4,6 +4,7 @@ import {
   SCORE_CANDIDATE_SYSTEM_PROMPT,
   COMPARE_CANDIDATES_SYSTEM_PROMPT,
   GENERIC_FORBIDDEN_AXES,
+  computeOverallFromScoredCriteria,
   deriveCriteria,
   compareEvaluations,
   type RubricDerivation,
@@ -184,19 +185,26 @@ describe('SCORE_CANDIDATE_SYSTEM_PROMPT', () => {
     expect(p).toMatch(/complaint/)
   })
 
-  it('penalizes candidates with missing data modalities (coverage discount)', () => {
-    // The recruiter spec called out "if there is no data, it doesn't mean
-    // it is 100%". The prompt must explicitly discount the overall score
-    // when an entire modality (AI call, video, etc.) is missing.
+  it('handles missing-data criteria by SKIPPING them, not penalizing the candidate', () => {
+    // Recruiter spec: "if no data then the parameter is not evaluated".
+    // The previous "coverage discount" approach unfairly penalized
+    // candidates who simply lacked one data modality. New rule: skip the
+    // criterion, mark score=null, exclude from overall, renormalize the
+    // remaining weights. Missing data does NOT lower the score.
     const p = SCORE_CANDIDATE_SYSTEM_PROMPT.toLowerCase()
-    expect(p).toMatch(/coverage discount|missing data is not|missing.*not.*100/i)
-    expect(p).toMatch(/discount the overall score/i)
+    expect(p).toMatch(/skip,\s*don'?t penalize/i)
+    expect(p).toMatch(/set its score to null/i)
+    expect(p).toMatch(/notscoredreason/i)
+    expect(p).toMatch(/do not guess a score and do not\s+penalize the candidate/i)
     expect(p).toMatch(/no ai-?call.*transcript|phone-roleplay.*transcript/i)
-    expect(p).toMatch(/no video|self-intro recording/i)
-    // Concrete cap so the model doesn't give 80+ on a criterion it can't verify.
-    expect(p).toMatch(/50-65 cap|50-65/i)
-    // Comparison rule: a peer with verified material out-ranks one without.
-    expect(p).toMatch(/cannot\s+out-rank a peer\s+who verifiably executed/i)
+    expect(p).toMatch(/no video|video recording/i)
+    // Engine renormalizes server-side; the prompt names it so the model
+    // doesn't overthink the math.
+    expect(p).toMatch(/renormalize/i)
+    // The OLD "50-65 cap" and "coverage discount" language MUST NOT
+    // resurface — it was unfair to candidates with partial coverage.
+    expect(p).not.toMatch(/50-65 cap/i)
+    expect(p).not.toMatch(/discount the overall score/i)
   })
 
   it('requires the model to write a pre-scoring analysis BEFORE committing to scores', () => {
@@ -552,5 +560,83 @@ describe('deriveCriteria — weight normalization', () => {
     // but we keep the band wide so a future ±1 rounding wobble doesn't fail.
     expect(total).toBeGreaterThanOrEqual(99)
     expect(total).toBeLessThanOrEqual(101)
+  })
+})
+
+describe('computeOverallFromScoredCriteria — skip-and-renormalize', () => {
+  it('computes a straight weighted average when every criterion was scored', () => {
+    // Three criteria, all scored. Overall = (80*40 + 60*30 + 90*30)/100 = 77
+    const result = computeOverallFromScoredCriteria([
+      { score: 80, weight: 40 },
+      { score: 60, weight: 30 },
+      { score: 90, weight: 30 },
+    ])
+    expect(result).toBe(77)
+  })
+
+  it('SKIPS a null-scored criterion and renormalizes the remaining weights', () => {
+    // Same candidate, but one criterion was N/A. The remaining two have
+    // weights 40 and 30 — renormalized to 4/7 and 3/7. Overall =
+    // (80*4 + 60*3)/7 = 71.428... → 71. The candidate is NOT penalized
+    // for the missing one — their overall is computed on what they
+    // actually demonstrated.
+    const result = computeOverallFromScoredCriteria([
+      { score: 80, weight: 40 },
+      { score: 60, weight: 30 },
+      { score: null, weight: 30 },
+    ])
+    expect(result).toBe(71)
+  })
+
+  it('returns the lone scored criterion when only one survives', () => {
+    const result = computeOverallFromScoredCriteria([
+      { score: 73, weight: 40 },
+      { score: null, weight: 30 },
+      { score: null, weight: 30 },
+    ])
+    expect(result).toBe(73)
+  })
+
+  it('returns 0 when every criterion is null (no evaluable material)', () => {
+    const result = computeOverallFromScoredCriteria([
+      { score: null, weight: 40 },
+      { score: null, weight: 30 },
+    ])
+    expect(result).toBe(0)
+  })
+
+  it('treats missing data as neutral — a perfect candidate with one N/A still beats a mediocre candidate with full coverage', () => {
+    // Tetiana's case: 4 scored criteria all 90, one N/A (video). Should
+    // produce 90, not 72 (which would be the case if N/A scored as 0).
+    const tetiana = computeOverallFromScoredCriteria([
+      { score: 90, weight: 20 },
+      { score: 90, weight: 25 },
+      { score: 90, weight: 25 },
+      { score: 90, weight: 15 },
+      { score: null, weight: 15 }, // video — missing
+    ])
+    // Nazar's case: 5 scored at 70 average, full coverage.
+    const nazar = computeOverallFromScoredCriteria([
+      { score: 75, weight: 20 },
+      { score: 70, weight: 25 },
+      { score: 65, weight: 25 },
+      { score: 70, weight: 15 },
+      { score: 70, weight: 15 },
+    ])
+    expect(tetiana).toBe(90)
+    expect(nazar).toBe(70)
+    // The candidate who actually performed the role behaviors well ranks
+    // above the one with full coverage but mediocre demonstrations.
+    expect(tetiana).toBeGreaterThan(nazar)
+  })
+
+  it('does not let missing data inflate the score above the ceiling either', () => {
+    // Edge case: a single scored criterion can't push the overall above
+    // that criterion's score.
+    const result = computeOverallFromScoredCriteria([
+      { score: 60, weight: 10 },
+      { score: null, weight: 90 },
+    ])
+    expect(result).toBe(60)
   })
 })

@@ -53,8 +53,12 @@ interface ScoredCriterion {
   name: string
   description: string
   weight: number
-  score: number
+  // Null when the criterion couldn't be evaluated for this candidate
+  // because the required data modality was missing. Engine skips nulls
+  // from the overall and renormalizes the remaining weights.
+  score: number | null
   evidence: string
+  notScoredReason?: string
 }
 
 interface SourcesSummary {
@@ -930,6 +934,9 @@ function ComparisonTable({
               <td className="px-4 py-2.5 text-[12px] font-mono uppercase text-grey-35">Overall</td>
               {orderedCandidates.map((c) => {
                 const ev = bySession.get(c.id)!
+                const scoredCount = ev.criteria.filter((x) => x.score !== null).length
+                const totalCount = ev.criteria.length
+                const isPartial = scoredCount < totalCount
                 return (
                   <td key={c.id} className="px-3 py-2.5">
                     <div className="flex items-center gap-2">
@@ -939,6 +946,9 @@ function ComparisonTable({
                       <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${RECOMMENDATION_COLOR[ev.recommendation]}`}>
                         {RECOMMENDATION_LABEL[ev.recommendation]}
                       </span>
+                    </div>
+                    <div className={`text-[10px] mt-1 ${isPartial ? 'text-amber-700' : 'text-grey-50'}`}>
+                      {isPartial ? `Scored on ${scoredCount} of ${totalCount} criteria` : `Scored on all ${totalCount} criteria`}
                     </div>
                   </td>
                 )
@@ -1167,6 +1177,25 @@ function ComparisonTable({
                     return (
                       <td key={c.id} className="px-3 py-2.5 text-[12px] text-grey-50">
                         —
+                      </td>
+                    )
+                  }
+                  // Null score = criterion was skipped because the candidate
+                  // didn't have the data modality. Render N/A + reason.
+                  if (crit.score === null) {
+                    return (
+                      <td key={c.id} className="px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[12px] font-mono tabular-nums w-8 text-grey-50">
+                            N/A
+                          </span>
+                          <div className="flex-1 h-1.5 bg-surface-light rounded-full overflow-hidden opacity-40">
+                            <div className="h-full rounded-full bg-grey-50" style={{ width: '100%' }} />
+                          </div>
+                        </div>
+                        <div className="text-[10px] text-grey-50 mt-1 italic" title={crit.notScoredReason}>
+                          {crit.notScoredReason || 'no data — skipped'}
+                        </div>
                       </td>
                     )
                   }

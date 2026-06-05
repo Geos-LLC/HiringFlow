@@ -66,7 +66,7 @@ interface Evaluation {
   overallScore: number
   recommendation: 'strong_hire' | 'hire' | 'borderline' | 'no_hire'
   summary: string
-  criteria: Array<{ name: string; description: string; weight: number; score: number; evidence: string }>
+  criteria: Array<{ name: string; description: string; weight: number; score: number | null; evidence: string; notScoredReason?: string }>
   strengths: string[]
   weaknesses: string[]
   roleSuccessFactors?: string[] | null
@@ -560,23 +560,51 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
               </div>
             )}
             <div className="space-y-1.5">
-              {evaluation.criteria.map((c) => (
-                <div key={c.name} className="flex items-center gap-2 text-[11px]">
-                  <span className="w-44 truncate text-grey-20" title={c.description}>
-                    {c.name}
-                  </span>
-                  <span className={`font-mono w-8 tabular-nums ${scoreColor(c.score)}`}>{c.score}</span>
-                  <div className="flex-1 h-1.5 bg-surface rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${
-                        c.score >= 85 ? 'bg-emerald-500' : c.score >= 70 ? 'bg-sky-500' : c.score >= 55 ? 'bg-amber-500' : 'bg-red-500'
-                      }`}
-                      style={{ width: `${c.score}%` }}
-                    />
+              {evaluation.criteria.map((c) => {
+                if (c.score === null) {
+                  return (
+                    <div key={c.name} className="flex items-center gap-2 text-[11px] opacity-70">
+                      <span className="w-44 truncate text-grey-20" title={c.description}>
+                        {c.name}
+                      </span>
+                      <span className="font-mono w-8 tabular-nums text-grey-50">N/A</span>
+                      <div className="flex-1 h-1.5 bg-surface rounded-full overflow-hidden opacity-40">
+                        <div className="h-full rounded-full bg-grey-50" style={{ width: '100%' }} />
+                      </div>
+                      <span className="text-[10px] text-grey-50 italic shrink-0" title={c.notScoredReason}>
+                        {c.notScoredReason || 'no data'}
+                      </span>
+                    </div>
+                  )
+                }
+                return (
+                  <div key={c.name} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-44 truncate text-grey-20" title={c.description}>
+                      {c.name}
+                    </span>
+                    <span className={`font-mono w-8 tabular-nums ${scoreColor(c.score)}`}>{c.score}</span>
+                    <div className="flex-1 h-1.5 bg-surface rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          c.score >= 85 ? 'bg-emerald-500' : c.score >= 70 ? 'bg-sky-500' : c.score >= 55 ? 'bg-amber-500' : 'bg-red-500'
+                        }`}
+                        style={{ width: `${c.score}%` }}
+                      />
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
+            {(() => {
+              const scored = evaluation.criteria.filter((c) => c.score !== null).length
+              const total = evaluation.criteria.length
+              if (scored === total) return null
+              return (
+                <div className="mt-2 text-[10px] text-amber-700">
+                  Scored on {scored} of {total} criteria — overall reflects only the criteria that had supporting data.
+                </div>
+              )
+            })()}
             <div className="grid grid-cols-2 gap-3 mt-3">
               {evaluation.strengths.length > 0 && (
                 <div>
