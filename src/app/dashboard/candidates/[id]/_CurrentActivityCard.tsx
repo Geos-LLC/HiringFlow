@@ -53,6 +53,11 @@ interface CurrentActivityCardProps {
   flowStepCount: number
   answersCount: number
   trainingEnrollments: TrainingEnrollment[]
+  // Recruiter clicks "Revoke access" on a training row. Parent owns the
+  // confirmation prompt + API call + refetch so this card stays a dumb
+  // renderer.
+  onRevokeTrainingAccess?: (trainingId: string, trainingTitle: string) => void
+  revokingTrainingId?: string | null
 }
 
 function relativeTime(iso: string | null): { text: string; tone: 'live' | 'recent' | 'idle' | 'stale' } {
@@ -89,6 +94,8 @@ export function CurrentActivityCard({
   flowStepCount,
   answersCount,
   trainingEnrollments,
+  onRevokeTrainingAccess,
+  revokingTrainingId,
 }: CurrentActivityCardProps) {
   // Re-tick the relative-time label every 30s so "Last active 4 min ago"
   // doesn't go stale while the recruiter is staring at the page.
@@ -170,6 +177,7 @@ export function CurrentActivityCard({
 
     return {
       id: e.id,
+      trainingId: e.training.id,
       title: e.training.title,
       isCompleted,
       done,
@@ -224,23 +232,36 @@ export function CurrentActivityCard({
         <div className="space-y-3 pt-3 border-t border-surface-divider">
           {trainingRows.map((t) => (
             <div key={t.id}>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 gap-2">
                 <span className="text-xs font-medium text-grey-20 truncate" title={t.title}>
                   Training: <span className="text-grey-15">{t.title}</span>
                 </span>
-                <span
-                  className={`text-xs font-medium ${
-                    t.isCompleted ? 'text-green-700' : t.total === 0 ? 'text-grey-40' : 'text-brand-600'
-                  }`}
-                >
-                  {t.total === 0
-                    ? t.isCompleted
+                <div className="flex items-center gap-2 shrink-0">
+                  <span
+                    className={`text-xs font-medium ${
+                      t.isCompleted ? 'text-green-700' : t.total === 0 ? 'text-grey-40' : 'text-brand-600'
+                    }`}
+                  >
+                    {t.total === 0
+                      ? t.isCompleted
+                        ? 'Completed'
+                        : 'In progress'
+                      : t.isCompleted
                       ? 'Completed'
-                      : 'In progress'
-                    : t.isCompleted
-                    ? 'Completed'
-                    : `${t.done} of ${t.total} sections`}
-                </span>
+                      : `${t.done} of ${t.total} sections`}
+                  </span>
+                  {onRevokeTrainingAccess && (
+                    <button
+                      type="button"
+                      onClick={() => onRevokeTrainingAccess(t.trainingId, t.title)}
+                      disabled={revokingTrainingId === t.trainingId}
+                      className="text-[11px] px-2 py-0.5 rounded-[6px] border border-red-200 bg-white text-red-700 hover:bg-red-50 font-medium disabled:opacity-50"
+                      title="Invalidate every training link this candidate received for this training"
+                    >
+                      {revokingTrainingId === t.trainingId ? 'Revoking…' : 'Revoke access'}
+                    </button>
+                  )}
+                </div>
               </div>
               <ProgressBar pct={t.isCompleted ? 100 : t.pct} tone={t.isCompleted ? 'green' : 'brand'} />
               {!t.isCompleted && t.currentSection && (

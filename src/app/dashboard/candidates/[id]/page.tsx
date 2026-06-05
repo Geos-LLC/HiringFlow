@@ -391,6 +391,39 @@ export default function CandidateDetailPage() {
     setCandidate(prev => prev ? { ...prev, outcome, ...(outcome === 'passed' ? { pipelineStatus: 'passed' } : outcome === 'failed' ? { pipelineStatus: 'failed' } : {}) } : null)
   }
 
+  // Revoke every training access link this candidate has received for a
+  // training. Public training routes only honor 'active'|'used' tokens — once
+  // flipped to 'revoked' the candidate's link returns TOKEN_INVALID. Past
+  // progress / completion events stay on the timeline.
+  const [revokingTrainingId, setRevokingTrainingId] = useState<string | null>(null)
+  const revokeTrainingAccess = async (trainingId: string, trainingTitle: string) => {
+    if (revokingTrainingId) return
+    if (!confirm(`Revoke ${trainingTitle} access for this candidate? Their existing training link will stop working. Past progress will remain visible.`)) return
+    setRevokingTrainingId(trainingId)
+    try {
+      const res = await fetch(`/api/candidates/${id}/trainings/${trainingId}/revoke`, { method: 'POST' })
+      const data = await res.json().catch(() => ({} as { revokedCount?: number; accessMode?: string; error?: string }))
+      if (!res.ok) {
+        alert(data?.error || 'Failed to revoke training access')
+        return
+      }
+      const count = typeof data?.revokedCount === 'number' ? data.revokedCount : 0
+      if (count === 0) {
+        // Most common cause: training is accessMode='public', so tokens are
+        // irrelevant. Tell the recruiter so they don't think the button was
+        // a no-op silently.
+        if (data?.accessMode === 'public') {
+          alert(`No links to revoke — "${trainingTitle}" is set to public access, so anyone with the URL can view it regardless of tokens.`)
+        } else {
+          alert(`No active links found for "${trainingTitle}".`)
+        }
+      }
+      await loadCandidate()
+    } finally {
+      setRevokingTrainingId(null)
+    }
+  }
+
   const deleteCandidate = async () => {
     if (!candidate) return
     const name = candidate.candidateName || candidate.candidateEmail || 'this candidate'
@@ -1506,6 +1539,8 @@ export default function CandidateDetailPage() {
         flowStepCount={candidate.flowStepCount}
         answersCount={candidate.answers.length}
         trainingEnrollments={candidate.trainingEnrollments}
+        onRevokeTrainingAccess={revokeTrainingAccess}
+        revokingTrainingId={revokingTrainingId}
       />
 
       {/* Status panel — orthogonal axis (active/stalled/lost/...). Sits
