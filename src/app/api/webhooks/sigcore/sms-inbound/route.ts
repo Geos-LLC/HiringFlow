@@ -13,11 +13,18 @@
  *                           ack to candidate, email the recruiter
  *   anything else          → no-op (200 ack so Sigcore doesn't retry)
  *
- * Auth: HMAC-SHA256 of the raw request body, hex-encoded, in header
- * `X-Callio-Signature`. Sigcore signs with the `secret` configured on the
- * webhook subscription; HF signs with `SIGCORE_WEBHOOK_KEY`. Constant-time
- * compare; 401 on mismatch. Without the env var set, all webhooks are
- * refused with 503.
+ * Auth: HMAC-SHA256 of `${X-Callio-Timestamp}.${rawBody}`, hex-encoded, in
+ * header `X-Callio-Signature`. Sigcore signs with the `secret` configured on
+ * the webhook subscription; HF signs with `SIGCORE_WEBHOOK_KEY`. Constant-time
+ * compare; 401 on mismatch. The `X-Callio-Timestamp` header is epoch seconds
+ * and is also checked against a ±5 minute skew window to bound replay attacks
+ * — outside the window we return 401 `stale_timestamp`. Without the env var
+ * set, all webhooks are refused with 503.
+ *
+ * Contract history: prior to Sigcore commit 12e9bd8f (2026-05-07), the input
+ * to HMAC was the raw body alone (no `${ts}.` prefix, no timestamp header).
+ * That contract is no longer accepted — the regression test in this folder
+ * pins the new contract so a future revert is caught at CI.
  *
  * Payload (Sigcore tenant outbound webhook contract):
  *   {
@@ -42,7 +49,6 @@
  */
 
 import { NextResponse } from 'next/server'
-import { createHmac, timingSafeEqual } from 'crypto'
 import { prisma } from '@/lib/prisma'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { applyStageTrigger } from '@/lib/funnel-stage-runtime'
@@ -50,6 +56,7 @@ import { cancelBeforeMeetingReminders, cancelMeetingDependentFollowups } from '@
 import { deleteCalendarEvent } from '@/lib/google'
 import { sendSms, normalizeToE164 } from '@/lib/sms'
 import { sendEmail } from '@/lib/email'
+import { verifySigcoreSignature, isFreshSigcoreTimestamp } from '@/lib/sigcore-signature'
 
 type Intent = 'confirm' | 'cancel' | 'unknown'
 
@@ -68,18 +75,6 @@ function classifyIntent(body: string): Intent {
   if (CONFIRM_KEYWORDS.has(word)) return 'confirm'
   if (CANCEL_KEYWORDS.has(word)) return 'cancel'
   return 'unknown'
-}
-
-function verifySignature(rawBody: string, providedHex: string, secret: string): boolean {
-  const expected = createHmac('sha256', secret).update(rawBody).digest('hex')
-  // timingSafeEqual requires equal-length buffers; bail early on mismatched
-  // length so we don't throw.
-  if (expected.length !== providedHex.length) return false
-  try {
-    return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(providedHex, 'hex'))
-  } catch {
-    return false
-  }
 }
 
 interface InboundPayload {
@@ -106,8 +101,16 @@ export async function POST(req: Request) {
   // exact bytes Sigcore signed AND parse it as JSON.
   const rawBody = await req.text()
   const providedSig = req.headers.get('x-callio-signature')?.trim()
-  if (!providedSig || !verifySignature(rawBody, providedSig, expected)) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  const providedTs = req.headers.get('x-callio-timestamp')?.trim()
+
+  // Skew check first so a stale-timestamp reply is distinguishable from a
+  // signature mismatch in the response body. We still 401 on both — the
+  // distinct error string is only for observability/diagnosis.
+  if (!isFreshSigcoreTimestamp(providedTs, Math.floor(Date.now() / 1000))) {
+    return NextResponse.json({ error: 'stale_timestamp' }, { status: 401 })
+  }
+  if (!providedSig || !verifySigcoreSignature(providedTs as string, rawBody, providedSig, expected)) {
+    return NextResponse.json({ error: 'signature_mismatch' }, { status: 401 })
   }
 
   let payload: InboundPayload
