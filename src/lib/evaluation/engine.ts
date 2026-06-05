@@ -282,16 +282,29 @@ function renderTranscriptsForPrompt(material: GatheredMaterial): string {
   if (material.captures.length > 0) {
     parts.push(`\n# Self-Introduction & Screening Recordings (${material.captures.length})`)
     material.captures.forEach((cap, i) => {
+      const hasTranscript = !!cap.transcript?.trim()
       parts.push(`\n## Capture ${i + 1} (${cap.mode}${cap.durationSec ? `, ${Math.round(cap.durationSec)}s` : ''})`)
       if (cap.prompt) parts.push(`Prompt: ${cap.prompt}`)
-      if (cap.transcript?.trim()) parts.push(`Transcript:\n${cap.transcript.trim()}`)
-      else if (cap.aiSummary) parts.push(`Summary: ${cap.aiSummary}`)
-      else parts.push(`(no transcript)`)
+      if (hasTranscript) {
+        parts.push(`Transcript:\n${cap.transcript!.trim()}`)
+      } else if (cap.aiSummary) {
+        parts.push(`Summary: ${cap.aiSummary}`)
+      } else {
+        // The recording exists but wasn't transcribed — treat as a coverage
+        // gap, NOT as evidence. Make this loud so the model doesn't infer
+        // anything from the file's mere existence.
+        parts.push(
+          `(NO TRANSCRIPT — file was uploaded but the transcription pipeline did not produce text. This recording is NOT evaluable content. Score related criteria as null with notScoredReason="capture exists but was not transcribed".)`,
+        )
+      }
     })
   }
 
   if (material.meetings.length > 0) {
-    parts.push(`\n# Interview Meetings (${material.meetings.length})`)
+    parts.push(`\n# Interview Meetings — ATTENDANCE METADATA ONLY (${material.meetings.length})`)
+    parts.push(
+      `These are attendance records, NOT transcripts. You can see that the candidate showed up (or didn't) and for how long, but you have NO information about what was actually said. Do NOT infer dispatcher behaviors, customer-service quality, presentation, or any other criterion from a meeting attendance record. Meetings are useful as a reliability/showing-up signal — that is all.`,
+    )
     material.meetings.forEach((m, i) => {
       const attended = !!m.actualStart
       const duration =
@@ -300,7 +313,7 @@ function renderTranscriptsForPrompt(material: GatheredMaterial): string {
           : null
       const others = m.participants.filter((p) => p.email && !p.email.includes('hirefunnel'))
       parts.push(
-        `\n## Meeting ${i + 1} — scheduled ${m.scheduledStart}, attended=${attended}${
+        `\n## Meeting ${i + 1} (attendance metadata only) — scheduled ${m.scheduledStart}, attended=${attended}${
           duration !== null ? `, ${duration}min` : ''
         }, attendees=${others.length}`,
       )

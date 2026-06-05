@@ -82,26 +82,88 @@ interface Evaluation {
   createdAt: string
 }
 
-function describeSources(s: SourcesSummary | undefined): Array<{ icon: string; label: string; ok: boolean }> {
+type SourceBadge = {
+  icon: string
+  label: string
+  tone: 'evaluated' | 'untranscribed' | 'attendance'
+  title?: string
+}
+
+function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
   if (!s) return []
-  const out: Array<{ icon: string; label: string; ok: boolean }> = []
-  if (s.aiCalls.length > 0) {
-    const mins = Math.round(s.aiCalls.reduce((a, b) => a + (b.durationSecs ?? 0), 0) / 60)
+  const out: SourceBadge[] = []
+
+  // AI calls — only transcribed ones feed the scorer.
+  const callsEval = s.aiCalls.filter((c) => c.hasTranscript)
+  const callsEmpty = s.aiCalls.filter((c) => !c.hasTranscript)
+  if (callsEval.length > 0) {
+    const mins = Math.round(callsEval.reduce((a, b) => a + (b.durationSecs ?? 0), 0) / 60)
     out.push({
       icon: '🎙️',
-      label: `${s.aiCalls.length} AI call${s.aiCalls.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
-      ok: s.aiCalls.some((c) => c.hasTranscript),
+      label: `${callsEval.length} AI call${callsEval.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
+      tone: 'evaluated',
+      title: 'Transcripts fed to the scorer',
     })
   }
-  const video = s.captures.filter((c) => c.mode === 'video' || c.mode === 'audio_video')
-  const audio = s.captures.filter((c) => c.mode === 'audio')
+  if (callsEmpty.length > 0) {
+    out.push({
+      icon: '⚠️',
+      label: `${callsEmpty.length} AI call${callsEmpty.length === 1 ? '' : 's'} (no transcript)`,
+      tone: 'untranscribed',
+      title: 'Call exists but no transcript text',
+    })
+  }
+
+  // Captures — split by mode AND transcript availability
+  const videoEval = s.captures.filter((c) => (c.mode === 'video' || c.mode === 'audio_video') && c.hasTranscript)
+  const videoEmpty = s.captures.filter((c) => (c.mode === 'video' || c.mode === 'audio_video') && !c.hasTranscript)
+  const audioEval = s.captures.filter((c) => c.mode === 'audio' && c.hasTranscript)
+  const audioEmpty = s.captures.filter((c) => c.mode === 'audio' && !c.hasTranscript)
   const text = s.captures.filter((c) => c.mode === 'text' || c.mode === 'upload')
-  if (video.length > 0) out.push({ icon: '🎬', label: `${video.length} video${video.length === 1 ? '' : 's'}`, ok: video.some((c) => c.hasTranscript) })
-  if (audio.length > 0) out.push({ icon: '🎧', label: `${audio.length} audio`, ok: audio.some((c) => c.hasTranscript) })
-  if (text.length > 0) out.push({ icon: '📝', label: `${text.length} text`, ok: true })
-  const attended = s.meetings.filter((m) => m.attended).length
-  if (attended > 0) out.push({ icon: '🗓️', label: `${attended} meeting${attended === 1 ? '' : 's'}`, ok: true })
+  if (videoEval.length > 0) out.push({ icon: '🎬', label: `${videoEval.length} video${videoEval.length === 1 ? '' : 's'}`, tone: 'evaluated' })
+  if (videoEmpty.length > 0) {
+    out.push({
+      icon: '⚠️',
+      label: `${videoEmpty.length} video uploaded, not transcribed`,
+      tone: 'untranscribed',
+      title: 'File exists but no transcript — counts as a coverage gap, not evidence',
+    })
+  }
+  if (audioEval.length > 0) out.push({ icon: '🎧', label: `${audioEval.length} audio`, tone: 'evaluated' })
+  if (audioEmpty.length > 0) {
+    out.push({
+      icon: '⚠️',
+      label: `${audioEmpty.length} audio uploaded, not transcribed`,
+      tone: 'untranscribed',
+      title: 'File exists but no transcript — counts as a coverage gap, not evidence',
+    })
+  }
+  if (text.length > 0) out.push({ icon: '📝', label: `${text.length} text`, tone: 'evaluated' })
+
+  // Meetings = attendance metadata only
+  const meetingsAttended = s.meetings.filter((m) => m.attended)
+  if (meetingsAttended.length > 0) {
+    const mins = Math.round(meetingsAttended.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60)
+    out.push({
+      icon: '🗓️',
+      label: `${meetingsAttended.length} meeting${meetingsAttended.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
+      tone: 'attendance',
+      title: 'Attendance metadata only — meeting transcripts are NOT fed to the scorer.',
+    })
+  }
+
   return out
+}
+
+function badgeClasses(tone: SourceBadge['tone']): string {
+  switch (tone) {
+    case 'evaluated':
+      return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    case 'untranscribed':
+      return 'bg-amber-50 text-amber-700 border-amber-200'
+    case 'attendance':
+      return 'bg-surface text-grey-40 border-surface-border'
+  }
 }
 
 const RECOMMENDATION_LABEL: Record<Evaluation['recommendation'], string> = {
@@ -509,17 +571,13 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
             {describeSources(evaluation.sources).length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 mb-3">
                 <span className="text-[10px] font-mono uppercase text-grey-40 tracking-wider">
-                  Evaluated:
+                  Sources:
                 </span>
                 {describeSources(evaluation.sources).map((b, i) => (
                   <span
                     key={i}
-                    className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
-                      b.ok
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                        : 'bg-amber-50 text-amber-700 border-amber-200'
-                    }`}
-                    title={b.ok ? 'Transcript available' : 'No transcript — metadata only'}
+                    className={`text-[10px] px-1.5 py-0.5 rounded-full border ${badgeClasses(b.tone)}`}
+                    title={b.title}
                   >
                     {b.icon} {b.label}
                   </span>

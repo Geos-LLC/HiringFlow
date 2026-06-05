@@ -156,54 +156,113 @@ const JD_SOURCE_TONE: Record<JdSource, string> = {
   flow_name: 'bg-red-50 text-red-700 border-red-200',
 }
 
-// Render the data-sources summary as small icon badges. Used inline anywhere
-// we want to show "what got fed to the model". Format: 🎙️ 2 AI calls (3m)
-// · 🎬 1 video · 📋 form etc.
-function describeSources(s: SourcesSummary | undefined): Array<{ icon: string; label: string; ok: boolean }> {
-  if (!s) return []
-  const out: Array<{ icon: string; label: string; ok: boolean }> = []
+// Source badges. Tone tells the recruiter what KIND of source it is:
+//   - 'evaluated' (emerald) — transcript fed to the scorer
+//   - 'untranscribed' (amber) — recording exists but the transcript was
+//     never produced; it's a coverage gap, NOT evidence
+//   - 'attendance' (gray) — meeting metadata only (duration / showed up).
+//     The scorer is explicitly told meeting transcripts are NOT fed in.
+// This is the difference between "2 evaluated AI calls" and "2 meetings
+// attended (metadata only)" — the previous UI showed both as the same
+// 🎙️/🗓️ chip and the recruiter couldn't tell the model never saw the
+// meeting content.
+type SourceBadge = {
+  icon: string
+  label: string
+  tone: 'evaluated' | 'untranscribed' | 'attendance'
+  title?: string
+}
 
-  const aiCallTotal = s.aiCalls.length
-  const aiCallWithTranscript = s.aiCalls.filter((c) => c.hasTranscript).length
-  if (aiCallTotal > 0) {
-    const mins = Math.round(s.aiCalls.reduce((a, b) => a + (b.durationSecs ?? 0), 0) / 60)
+function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
+  if (!s) return []
+  const out: SourceBadge[] = []
+
+  // AI calls: split into transcribed (real evidence) and empty (coverage gap)
+  const aiCallTranscribed = s.aiCalls.filter((c) => c.hasTranscript)
+  const aiCallEmpty = s.aiCalls.filter((c) => !c.hasTranscript)
+  if (aiCallTranscribed.length > 0) {
+    const mins = Math.round(
+      aiCallTranscribed.reduce((a, b) => a + (b.durationSecs ?? 0), 0) / 60,
+    )
     out.push({
       icon: '🎙️',
-      label: `${aiCallTotal} AI call${aiCallTotal === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
-      ok: aiCallWithTranscript > 0,
+      label: `${aiCallTranscribed.length} AI call${aiCallTranscribed.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
+      tone: 'evaluated',
+      title: 'Transcripts fed to the scorer',
+    })
+  }
+  if (aiCallEmpty.length > 0) {
+    out.push({
+      icon: '⚠️',
+      label: `${aiCallEmpty.length} AI call${aiCallEmpty.length === 1 ? '' : 's'} (no transcript)`,
+      tone: 'untranscribed',
+      title: 'Call exists but ElevenLabs returned no transcript text',
     })
   }
 
-  const videoCaptures = s.captures.filter((c) => c.mode === 'video' || c.mode === 'audio_video')
-  const audioCaptures = s.captures.filter((c) => c.mode === 'audio')
+  // Captures: each capture is either transcribed (evidence) or just an
+  // uploaded file (coverage gap). Split video/audio/text.
+  const videoEval = s.captures.filter((c) => (c.mode === 'video' || c.mode === 'audio_video') && c.hasTranscript)
+  const videoEmpty = s.captures.filter((c) => (c.mode === 'video' || c.mode === 'audio_video') && !c.hasTranscript)
+  const audioEval = s.captures.filter((c) => c.mode === 'audio' && c.hasTranscript)
+  const audioEmpty = s.captures.filter((c) => c.mode === 'audio' && !c.hasTranscript)
   const textCaptures = s.captures.filter((c) => c.mode === 'text' || c.mode === 'upload')
-  if (videoCaptures.length > 0) {
+
+  if (videoEval.length > 0) {
+    out.push({ icon: '🎬', label: `${videoEval.length} video${videoEval.length === 1 ? '' : 's'}`, tone: 'evaluated' })
+  }
+  if (videoEmpty.length > 0) {
     out.push({
-      icon: '🎬',
-      label: `${videoCaptures.length} video${videoCaptures.length === 1 ? '' : 's'}`,
-      ok: videoCaptures.some((c) => c.hasTranscript),
+      icon: '⚠️',
+      label: `${videoEmpty.length} video uploaded, not transcribed`,
+      tone: 'untranscribed',
+      title: 'Recording exists but no transcript — counts as a coverage gap, not evidence',
     })
   }
-  if (audioCaptures.length > 0) {
+  if (audioEval.length > 0) {
+    out.push({ icon: '🎧', label: `${audioEval.length} audio`, tone: 'evaluated' })
+  }
+  if (audioEmpty.length > 0) {
     out.push({
-      icon: '🎧',
-      label: `${audioCaptures.length} audio`,
-      ok: audioCaptures.some((c) => c.hasTranscript),
+      icon: '⚠️',
+      label: `${audioEmpty.length} audio uploaded, not transcribed`,
+      tone: 'untranscribed',
+      title: 'Recording exists but no transcript — counts as a coverage gap, not evidence',
     })
   }
   if (textCaptures.length > 0) {
-    out.push({ icon: '📝', label: `${textCaptures.length} text`, ok: true })
+    out.push({ icon: '📝', label: `${textCaptures.length} text`, tone: 'evaluated' })
   }
 
-  const meetingsAttended = s.meetings.filter((m) => m.attended).length
-  if (meetingsAttended > 0) {
+  // Meetings: ATTENDANCE METADATA ONLY. The scorer sees that the candidate
+  // showed up for N minutes; it sees no transcript text. Render gray with a
+  // tooltip making this explicit so "2 meetings" doesn't read as evidence.
+  const meetingsAttended = s.meetings.filter((m) => m.attended)
+  if (meetingsAttended.length > 0) {
+    const mins = Math.round(
+      meetingsAttended.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60,
+    )
     out.push({
       icon: '🗓️',
-      label: `${meetingsAttended} meeting${meetingsAttended === 1 ? '' : 's'}`,
-      ok: true,
+      label: `${meetingsAttended.length} meeting${meetingsAttended.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
+      tone: 'attendance',
+      title:
+        'Attendance metadata only — meeting transcripts are NOT fed to the scorer. Treat as a "showed up" signal, not as evidence of phone behaviors.',
     })
   }
+
   return out
+}
+
+function badgeClasses(tone: SourceBadge['tone']): string {
+  switch (tone) {
+    case 'evaluated':
+      return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    case 'untranscribed':
+      return 'bg-amber-50 text-amber-700 border-amber-200'
+    case 'attendance':
+      return 'bg-surface text-grey-40 border-surface-border'
+  }
 }
 
 function timeAgo(iso: string): string {
@@ -794,12 +853,8 @@ export default function AIEvaluationPage() {
                             {sourceBadges.map((b, i) => (
                               <span
                                 key={i}
-                                className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
-                                  b.ok
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                    : 'bg-amber-50 text-amber-700 border-amber-200'
-                                }`}
-                                title={b.ok ? 'Transcript available' : 'No transcript — metadata only'}
+                                className={`text-[10px] px-1.5 py-0.5 rounded-full border ${badgeClasses(b.tone)}`}
+                                title={b.title}
                               >
                                 {b.icon} {b.label}
                               </span>
@@ -973,12 +1028,8 @@ function ComparisonTable({
                         {badges.map((b, i) => (
                           <span
                             key={i}
-                            className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
-                              b.ok
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                            }`}
-                            title={b.ok ? 'Transcript available' : 'No transcript — metadata only'}
+                            className={`text-[10px] px-1.5 py-0.5 rounded-full border ${badgeClasses(b.tone)}`}
+                            title={b.title}
                           >
                             {b.icon} {b.label}
                           </span>
@@ -1413,11 +1464,8 @@ function EvaluationCards({
                   {badges.map((b, i) => (
                     <span
                       key={i}
-                      className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
-                        b.ok
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          : 'bg-amber-50 text-amber-700 border-amber-200'
-                      }`}
+                      className={`text-[9px] px-1.5 py-0.5 rounded-full border ${badgeClasses(b.tone)}`}
+                      title={b.title}
                     >
                       {b.icon} {b.label}
                     </span>

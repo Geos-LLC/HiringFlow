@@ -58,8 +58,17 @@ export interface GatheredMaterial {
 }
 
 export interface SourcesSummary {
+  // Meetings carry ATTENDANCE METADATA ONLY — the eval prompt sees that the
+  // candidate showed up for N minutes, NOT what was said. They never count
+  // as evaluable transcript content. UI labels them "metadata only".
   meetings: Array<{ id: string; durationSec: number | null; attended: boolean }>
+  // AI calls carry transcript content when `hasTranscript: true`. The
+  // engine only treats true-transcript AI calls as evaluable evidence —
+  // empty-transcript conversations are coverage gaps, not sources.
   aiCalls: Array<{ conversationId: string; durationSecs: number; hasTranscript: boolean }>
+  // Same rule for captures: a capture without a transcript was uploaded
+  // but never processed by the transcription pipeline. UI calls these
+  // out as "uploaded but not transcribed" so the recruiter sees the gap.
   captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
 }
 
