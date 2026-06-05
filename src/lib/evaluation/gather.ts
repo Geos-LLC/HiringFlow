@@ -18,6 +18,7 @@
  */
 
 import { prisma } from '@/lib/prisma'
+import { fetchWithEachKey, getElevenLabsApiKeys } from '@/lib/elevenlabs'
 import type { VoiceClipInput, VideoClipInput } from './media-observation'
 import { fetchMeetingTranscript } from './meeting-transcript'
 
@@ -80,15 +81,21 @@ export interface SourcesSummary {
   captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
 }
 
-async function fetchElevenLabsConversation(apiKey: string, conversationId: string) {
+async function fetchElevenLabsConversation(conversationId: string) {
   try {
-    const res = await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`, {
-      headers: { 'xi-api-key': apiKey },
-    })
-    if (!res.ok) return null
-    const data = await res.json()
+    const keys = await getElevenLabsApiKeys()
+    let data: any = null
+    let apiKey: string | null = null
+    for (const k of keys) {
+      const res = await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`, {
+        headers: { 'xi-api-key': k },
+      })
+      if (res.ok) { data = await res.json(); apiKey = k; break }
+    }
+    if (!data || !apiKey) return null
     return {
       conversationId,
+      apiKey,
       // Detail endpoint nests duration; mirror the dashboard helper.
       durationSecs: data.metadata?.call_duration_secs ?? data.call_duration_secs ?? 0,
       callSuccessful: data.analysis?.call_successful ?? null,
@@ -130,18 +137,18 @@ export async function gatherCandidateMaterial(
   })
   if (!session) return null
 
-  // Resolve ElevenLabs API key once. Missing key means we silently skip AI
+  // Resolve ElevenLabs API keys once. Empty list means we silently skip AI
   // call transcripts — the eval still runs against captures + meetings.
-  const platformKey = await prisma.platformSetting.findUnique({ where: { key: 'elevenlabs_api_key' } })
-  const apiKey = platformKey?.value || null
+  const hasKeys = (await getElevenLabsApiKeys()).length > 0
 
   // Collect every conversation id across all AICallCandidate rows attached to
-  // this session, dedup, then fetch in parallel.
+  // this session, dedup, then fetch in parallel. fetchElevenLabsConversation
+  // tries each configured key, so calls from either account resolve.
   const conversationIds = Array.from(
     new Set(session.aiCallCandidates.flatMap((c) => c.conversationIds)),
   )
-  const aiCalls = apiKey
-    ? (await Promise.all(conversationIds.map((cid) => fetchElevenLabsConversation(apiKey, cid))))
+  const aiCalls = hasKeys
+    ? (await Promise.all(conversationIds.map((cid) => fetchElevenLabsConversation(cid))))
         .filter((c): c is NonNullable<typeof c> => c !== null)
     : []
 
@@ -196,7 +203,7 @@ export async function gatherCandidateMaterial(
   // last one was a 30s hangup, voice observation would judge them on that
   // tiny sample. Now: send every call that's at least 30s long, capped at
   // the 8 longest so a hyper-active candidate doesn't burn the rate budget.
-  if (apiKey && aiCalls.length > 0) {
+  if (aiCalls.length > 0) {
     const substantive = aiCalls
       .filter((c) => (c.durationSecs ?? 0) >= 30)
       .sort((a, b) => (b.durationSecs ?? 0) - (a.durationSecs ?? 0))
@@ -210,7 +217,9 @@ export async function gatherCandidateMaterial(
           kind: 'url',
           url: `https://api.elevenlabs.io/v1/convai/conversations/${call.conversationId}/audio`,
           mimeType: 'audio/mpeg',
-          headers: { 'xi-api-key': apiKey },
+          // Each conversation belongs to exactly one account; bake the key
+          // that successfully fetched the detail so audio download works too.
+          headers: { 'xi-api-key': call.apiKey },
         },
       })
     }

@@ -1,20 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
-import { prisma } from '@/lib/prisma'
+import { fetchWithEachKey } from '@/lib/elevenlabs'
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
 
-  // Get API key from platform settings
-  const platformKey = await prisma.platformSetting.findUnique({ where: { key: 'elevenlabs_api_key' } })
-  if (!platformKey?.value) {
-    return NextResponse.json({ error: 'ElevenLabs API key not configured' }, { status: 400 })
-  }
-
-  const res = await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${params.id}`, {
-    headers: { 'xi-api-key': platformKey.value },
-  })
+  const res = await fetchWithEachKey(`https://api.elevenlabs.io/v1/convai/conversations/${params.id}`)
 
   if (!res.ok) {
     return NextResponse.json({ error: `ElevenLabs API error: ${res.status}` }, { status: res.status })

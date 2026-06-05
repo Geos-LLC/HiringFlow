@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { fetchWithEachKey } from '@/lib/elevenlabs'
 
 interface ElevenLabsConvSummary {
   conversation_id: string
@@ -57,8 +58,8 @@ export async function POST(request: NextRequest, { params }: { params: { slug: s
 export async function GET(request: NextRequest, { params }: { params: { slug: string } }) {
   const name = request.nextUrl.searchParams.get('name')
 
-  const platformKey = await prisma.platformSetting.findUnique({ where: { key: 'elevenlabs_api_key' } })
-  if (!platformKey?.value) return NextResponse.json({ error: 'Not configured' }, { status: 400 })
+  // No upfront key check — fetchWithEachKey returns a 400 response when no keys
+  // are configured, and per-call try-each-key handles the rest.
 
   // If name provided, find candidate, auto-link new conversations, then return their list
   if (name) {
@@ -70,9 +71,8 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
     if (!candidate) return NextResponse.json({ conversations: [] })
 
     // Pull all agent conversations from ElevenLabs to look for unassigned ones
-    const listRes = await fetch(
+    const listRes = await fetchWithEachKey(
       `https://api.elevenlabs.io/v1/convai/conversations?agent_id=${params.slug}&page_size=100`,
-      { headers: { 'xi-api-key': platformKey.value } },
     )
     const allConvs: ElevenLabsConvSummary[] = listRes.ok
       ? ((await listRes.json()).conversations || [])
@@ -116,9 +116,7 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
     // Fetch detail for each linked conversation and normalize to list format
     const convDetails = await Promise.all(
       conversationIds.map(async (cid) => {
-        const r = await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${cid}`, {
-          headers: { 'xi-api-key': platformKey.value },
-        })
+        const r = await fetchWithEachKey(`https://api.elevenlabs.io/v1/convai/conversations/${cid}`)
         if (!r.ok) return null
         const d = await r.json()
         const rationale = (Object.values(d.analysis?.evaluation_criteria_results || {})[0] as { rationale?: string } | undefined)?.rationale || ''
@@ -141,9 +139,9 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
   }
 
   // No name — return all conversations (for backward compat)
-  const res = await fetch(`https://api.elevenlabs.io/v1/convai/conversations?agent_id=${params.slug}&page_size=100`, {
-    headers: { 'xi-api-key': platformKey.value },
-  })
+  const res = await fetchWithEachKey(
+    `https://api.elevenlabs.io/v1/convai/conversations?agent_id=${params.slug}&page_size=100`,
+  )
   if (!res.ok) return NextResponse.json({ error: 'Failed' }, { status: res.status })
   return NextResponse.json(await res.json())
 }

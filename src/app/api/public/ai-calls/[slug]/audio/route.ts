@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { fetchWithEachKey } from '@/lib/elevenlabs'
 
 // GET — stream audio for a single conversation. Scoped by candidate name +
 // agentId; the conversationId must be in the candidate's conversationIds[] so a
@@ -19,14 +20,7 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const platformKey = await prisma.platformSetting.findUnique({ where: { key: 'elevenlabs_api_key' } })
-  if (!platformKey?.value) {
-    return NextResponse.json({ error: 'Not configured' }, { status: 400 })
-  }
-
-  const res = await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${convId}/audio`, {
-    headers: { 'xi-api-key': platformKey.value },
-  })
+  const res = await fetchWithEachKey(`https://api.elevenlabs.io/v1/convai/conversations/${convId}/audio`)
   if (!res.ok) {
     return NextResponse.json({ error: `ElevenLabs audio fetch failed: ${res.status}` }, { status: res.status })
   }
