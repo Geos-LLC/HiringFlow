@@ -28,9 +28,19 @@ import { prisma } from '@/lib/prisma'
 import { s3Download } from '@/lib/s3'
 import { extractFramesFromBuffer } from './video-frames'
 
-const VOICE_MODEL = 'gpt-4o-audio-preview'
+// Voice observation runs in TWO stages because audio-capable OpenAI models
+// (`gpt-audio`, `gpt-audio-mini`) DO NOT accept any response_format param —
+// not json_schema, not even json_object. `gpt-4o-audio-preview` is also a
+// 404 on current accounts. Stage 1: the audio model produces a free-form
+// observation in a known headed layout. Stage 2: gpt-4o-mini re-shapes
+// that text into the strict JSON the rest of the engine consumes.
+const VOICE_AUDIO_MODEL = 'gpt-audio-mini'
+const VOICE_STRUCTURE_MODEL = 'gpt-4o-mini'
 const VIDEO_MODEL = 'gpt-4o'
-const ANALYSIS_VERSION = 1
+// Bumped to invalidate the silent-failure shape stored against the previous
+// VOICE_MODEL constant. Old cache entries for those keys are stale forever
+// because nothing produces them anymore — they just don't match.
+const ANALYSIS_VERSION = 2
 
 export type AssetType = 'capture' | 'ai_call' | 'meeting'
 
@@ -127,15 +137,38 @@ function mimeToFormat(mime: string): 'mp3' | 'wav' | 'flac' | 'opus' | 'ogg' | '
   return 'mp4'
 }
 
+const VOICE_AUDIO_SYSTEM_PROMPT = `You observe a candidate audio recording for a hiring manager. Report DESCRIPTIVE observations only — pace, clarity, hesitation, energy, articulation. Each observation is one short sentence with neutral language. Never make claims about trustworthiness, honesty, attractiveness, intelligence, age, or personality. Never invent content not present in the audio. If the audio is silent or too short to assess a dimension, say so plainly.
+
+Output your observation in this exact shape (plain text, no code fences):
+
+Pace: <one sentence>
+Clarity: <one sentence>
+Hesitation: <one sentence>
+Energy: <one sentence>
+Articulation: <one sentence>
+Evidence:
+- <quoted or timestamped moment>
+- <quoted or timestamped moment>
+- <up to 6 lines>`
+
+const VOICE_STRUCTURE_SYSTEM_PROMPT = `Convert a free-form voice observation into strict JSON. Preserve every observation verbatim — DO NOT paraphrase, summarize, or re-write. If the input names a dimension as "no audible content" / "silent" / "too short", carry that phrasing into the corresponding field.`
+
 /**
- * Observe one audio clip. Cached by (workspace, asset, kind, model, version)
- * so the second eval on the same recording is free.
+ * Two-stage voice observation:
+ *   1. gpt-audio-mini receives the actual audio and outputs a headed text
+ *      block (audio models cannot use json_schema or json_object).
+ *   2. gpt-4o-mini re-shapes that text into strict JSON.
+ *
+ * The result is cached per (workspace, asset, kind, model, version). Errors
+ * propagate up with a real reason so the recruiter can see what failed —
+ * silent nulls hid the entire pipeline being broken for hours.
  */
 async function observeVoiceClip(
   workspaceId: string,
   input: VoiceClipInput,
-): Promise<VoiceClipObservation | null> {
-  // Cache lookup
+): Promise<VoiceClipObservation> {
+  // Cache lookup keyed by the audio model — re-runs against the same clip
+  // skip both API calls.
   const cached = await prisma.mediaAnalysisCache.findUnique({
     where: {
       workspaceId_assetType_assetId_kind_model_analysisVersion: {
@@ -143,7 +176,7 @@ async function observeVoiceClip(
         assetType: input.assetType,
         assetId: input.assetId,
         kind: 'voice',
-        model: VOICE_MODEL,
+        model: VOICE_AUDIO_MODEL,
         analysisVersion: ANALYSIS_VERSION,
       },
     },
@@ -151,91 +184,100 @@ async function observeVoiceClip(
   if (cached) return cached.result as unknown as VoiceClipObservation
 
   const audio = await fetchAudioBytes(input)
-  if (!audio) return null
+  if (!audio) {
+    throw new Error(
+      input.source.kind === 's3'
+        ? `Audio fetch failed (S3 key=${input.source.storageKey.slice(-32)})`
+        : 'Audio fetch failed (URL refused or exceeded size cap)',
+    )
+  }
 
-  try {
-    const completion = await openai.chat.completions.create({
-      model: VOICE_MODEL,
-      modalities: ['text'],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'voice_observation',
-          strict: true,
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['pace', 'clarity', 'hesitation', 'energy', 'articulation', 'evidence'],
-            properties: {
-              pace: { type: 'string', description: 'One short sentence describing speaking pace.' },
-              clarity: { type: 'string', description: 'One short sentence describing diction / intelligibility.' },
-              hesitation: { type: 'string', description: 'One short sentence describing pauses / fillers / restarts.' },
-              energy: { type: 'string', description: 'One short sentence describing vocal energy / liveliness.' },
-              articulation: { type: 'string', description: 'One short sentence describing word formation / pronunciation.' },
-              evidence: {
-                type: 'array',
-                minItems: 1,
-                maxItems: 6,
-                items: { type: 'string' },
-                description: 'Specific timestamped or quoted moments backing the observations.',
-              },
+  // Stage 1: free-form headed text from the audio model.
+  const audioCompletion = await openai.chat.completions.create({
+    model: VOICE_AUDIO_MODEL,
+    modalities: ['text'],
+    messages: [
+      { role: 'system', content: VOICE_AUDIO_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_audio',
+            input_audio: {
+              data: audio.data.toString('base64'),
+              format: mimeToFormat(audio.mimeType),
+            },
+          } as any,
+          {
+            type: 'text',
+            text: `Asset type: ${input.assetType}. Asset id: ${input.assetId}. Duration: ${input.durationSec ?? 'unknown'}s. Observe the candidate's voice and respond in the required shape.`,
+          },
+        ],
+      },
+    ],
+  })
+  const audioText = audioCompletion.choices[0]?.message?.content
+  if (!audioText) throw new Error('Audio model returned an empty response')
+
+  // Stage 2: strict-JSON reshape with a text model.
+  const structureCompletion = await openai.chat.completions.create({
+    model: VOICE_STRUCTURE_MODEL,
+    temperature: 0,
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'voice_observation',
+        strict: true,
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['pace', 'clarity', 'hesitation', 'energy', 'articulation', 'evidence'],
+          properties: {
+            pace: { type: 'string' },
+            clarity: { type: 'string' },
+            hesitation: { type: 'string' },
+            energy: { type: 'string' },
+            articulation: { type: 'string' },
+            evidence: {
+              type: 'array',
+              minItems: 0,
+              maxItems: 6,
+              items: { type: 'string' },
             },
           },
         },
       },
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You observe a candidate audio recording for a hiring manager. Report DESCRIPTIVE observations only — pace, clarity, hesitation, energy, articulation. Each observation is one short sentence with neutral language. Never make claims about trustworthiness, honesty, attractiveness, intelligence, age, or personality. Never invent content not present in the audio. If the audio is silent or too short to assess a dimension, say so plainly.',
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_audio',
-              input_audio: {
-                data: audio.data.toString('base64'),
-                format: mimeToFormat(audio.mimeType),
-              },
-            } as any,
-            {
-              type: 'text',
-              text: `Asset type: ${input.assetType}. Asset id: ${input.assetId}. Duration: ${input.durationSec ?? 'unknown'}s. Describe what you observe in the candidate's voice.`,
-            },
-          ],
-        },
-      ],
-    })
+    },
+    messages: [
+      { role: 'system', content: VOICE_STRUCTURE_SYSTEM_PROMPT },
+      { role: 'user', content: audioText },
+    ],
+  })
+  const raw = structureCompletion.choices[0]?.message?.content
+  if (!raw) throw new Error('Structure model returned an empty response')
+  const parsed = JSON.parse(raw) as Omit<VoiceClipObservation, 'assetType' | 'assetId' | 'durationSec'>
 
-    const raw = completion.choices[0]?.message?.content
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Omit<VoiceClipObservation, 'assetType' | 'assetId' | 'durationSec'>
-    const result: VoiceClipObservation = {
+  const result: VoiceClipObservation = {
+    assetType: input.assetType,
+    assetId: input.assetId,
+    durationSec: input.durationSec,
+    ...parsed,
+  }
+
+  await prisma.mediaAnalysisCache.create({
+    data: {
+      workspaceId,
       assetType: input.assetType,
       assetId: input.assetId,
+      kind: 'voice',
+      model: VOICE_AUDIO_MODEL,
+      analysisVersion: ANALYSIS_VERSION,
+      result: result as any,
       durationSec: input.durationSec,
-      ...parsed,
-    }
+    },
+  })
 
-    await prisma.mediaAnalysisCache.create({
-      data: {
-        workspaceId,
-        assetType: input.assetType,
-        assetId: input.assetId,
-        kind: 'voice',
-        model: VOICE_MODEL,
-        analysisVersion: ANALYSIS_VERSION,
-        result: result as any,
-        durationSec: input.durationSec,
-      },
-    })
-
-    return result
-  } catch (err) {
-    console.error('[media-observation] voice clip failed', { assetId: input.assetId, err: (err as Error).message })
-    return null
-  }
+  return result
 }
 
 export async function observeVoice(
@@ -247,19 +289,33 @@ export async function observeVoice(
   }
 
   const observed: VoiceClipObservation[] = []
+  // Track per-clip errors so we surface ACTUAL failure reasons instead of
+  // collapsing every miss into "could not complete". The summary previously
+  // hid a 404 model name for hours.
+  const failures: string[] = []
   for (const clip of clips) {
-    const r = await observeVoiceClip(workspaceId, clip)
-    if (r) observed.push(r)
+    try {
+      const r = await observeVoiceClip(workspaceId, clip)
+      observed.push(r)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.error('[media-observation] voice clip failed', { assetId: clip.assetId, reason })
+      failures.push(`${clip.assetType}/${clip.assetId.slice(0, 10)}: ${reason}`)
+    }
   }
 
   if (observed.length === 0) {
-    return { clips: [], summary: 'Audio clips were present but observation could not complete (file too large, unreadable, or model error).' }
+    return {
+      clips: [],
+      summary:
+        `Voice observation could not complete for any of the ${clips.length} clip${clips.length === 1 ? '' : 's'}. Failures: ` +
+        failures.slice(0, 5).join('; '),
+    }
   }
 
-  // Cheap aggregate summary across clips using the smaller text model.
   const summary = await summarizeMediaObservations(observed, 'voice')
-
-  return { clips: observed, summary }
+  const tail = failures.length > 0 ? ` ${failures.length} clip${failures.length === 1 ? '' : 's'} failed: ${failures.slice(0, 3).join('; ')}` : ''
+  return { clips: observed, summary: `${summary}${tail}` }
 }
 
 async function fetchVideoBytes(input: VideoClipInput): Promise<Buffer | null> {

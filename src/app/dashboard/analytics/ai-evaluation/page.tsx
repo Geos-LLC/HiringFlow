@@ -881,6 +881,42 @@ export default function AIEvaluationPage() {
                                 {b.icon} {b.label}
                               </span>
                             ))}
+                            {/* Voice / video observation status. If the
+                                run had includeVoice=true and the engine
+                                produced clips, emerald 🎙️ Voice. If
+                                clips=0 (every per-clip call failed),
+                                amber with the failure summary so the
+                                recruiter sees what broke. */}
+                            {ev.includeVoice && (() => {
+                              const vClips = ev.voiceObservation?.clips?.length ?? 0
+                              return (
+                                <span
+                                  className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                                    vClips > 0
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                                  }`}
+                                  title={ev.voiceObservation?.summary ?? 'Voice observation pending'}
+                                >
+                                  🎙️ Voice {vClips > 0 ? `${vClips}` : 'failed'}
+                                </span>
+                              )
+                            })()}
+                            {ev.includeVideo && (() => {
+                              const vClips = ev.videoObservation?.clips?.length ?? 0
+                              return (
+                                <span
+                                  className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                                    vClips > 0
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                                  }`}
+                                  title={ev.videoObservation?.summary ?? ev.videoObservation?.unavailableReason ?? 'Video observation pending'}
+                                >
+                                  🎬 Video {vClips > 0 ? `${vClips}` : 'failed'}
+                                </span>
+                              )
+                            })()}
                           </div>
                         )}
                         {expandedJd === c.id && (
