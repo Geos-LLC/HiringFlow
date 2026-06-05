@@ -1019,27 +1019,25 @@ async function dispatchStep(
       return
     }
 
-    // For before_meeting, skip when we're so late that the copy no longer
-    // matches reality. A "24h before" reminder going out 1h before the meeting
-    // contradicts itself ("Your interview is in 24 hours" while it's actually
-    // in 1 hour). Threshold: more than half the configured window has elapsed
-    // since the intended fire time. So a 24h reminder firing 22h out (2h
-    // late) still fires; firing <12h out skips. A 60m reminder firing 50m
-    // out (10m late) still fires; firing <30m out skips.
-    if (mode === 'before_meeting') {
-      const lateByMs = nowMs - (meeting.scheduledStart.getTime() - step.delayMinutes * 60_000)
-      if (lateByMs > (step.delayMinutes * 60_000) / 2) {
-        console.log(`[Automation] Skipping step ${step.id} for session ${sessionId} — before_meeting fire time too far past (late by ${Math.floor(lateByMs / 60000)}m vs ${step.delayMinutes}m configured)`)
-        return
-      }
+    // For before_meeting, skip whenever the intended fire time is already in
+    // the past. The candidate booked too close to the meeting for this
+    // reminder to be meaningful — firing it would be redundant with the
+    // confirmation email the candidate just received. Example: rule "24h
+    // before" + candidate books a meeting that's exactly 24h out → fire
+    // time = now − 20s → skip (without this, the candidate would receive
+    // confirmation + "24h reminder" back-to-back at booking time).
+    //
+    // 60s grace: if the intended fire time is within the next minute we
+    // still fire (handles clock skew and the "just added the rule" case
+    // for a meeting genuinely arriving in <1 minute).
+    if (mode === 'before_meeting' && delaySeconds < 0) {
+      console.log(`[Automation] Skipping step ${step.id} for session ${sessionId} — before_meeting intended fire time already past (${-delaySeconds}s ago, meeting is within the ${step.delayMinutes}m reminder window)`)
+      return
     }
 
-    // Otherwise, if the computed fire time is in the past or imminent (the
-    // recruiter just added/edited the rule mid-cycle for an upcoming
-    // meeting), fire immediately rather than skip — better late than
-    // missed. The 24h reminder for a meeting now 23h out goes out now.
+    // Tiny positive delays — round up so the inline path runs instead of
+    // round-tripping through QStash for <1 minute.
     if (delaySeconds < 60) {
-      console.log(`[Automation] Step ${step.id} (${mode}) fire time already past/imminent (${delaySeconds}s) — firing immediately for session ${sessionId}`)
       delaySeconds = 0
     }
   }
