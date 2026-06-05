@@ -1706,12 +1706,16 @@ function SectionSettingsPane({
               className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] text-ink bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             >
               <option value="">None attached</option>
-              {videos.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.displayName || v.filename}
-                  {v.durationSeconds ? ` · ${fmtDuration(v.durationSeconds)}` : ''}
-                </option>
-              ))}
+              {videos.map((v) => {
+                const showBoth = v.displayName && v.displayName !== v.filename
+                const label = showBoth ? `${v.filename} — ${v.displayName}` : (v.displayName || v.filename)
+                return (
+                  <option key={v.id} value={v.id}>
+                    {label}
+                    {v.durationSeconds ? ` · ${fmtDuration(v.durationSeconds)}` : ''}
+                  </option>
+                )
+              })}
             </select>
           </Field>
           <Field label="Watch full video">
