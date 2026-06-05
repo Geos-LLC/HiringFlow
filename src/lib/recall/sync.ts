@@ -223,28 +223,6 @@ export async function handleBotCallEnded(
     }
   }
 
-  // Final fallback (Alyona Rybachenko 2026-05-29): if Recall's participants
-  // endpoint 404s AND there's no Workspace Events Meet API snapshot (personal
-  // Gmail workspaces), but the bot did record for a non-trivial duration, the
-  // call clearly had a human in it — the bot only reaches in_call_recording
-  // when a host admits it from the waiting room, and Recall's
-  // timeout_exceeded_everyone_left can't fire in <2 min of real recording.
-  if (!nonHostPresent) {
-    try {
-      const bot = await getBot(botId)
-      const rec = bot?.recordings?.[0]
-      if (rec?.started_at && rec?.completed_at) {
-        const durMs = new Date(rec.completed_at).getTime() - new Date(rec.started_at).getTime()
-        if (durMs >= 2 * 60 * 1000) {
-          nonHostPresent = true
-          attendedSource = `recording_duration_${Math.round(durMs / 1000)}s`
-        }
-      }
-    } catch (err) {
-      console.error('[recall] recording-duration fallback getBot failed for', botId, ':', (err as Error).message)
-    }
-  }
-
   if (nonHostPresent) {
     const fired = await emitLifecycleOnce(
       meeting.id, meeting.sessionId, 'meeting_ended', occurredAt,
@@ -257,13 +235,42 @@ export async function handleBotCallEnded(
   // Premature gate: Recall's bot.call_ended can fire BEFORE scheduledEnd if
   // the host leaves first or wraps up the bot early. Drop the verdict
   // silently — the cron stalled-detector will still catch true no-shows
-  // after the scheduledEnd + grace window.
+  // after the scheduledEnd + grace window. We deliberately run this BEFORE
+  // the recording-duration fallback below: a bot that recorded for 14 min
+  // and then left 43s before scheduledEnd is the host-alone-waiting case
+  // (Jarmall Chester, 2026-06-05) — long recording does NOT imply candidate
+  // attendance, only that the recruiter sat there. Letting it run to
+  // scheduledEnd before applying the fallback eliminates that false positive.
   if (meeting.scheduledEnd && occurredAt < meeting.scheduledEnd) {
     console.warn(
       `[recall] suppressed premature meeting_no_show for ${meeting.id}: ` +
       `occurredAt=${occurredAt.toISOString()} < scheduledEnd=${meeting.scheduledEnd.toISOString()}`,
     )
     return
+  }
+
+  // Recording-duration fallback (Alyona Rybachenko 2026-05-29): when
+  // Recall's participants endpoint 404s AND there's no Workspace Events
+  // Meet API snapshot (personal Gmail workspaces), a non-trivial recording
+  // duration is our best remaining signal that a candidate was present —
+  // BUT only safe to apply once we know the meeting played out to its
+  // scheduled end. Premature ends are filtered above for that reason.
+  try {
+    const bot = await getBot(botId)
+    const rec = bot?.recordings?.[0]
+    if (rec?.started_at && rec?.completed_at) {
+      const durMs = new Date(rec.completed_at).getTime() - new Date(rec.started_at).getTime()
+      if (durMs >= 2 * 60 * 1000) {
+        const fired = await emitLifecycleOnce(
+          meeting.id, meeting.sessionId, 'meeting_ended', occurredAt,
+          { event: 'bot.call_ended', attendedSource: `recording_duration_${Math.round(durMs / 1000)}s` },
+        )
+        if (fired) await bumpSessionProgress(meeting.sessionId).catch(() => {})
+        return
+      }
+    }
+  } catch (err) {
+    console.error('[recall] recording-duration fallback getBot failed for', botId, ':', (err as Error).message)
   }
 
   await emitLifecycleOnce(
