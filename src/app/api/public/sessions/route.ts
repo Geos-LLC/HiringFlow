@@ -4,6 +4,33 @@ import { prisma } from '@/lib/prisma'
 import { logger } from '@/lib/logger'
 import { validateEmail, validatePhone } from '@/lib/contact-validation'
 
+/**
+ * True if the email matches anyone "internal" to the workspace: a workspace
+ * member, OR the email of the connected Google integration account. Owners
+ * testing the candidate flow with their own email used to silently poison
+ * Calendly attribution (see project_calendly_organizer_match_bug.md) — the
+ * matcher fix in google-event-processor handles that root cause, but we also
+ * mark these submissions as `source='test'` so they're segregated from the
+ * real candidate funnel (analytics, kanban, stalled-detection all already
+ * filter source='test').
+ */
+async function isInternalEmail(workspaceId: string, email: string): Promise<boolean> {
+  const lower = email.toLowerCase()
+  const [memberHit, integ] = await Promise.all([
+    prisma.workspaceMember.findFirst({
+      where: { workspaceId, user: { email: { equals: lower, mode: 'insensitive' } } },
+      select: { id: true },
+    }),
+    prisma.googleIntegration.findUnique({
+      where: { workspaceId },
+      select: { googleEmail: true },
+    }),
+  ])
+  if (memberHit) return true
+  if (integ?.googleEmail && integ.googleEmail.toLowerCase() === lower) return true
+  return false
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -74,6 +101,24 @@ export async function POST(request: NextRequest) {
 
     const startStepId = flow.steps[0]?.id || null
 
+    // Auto-tag owner self-tests so they can't poison the real candidate
+    // funnel. Triggered when the candidate email matches a workspace
+    // member or the connected Google account. Overrides whatever ad/source
+    // attribution would otherwise apply — `source='test'` is the consistent
+    // marker the rest of the codebase reads.
+    let effectiveSource: string | null = source || null
+    if (normalizedEmail) {
+      const internal = await isInternalEmail(flow.workspaceId, normalizedEmail)
+      if (internal) {
+        effectiveSource = 'test'
+        logger.info('Session auto-tagged as test (internal email)', {
+          flowSlug,
+          workspaceId: flow.workspaceId,
+          candidateEmail: normalizedEmail,
+        })
+      }
+    }
+
     const session = await prisma.session.create({
       data: {
         flowId: flow.id,
@@ -86,12 +131,12 @@ export async function POST(request: NextRequest) {
         lastProgressAt: new Date(),
         // Source attribution (from Ad link)
         adId: adId || null,
-        source: source || null,
+        source: effectiveSource,
         campaign: campaign || null,
       },
     })
 
-    logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview })
+    logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource })
 
     return NextResponse.json({
       id: session.id,
