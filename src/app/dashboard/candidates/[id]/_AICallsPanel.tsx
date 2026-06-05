@@ -29,7 +29,13 @@ interface AICandidateAny extends LinkedAICandidate {
   sessionId?: string | null
 }
 interface SourcesSummary {
-  meetings: Array<{ id: string; durationSec: number | null; attended: boolean }>
+  meetings: Array<{
+    id: string
+    durationSec: number | null
+    attended: boolean
+    hasTranscript?: boolean
+    transcriptSource?: 'recall' | 'drive' | null
+  }>
   aiCalls: Array<{ conversationId: string; durationSecs: number; hasTranscript: boolean }>
   captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
 }
@@ -140,15 +146,26 @@ function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
   }
   if (text.length > 0) out.push({ icon: '📝', label: `${text.length} text`, tone: 'evaluated' })
 
-  // Meetings = attendance metadata only
+  // Meetings — split transcribed (real evidence) from attendance-only.
   const meetingsAttended = s.meetings.filter((m) => m.attended)
-  if (meetingsAttended.length > 0) {
-    const mins = Math.round(meetingsAttended.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60)
+  const meetingsTranscribed = meetingsAttended.filter((m) => m.hasTranscript)
+  const meetingsAttendOnly = meetingsAttended.filter((m) => !m.hasTranscript)
+  if (meetingsTranscribed.length > 0) {
+    const mins = Math.round(meetingsTranscribed.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60)
+    out.push({
+      icon: '📋',
+      label: `${meetingsTranscribed.length} meeting transcript${meetingsTranscribed.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
+      tone: 'evaluated',
+      title: 'Recorded interview transcript fed to the scorer.',
+    })
+  }
+  if (meetingsAttendOnly.length > 0) {
+    const mins = Math.round(meetingsAttendOnly.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60)
     out.push({
       icon: '🗓️',
-      label: `${meetingsAttended.length} meeting${meetingsAttended.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
+      label: `${meetingsAttendOnly.length} meeting${meetingsAttendOnly.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
       tone: 'attendance',
-      title: 'Attendance metadata only — meeting transcripts are NOT fed to the scorer.',
+      title: 'Attendance metadata only — no transcript was available for these meetings.',
     })
   }
 

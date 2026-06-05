@@ -19,6 +19,7 @@
 
 import { prisma } from '@/lib/prisma'
 import type { VoiceClipInput, VideoClipInput } from './media-observation'
+import { fetchMeetingTranscript } from './meeting-transcript'
 
 export interface GatheredMaterial {
   session: {
@@ -54,14 +55,21 @@ export interface GatheredMaterial {
     participants: Array<{ email?: string; displayName?: string; joinTime?: string; leaveTime?: string }>
     recordingState: string
     transcriptState: string
+    // Fetched at gather-time from Recall.ai (recallRecordingId) or Drive
+    // (driveTranscriptFileId — Gemini-produced .gdoc). Null when neither
+    // source had a transcript or the fetch failed. When non-null, the
+    // scoring prompt renders the full text and the meeting counts as
+    // evaluable evidence — not just attendance metadata.
+    transcript: string | null
+    transcriptSource: 'recall' | 'drive' | null
   }>
 }
 
 export interface SourcesSummary {
-  // Meetings carry ATTENDANCE METADATA ONLY — the eval prompt sees that the
-  // candidate showed up for N minutes, NOT what was said. They never count
-  // as evaluable transcript content. UI labels them "metadata only".
-  meetings: Array<{ id: string; durationSec: number | null; attended: boolean }>
+  // Meetings now carry an optional transcript flag. When `hasTranscript` is
+  // true, the meeting was a real evaluable source (Recall or Drive transcript
+  // was fetched). When false, only attendance metadata reached the scorer.
+  meetings: Array<{ id: string; durationSec: number | null; attended: boolean; hasTranscript: boolean; transcriptSource: 'recall' | 'drive' | null }>
   // AI calls carry transcript content when `hasTranscript: true`. The
   // engine only treats true-transcript AI calls as evaluable evidence —
   // empty-transcript conversations are coverage gaps, not sources.
@@ -183,33 +191,57 @@ export async function gatherCandidateMaterial(
     }
   }
 
-  // Most recent AI call only — per product spec, the latest call is the
-  // representative sample for voice observation.
+  // EVERY AI call with substantive audio gets a voice clip. Previously we
+  // only sampled the latest one — but if a candidate has 7 calls and the
+  // last one was a 30s hangup, voice observation would judge them on that
+  // tiny sample. Now: send every call that's at least 30s long, capped at
+  // the 8 longest so a hyper-active candidate doesn't burn the rate budget.
   if (apiKey && aiCalls.length > 0) {
-    const latest = aiCalls[aiCalls.length - 1]
-    voiceClips.push({
-      assetType: 'ai_call',
-      assetId: latest.conversationId,
-      durationSec: latest.durationSecs ?? null,
-      source: {
-        kind: 'url',
-        url: `https://api.elevenlabs.io/v1/convai/conversations/${latest.conversationId}/audio`,
-        mimeType: 'audio/mpeg',
-        headers: { 'xi-api-key': apiKey },
-      },
-    })
+    const substantive = aiCalls
+      .filter((c) => (c.durationSecs ?? 0) >= 30)
+      .sort((a, b) => (b.durationSecs ?? 0) - (a.durationSecs ?? 0))
+      .slice(0, 8)
+    for (const call of substantive) {
+      voiceClips.push({
+        assetType: 'ai_call',
+        assetId: call.conversationId,
+        durationSec: call.durationSecs ?? null,
+        source: {
+          kind: 'url',
+          url: `https://api.elevenlabs.io/v1/convai/conversations/${call.conversationId}/audio`,
+          mimeType: 'audio/mpeg',
+          headers: { 'xi-api-key': apiKey },
+        },
+      })
+    }
   }
 
-  const meetings = session.interviewMeetings.map((m) => ({
-    id: m.id,
-    scheduledStart: m.scheduledStart.toISOString(),
-    scheduledEnd: m.scheduledEnd.toISOString(),
-    actualStart: m.actualStart?.toISOString() ?? null,
-    actualEnd: m.actualEnd?.toISOString() ?? null,
-    participants: Array.isArray(m.participants) ? (m.participants as any[]) : [],
-    recordingState: m.recordingState,
-    transcriptState: m.transcriptState,
-  }))
+  // Meetings — fetch transcripts in parallel from Recall.ai / Drive.
+  // Each lookup is best-effort: a failure means the meeting falls back to
+  // attendance metadata for this run, not an error.
+  const meetingsWithTranscript = await Promise.all(
+    session.interviewMeetings.map(async (m) => {
+      const t = await fetchMeetingTranscript({
+        id: m.id,
+        workspaceId,
+        recallRecordingId: m.recallRecordingId,
+        driveTranscriptFileId: m.driveTranscriptFileId,
+      })
+      return {
+        id: m.id,
+        scheduledStart: m.scheduledStart.toISOString(),
+        scheduledEnd: m.scheduledEnd.toISOString(),
+        actualStart: m.actualStart?.toISOString() ?? null,
+        actualEnd: m.actualEnd?.toISOString() ?? null,
+        participants: Array.isArray(m.participants) ? (m.participants as any[]) : [],
+        recordingState: m.recordingState,
+        transcriptState: m.transcriptState,
+        transcript: t?.text ?? null,
+        transcriptSource: t?.source ?? null,
+      }
+    }),
+  )
+  const meetings = meetingsWithTranscript
 
   const material: GatheredMaterial = {
     session: {
@@ -234,6 +266,8 @@ export async function gatherCandidateMaterial(
           ? (new Date(m.actualEnd).getTime() - new Date(m.actualStart).getTime()) / 1000
           : null,
       attended: !!m.actualStart,
+      hasTranscript: !!m.transcript && m.transcript.trim().length > 0,
+      transcriptSource: m.transcriptSource,
     })),
     aiCalls: aiCalls.map((c) => ({
       conversationId: c.conversationId,

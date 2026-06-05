@@ -62,7 +62,15 @@ interface ScoredCriterion {
 }
 
 interface SourcesSummary {
-  meetings: Array<{ id: string; durationSec: number | null; attended: boolean }>
+  meetings: Array<{
+    id: string
+    durationSec: number | null
+    attended: boolean
+    // Present on evaluations created after meeting-transcript fetch
+    // landed. Legacy rows fall through as attendance-only.
+    hasTranscript?: boolean
+    transcriptSource?: 'recall' | 'drive' | null
+  }>
   aiCalls: Array<{ conversationId: string; durationSecs: number; hasTranscript: boolean }>
   captures: Array<{ id: string; mode: string; hasTranscript: boolean }>
 }
@@ -234,20 +242,34 @@ function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
     out.push({ icon: '📝', label: `${textCaptures.length} text`, tone: 'evaluated' })
   }
 
-  // Meetings: ATTENDANCE METADATA ONLY. The scorer sees that the candidate
-  // showed up for N minutes; it sees no transcript text. Render gray with a
-  // tooltip making this explicit so "2 meetings" doesn't read as evidence.
+  // Meetings — split into transcribed (real evidence) and attendance-only.
+  // Transcribed meetings are emerald and use the 📋 icon to distinguish them
+  // from the meeting-attendance pill. Attendance-only stays gray so the
+  // recruiter can see that "2 meetings attended" is NOT 2 transcripts.
   const meetingsAttended = s.meetings.filter((m) => m.attended)
-  if (meetingsAttended.length > 0) {
+  const meetingsTranscribed = meetingsAttended.filter((m) => m.hasTranscript)
+  const meetingsAttendanceOnly = meetingsAttended.filter((m) => !m.hasTranscript)
+  if (meetingsTranscribed.length > 0) {
     const mins = Math.round(
-      meetingsAttended.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60,
+      meetingsTranscribed.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60,
+    )
+    out.push({
+      icon: '📋',
+      label: `${meetingsTranscribed.length} meeting transcript${meetingsTranscribed.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
+      tone: 'evaluated',
+      title: 'Recorded interview transcript fed to the scorer.',
+    })
+  }
+  if (meetingsAttendanceOnly.length > 0) {
+    const mins = Math.round(
+      meetingsAttendanceOnly.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60,
     )
     out.push({
       icon: '🗓️',
-      label: `${meetingsAttended.length} meeting${meetingsAttended.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
+      label: `${meetingsAttendanceOnly.length} meeting${meetingsAttendanceOnly.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
       tone: 'attendance',
       title:
-        'Attendance metadata only — meeting transcripts are NOT fed to the scorer. Treat as a "showed up" signal, not as evidence of phone behaviors.',
+        'Attendance metadata only — no transcript was available for these meetings. Treat as a "showed up" signal, not as evidence of phone behaviors.',
     })
   }
 

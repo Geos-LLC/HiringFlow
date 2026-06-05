@@ -301,11 +301,35 @@ function renderTranscriptsForPrompt(material: GatheredMaterial): string {
   }
 
   if (material.meetings.length > 0) {
-    parts.push(`\n# Interview Meetings — ATTENDANCE METADATA ONLY (${material.meetings.length})`)
-    parts.push(
-      `These are attendance records, NOT transcripts. You can see that the candidate showed up (or didn't) and for how long, but you have NO information about what was actually said. Do NOT infer dispatcher behaviors, customer-service quality, presentation, or any other criterion from a meeting attendance record. Meetings are useful as a reliability/showing-up signal — that is all.`,
-    )
-    material.meetings.forEach((m, i) => {
+    const meetingsWithTranscript = material.meetings.filter((m) => !!m.transcript?.trim())
+    const meetingsAttendanceOnly = material.meetings.filter((m) => !m.transcript?.trim())
+
+    if (meetingsWithTranscript.length > 0) {
+      parts.push(`\n# Interview Meetings — RECORDED TRANSCRIPTS (${meetingsWithTranscript.length})`)
+      parts.push(
+        `These are the actual transcripts of the candidate's recorded interviews. Treat this as your strongest evidence for in-person interview behavior. The transcript source (recall.ai or Google Meet / Gemini) may label speakers with display names rather than "user"/"assistant"; identify the candidate by name where possible.`,
+      )
+      meetingsWithTranscript.forEach((m, i) => {
+        const attended = !!m.actualStart
+        const duration =
+          m.actualStart && m.actualEnd
+            ? Math.round((new Date(m.actualEnd).getTime() - new Date(m.actualStart).getTime()) / 1000 / 60)
+            : null
+        parts.push(
+          `\n## Meeting ${i + 1} (transcript via ${m.transcriptSource ?? 'unknown'}) — scheduled ${m.scheduledStart}, attended=${attended}${
+            duration !== null ? `, ${duration}min` : ''
+          }`,
+        )
+        parts.push(`Transcript:\n${m.transcript!.trim()}`)
+      })
+    }
+
+    if (meetingsAttendanceOnly.length > 0) {
+      parts.push(`\n# Interview Meetings — ATTENDANCE METADATA ONLY (${meetingsAttendanceOnly.length})`)
+      parts.push(
+        `These meetings were attended but no transcript was available. You can see that the candidate showed up (or didn't) and for how long, but you have NO information about what was actually said. Do NOT infer dispatcher behaviors, customer-service quality, presentation, or any other criterion from a meeting attendance record. Useful only as a reliability / showing-up signal.`,
+      )
+      meetingsAttendanceOnly.forEach((m, i) => {
       const attended = !!m.actualStart
       const duration =
         m.actualStart && m.actualEnd
@@ -317,7 +341,8 @@ function renderTranscriptsForPrompt(material: GatheredMaterial): string {
           duration !== null ? `, ${duration}min` : ''
         }, attendees=${others.length}`,
       )
-    })
+      })
+    }
   }
 
   if (
