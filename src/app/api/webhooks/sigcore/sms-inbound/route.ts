@@ -1,17 +1,22 @@
 /**
  * POST /api/webhooks/sigcore/sms-inbound
  *
- * Inbound SMS callback from Sigcore. Lets a candidate confirm or cancel an
- * upcoming interview by replying to the before-meeting reminder.
+ * Receives ALL Sigcore outbound webhook events for HF's profile:
  *
- *   YES / Y / CONFIRM     → mark InterviewMeeting.confirmedAt; send ack;
- *                           email the recruiter
- *   NO / N / CANCEL       → delete the Google Calendar event, log
- *                           meeting_cancelled, stamp Session.rejectionReason
- *                           = 'Canceled', route candidate to Rejected stage,
- *                           cancel any queued before_meeting reminders, send
- *                           ack to candidate, email the recruiter
- *   anything else          → no-op (200 ack so Sigcore doesn't retry)
+ *   message.inbound    → candidate replied YES/NO to a before-meeting
+ *                        reminder. YES marks InterviewMeeting.confirmedAt;
+ *                        NO cancels the meeting (deletes calendar event,
+ *                        cancels queued reminders, routes to Rejected).
+ *   message.sent       → Twilio handed the outbound SMS to the carrier.
+ *                        Updates AutomationExecution.deliveryStatus='sent'
+ *                        (intermediate state; overwritten by delivered/failed).
+ *   message.delivered  → carrier confirmed delivery to the candidate's phone.
+ *                        Updates deliveryStatus='delivered' (terminal).
+ *   message.failed     → final delivery failure (carrier rejected, invalid
+ *                        number, etc). Updates deliveryStatus='failed' with
+ *                        errorCode/errorMessage from Sigcore.
+ *
+ *   anything else      → no-op (200 ack so Sigcore doesn't retry)
  *
  * Auth: HMAC-SHA256 of `${X-Callio-Timestamp}.${rawBody}`, hex-encoded, in
  * header `X-Callio-Signature`. Sigcore signs with the `secret` configured on
@@ -26,7 +31,7 @@
  * That contract is no longer accepted — the regression test in this folder
  * pins the new contract so a future revert is caught at CI.
  *
- * Payload (Sigcore tenant outbound webhook contract):
+ * Inbound payload (Sigcore tenant outbound webhook contract):
  *   {
  *     "event": "message.inbound",
  *     "timestamp": "2026-05-05T...",
@@ -40,15 +45,30 @@
  *     }
  *   }
  *
- * Other events are ignored with 200 (delivery callbacks, outbound echoes).
+ * Delivery status payload (currently emitted shape — flat fields under data,
+ * with our outbound `metadata` spread under the same `data` key):
+ *   {
+ *     "event": "message.delivered" | "message.failed" | "message.sent",
+ *     "timestamp": "2026-06-05T...",
+ *     "data": {
+ *       "providerMessageId": "SM...",
+ *       "toNumber":          "+15551234567",
+ *       "status":            "delivered" | "failed" | "sent",
+ *       "errorCode":         null | "30007",            // failed only
+ *       "errorMessage":      null | "Carrier rejected", // failed only
+ *       "automationExecutionId": "uuid",                // echoed from our metadata
+ *       "workspaceId":           "uuid",                // echoed from our metadata
+ *       ...
+ *     }
+ *   }
  *
- * Session matching is by phone number across all workspaces. If a phone
- * matches multiple workspaces (rare), we pick the session with the soonest
- * upcoming InterviewMeeting. Worst case the candidate confirms/cancels the
- * wrong one; the recruiter on the affected workspace can revert manually.
+ * Session matching (inbound only) is by phone number across all workspaces.
+ * Delivery matching is by `automationExecutionId` (preferred — direct UUID)
+ * with fallback to `providerMessageId` lookup on AutomationExecution.
  */
 
 import { NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { applyStageTrigger } from '@/lib/funnel-stage-runtime'
@@ -87,7 +107,41 @@ interface InboundPayload {
     body?: string
     providerMessageId?: string
     direction?: string
+    // Delivery-status events carry these too. Sigcore currently spreads our
+    // outbound metadata fields directly under `data` (not nested). The
+    // versioning PR may add a `data.metadata` envelope additively; we read
+    // both shapes (flat first, then nested) so the same handler keeps
+    // working across the contract bump.
+    status?: string
+    errorCode?: string | null
+    errorMessage?: string | null
+    automationExecutionId?: string
+    workspaceId?: string
+    candidateId?: string
+    deliveredAt?: string
+    failedAt?: string
+    sentAt?: string
+    metadata?: {
+      automationExecutionId?: string
+      workspaceId?: string
+      candidateId?: string
+    }
   }
+}
+
+/**
+ * SMS delivery status ladder. `sent` is the intermediate "Twilio handed to
+ * carrier" state — overwritten by either terminal outcome. `delivered` and
+ * `failed` are terminal — once one lands, the other cannot replace it.
+ * Mirrors the SendGrid email handler's idempotency philosophy at a coarser
+ * granularity (SMS has fewer event types).
+ */
+type SmsDeliveryStatus = 'sent' | 'delivered' | 'failed'
+function shouldUpdateSmsStatus(current: string | null, next: SmsDeliveryStatus): boolean {
+  if (!current) return true
+  if (current === next) return false
+  if (current === 'delivered' || current === 'failed') return false
+  return true
 }
 
 export async function POST(req: Request) {
@@ -120,10 +174,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'invalid json' }, { status: 400 })
   }
 
-  // Sigcore fan-outs include outbound echoes and status callbacks. Only
-  // act on inbound messages — everything else 200s without effect.
-  if (payload.event && payload.event !== 'message.inbound') {
-    return NextResponse.json({ ok: true, ignored: 'event_not_inbound', event: payload.event })
+  // Dispatch on event type. Anything we don't explicitly handle 200-acks
+  // silently so Sigcore doesn't retry on events we'll never care about.
+  const eventType = payload.event ?? 'message.inbound'
+  if (eventType === 'message.delivered') {
+    return await handleDeliveryStatus(payload, 'delivered')
+  }
+  if (eventType === 'message.failed') {
+    return await handleDeliveryStatus(payload, 'failed')
+  }
+  if (eventType === 'message.sent') {
+    return await handleDeliveryStatus(payload, 'sent')
+  }
+  if (eventType !== 'message.inbound') {
+    return NextResponse.json({ ok: true, ignored: 'event_not_handled', event: eventType })
   }
 
   const data = payload.data ?? {}
@@ -218,6 +282,113 @@ interface Target {
     scheduledStart: Date
     confirmedAt: Date | null
   }
+}
+
+/**
+ * Apply a delivery status update to the matching AutomationExecution row.
+ *
+ * Lookup order (most specific first):
+ *   1. data.metadata.automationExecutionId  (forward-compat: Sigcore's
+ *      versioning PR nests our metadata)
+ *   2. data.automationExecutionId           (current shape: spread flat)
+ *   3. data.providerMessageId               (Twilio SID — we always store
+ *      this on the AutomationExecution at send time)
+ *
+ * Cross-workspace defense: if Sigcore echoes a workspaceId in the payload
+ * and it doesn't match the execution's rule.workspaceId, drop the update
+ * silently (mirrors the SendGrid handler's customArgs forgery defense).
+ *
+ * Always returns 200 — even on no-execution or workspace-mismatch — so we
+ * never accidentally trip Sigcore's pause-after-10-consecutive-failures
+ * policy. The handler's job is best-effort observability, not transactional.
+ */
+async function handleDeliveryStatus(payload: InboundPayload, eventStatus: SmsDeliveryStatus) {
+  const data = payload.data ?? {}
+  const providerMessageId = typeof data.providerMessageId === 'string' ? data.providerMessageId : null
+  const executionIdFromMeta =
+    (typeof data.metadata?.automationExecutionId === 'string' ? data.metadata.automationExecutionId : null) ??
+    (typeof data.automationExecutionId === 'string' ? data.automationExecutionId : null)
+
+  let execution: { id: string; deliveryStatus: string | null; automationRule: { workspaceId: string } | null } | null = null
+
+  if (executionIdFromMeta) {
+    execution = await prisma.automationExecution.findUnique({
+      where: { id: executionIdFromMeta },
+      select: { id: true, deliveryStatus: true, automationRule: { select: { workspaceId: true } } },
+    })
+  }
+  if (!execution && providerMessageId) {
+    // Fall back to the Twilio SID. Scope by provider='sigcore' so we never
+    // collide with the (vanishingly unlikely) case of a SendGrid sg_message_id
+    // colliding with a Twilio SID.
+    execution = await prisma.automationExecution.findFirst({
+      where: { providerMessageId, provider: 'sigcore' },
+      select: { id: true, deliveryStatus: true, automationRule: { select: { workspaceId: true } } },
+      orderBy: { createdAt: 'desc' },
+    })
+  }
+
+  if (!execution) {
+    return NextResponse.json({ ok: true, ignored: 'no_execution', providerMessageId })
+  }
+
+  // Cross-workspace defense
+  const eventWsId =
+    (typeof data.metadata?.workspaceId === 'string' ? data.metadata.workspaceId : null) ??
+    (typeof data.workspaceId === 'string' ? data.workspaceId : null)
+  const ruleWsId = execution.automationRule?.workspaceId ?? null
+  if (eventWsId && ruleWsId && eventWsId !== ruleWsId) {
+    console.warn('[sms-inbound] workspace mismatch on delivery event — dropping', {
+      executionId: execution.id, eventWsId, ruleWsId, event: payload.event,
+    })
+    return NextResponse.json({ ok: true, ignored: 'cross_workspace' })
+  }
+
+  // Idempotency / status ladder
+  if (!shouldUpdateSmsStatus(execution.deliveryStatus, eventStatus)) {
+    return NextResponse.json({
+      ok: true, ignored: 'status_no_change',
+      current: execution.deliveryStatus, attempted: eventStatus,
+    })
+  }
+
+  // Timestamp: prefer the event-specific alias when Sigcore ships them
+  // (versioning PR), fall back to the top-level dispatch timestamp.
+  const tsCandidate =
+    (eventStatus === 'delivered' && typeof data.deliveredAt === 'string' ? data.deliveredAt : null) ??
+    (eventStatus === 'failed' && typeof data.failedAt === 'string' ? data.failedAt : null) ??
+    (eventStatus === 'sent' && typeof data.sentAt === 'string' ? data.sentAt : null) ??
+    (typeof payload.timestamp === 'string' ? payload.timestamp : null)
+  const deliveryStatusAt = tsCandidate ? new Date(tsCandidate) : new Date()
+
+  const errorMessage = eventStatus === 'failed'
+    ? ([
+        typeof data.errorCode === 'string' ? data.errorCode : null,
+        typeof data.errorMessage === 'string' ? data.errorMessage : null,
+      ].filter(Boolean).join(': ') || null)
+    : null
+
+  await prisma.automationExecution.update({
+    where: { id: execution.id },
+    data: {
+      deliveryStatus: eventStatus,
+      deliveryStatusAt,
+      deliveryErrorMessage: errorMessage,
+      deliveryRaw: {
+        event: payload.event ?? null,
+        providerMessageId: data.providerMessageId ?? null,
+        timestamp: payload.timestamp ?? null,
+        sigcore_status: data.status ?? null,
+        errorCode: data.errorCode ?? null,
+        source: 'sigcore_webhook',
+      } as Prisma.InputJsonValue,
+    },
+  })
+
+  return NextResponse.json({
+    ok: true, action: 'delivery_status_updated',
+    executionId: execution.id, status: eventStatus,
+  })
 }
 
 async function handleConfirm(target: Target, from: string) {

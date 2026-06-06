@@ -26,6 +26,11 @@ const { prismaMock } = vi.hoisted(() => {
     interviewMeeting: { update: vi.fn(async () => ({})) },
     schedulingEvent: { findFirst: vi.fn(async () => null) },
     workspace: { findUnique: vi.fn(async () => null) },
+    automationExecution: {
+      findUnique: vi.fn(async () => null) as any,
+      findFirst: vi.fn(async () => null) as any,
+      update: vi.fn(async () => ({})) as any,
+    },
   }
   return { prismaMock }
 })
@@ -176,5 +181,114 @@ describe('Sigcore inbound webhook signature verification', () => {
     const res = await POST(req)
     expect(res.status).toBe(401)
     expect((await res.json()).error).toBe('signature_mismatch')
+  })
+})
+
+describe('Sigcore delivery status events', () => {
+  beforeEach(() => {
+    process.env.SIGCORE_WEBHOOK_KEY = SECRET
+    vi.clearAllMocks()
+  })
+
+  function deliveryBody(event: 'message.delivered' | 'message.failed' | 'message.sent', data: Record<string, unknown>): string {
+    return JSON.stringify({ event, timestamp: new Date().toISOString(), data })
+  }
+
+  async function postEvent(body: string) {
+    const ts = nowSec()
+    return POST(buildRequest({ body, ts, sig: sign(ts, body) }))
+  }
+
+  it('message.delivered updates AutomationExecution.deliveryStatus when matched by automationExecutionId', async () => {
+    prismaMock.automationExecution.findUnique.mockResolvedValueOnce({
+      id: 'exec-1', deliveryStatus: 'sent', automationRule: { workspaceId: 'ws-1' },
+    })
+    const body = deliveryBody('message.delivered', {
+      providerMessageId: 'SMabc',
+      automationExecutionId: 'exec-1',
+      workspaceId: 'ws-1',
+      status: 'delivered',
+    })
+    const res = await postEvent(body)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ action: 'delivery_status_updated', executionId: 'exec-1', status: 'delivered' })
+    expect(prismaMock.automationExecution.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'exec-1' },
+      data: expect.objectContaining({ deliveryStatus: 'delivered' }),
+    }))
+  })
+
+  it('message.failed records errorCode + errorMessage', async () => {
+    prismaMock.automationExecution.findUnique.mockResolvedValueOnce({
+      id: 'exec-2', deliveryStatus: 'sent', automationRule: { workspaceId: 'ws-1' },
+    })
+    const res = await postEvent(deliveryBody('message.failed', {
+      providerMessageId: 'SMfail',
+      automationExecutionId: 'exec-2',
+      errorCode: '30007',
+      errorMessage: 'Carrier rejected',
+    }))
+    expect(res.status).toBe(200)
+    expect(prismaMock.automationExecution.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        deliveryStatus: 'failed',
+        deliveryErrorMessage: '30007: Carrier rejected',
+      }),
+    }))
+  })
+
+  it('falls back to providerMessageId lookup when automationExecutionId is absent', async () => {
+    prismaMock.automationExecution.findFirst.mockResolvedValueOnce({
+      id: 'exec-3', deliveryStatus: null, automationRule: { workspaceId: 'ws-1' },
+    })
+    const res = await postEvent(deliveryBody('message.delivered', { providerMessageId: 'SMlookup' }))
+    expect(res.status).toBe(200)
+    expect(prismaMock.automationExecution.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { providerMessageId: 'SMlookup', provider: 'sigcore' },
+    }))
+  })
+
+  it('no_execution returns 200 ignored when neither lookup matches', async () => {
+    const res = await postEvent(deliveryBody('message.delivered', { providerMessageId: 'SMmissing' }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ignored: 'no_execution' })
+    expect(prismaMock.automationExecution.update).not.toHaveBeenCalled()
+  })
+
+  it('cross_workspace mismatch drops the update silently', async () => {
+    prismaMock.automationExecution.findUnique.mockResolvedValueOnce({
+      id: 'exec-4', deliveryStatus: 'sent', automationRule: { workspaceId: 'ws-A' },
+    })
+    const res = await postEvent(deliveryBody('message.delivered', {
+      automationExecutionId: 'exec-4',
+      workspaceId: 'ws-B',
+    }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ignored: 'cross_workspace' })
+    expect(prismaMock.automationExecution.update).not.toHaveBeenCalled()
+  })
+
+  it('terminal status (delivered/failed) is not downgraded by a later message.sent', async () => {
+    prismaMock.automationExecution.findUnique.mockResolvedValueOnce({
+      id: 'exec-5', deliveryStatus: 'delivered', automationRule: { workspaceId: 'ws-1' },
+    })
+    const res = await postEvent(deliveryBody('message.sent', { automationExecutionId: 'exec-5' }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ignored: 'status_no_change', current: 'delivered', attempted: 'sent' })
+    expect(prismaMock.automationExecution.update).not.toHaveBeenCalled()
+  })
+
+  it('reads nested metadata.automationExecutionId when present (forward-compat with versioning PR)', async () => {
+    prismaMock.automationExecution.findUnique.mockResolvedValueOnce({
+      id: 'exec-6', deliveryStatus: null, automationRule: { workspaceId: 'ws-1' },
+    })
+    const res = await postEvent(deliveryBody('message.delivered', {
+      providerMessageId: 'SMxyz',
+      metadata: { automationExecutionId: 'exec-6', workspaceId: 'ws-1' },
+    }))
+    expect(res.status).toBe(200)
+    expect(prismaMock.automationExecution.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'exec-6' },
+    }))
   })
 })
