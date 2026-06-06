@@ -35,6 +35,30 @@ const DERIVE_MODEL = 'gpt-4o-mini'
 const SCORE_MODEL = 'gpt-4o'
 const COMPARE_MODEL = 'gpt-4o'
 
+// 429 retry policy. The org's gpt-4o TPM is 30k on tier 1; a Run-all of 3
+// candidates hits the same model back-to-back-to-back and can easily push
+// any one of them over. Retry with exponential backoff so transient TPM
+// pressure resolves without dropping a candidate's evaluation. Retries are
+// per-call (derivation / scoring / comparison) — not global.
+async function callWithRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let delay = 8000 // 8s, 16s, 32s, 64s — total ~2 min headroom for a 60s TPM window
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (err: any) {
+      const status = err?.status ?? err?.response?.status
+      const is429 = status === 429
+      const last = i === attempts - 1
+      if (!is429 || last) throw err
+      console.warn(`[evaluation] ${label} got 429, retrying in ${Math.round(delay / 1000)}s (attempt ${i + 1}/${attempts})`)
+      await new Promise((r) => setTimeout(r, delay))
+      delay *= 2
+    }
+  }
+  // Unreachable — last iteration always either returns or rethrows.
+  throw new Error('callWithRetry exhausted')
+}
+
 export interface DerivedCriterion {
   name: string
   description: string
@@ -184,7 +208,7 @@ HARD RULES:
      behavior AND why it matters for this job's outcomes.`
 
 export async function deriveCriteria(positionDescription: string): Promise<RubricDerivation> {
-  const completion = await openai.chat.completions.create({
+  const completion = await callWithRetry('deriveCriteria', () => openai.chat.completions.create({
     model: DERIVE_MODEL,
     temperature: 0.2,
     response_format: {
@@ -231,7 +255,7 @@ export async function deriveCriteria(positionDescription: string): Promise<Rubri
         content: `Position description:\n\n${positionDescription}\n\nDerive the role success factors first, then build the rubric criteria from them.`,
       },
     ],
-  })
+  }))
 
   const raw = completion.choices[0]?.message?.content
   if (!raw) throw new Error('Empty rubric response from model')
@@ -248,8 +272,25 @@ export async function deriveCriteria(positionDescription: string): Promise<Rubri
   }
 }
 
+// Per-source character caps so the rendered prompt stays under the org's
+// gpt-4o TPM. Tier 1 gpt-4o on this account is 30k TPM; a typical eval
+// adds ~3-5k tokens of system prompt + criteria + voice observation, so
+// we aim to keep transcript content under ~80k chars (~20k tokens).
+const MEETING_TRANSCRIPT_CAP_CHARS = 16_000  // ~12 min of speech
+const AI_CALL_TRANSCRIPT_CAP_MESSAGES = 80   // typical ~5-min training call
+const TOTAL_TRANSCRIPT_CAP_CHARS = 60_000
+
+function truncateToHead(text: string, cap: number): string {
+  if (text.length <= cap) return text
+  return text.slice(0, cap) + `\n…[truncated — first ${cap} of ${text.length} chars shown to fit prompt budget]`
+}
+
 function renderTranscriptsForPrompt(material: GatheredMaterial): string {
   const parts: string[] = []
+  // Running budget of transcript-content characters. Once we cross the cap,
+  // subsequent transcripts get heavily truncated. The first AI call usually
+  // is the most representative for outcomes, so we admit them in order.
+  let remaining = TOTAL_TRANSCRIPT_CAP_CHARS
 
   parts.push(`# Candidate\n`)
   parts.push(`Name: ${material.session.candidateName ?? '(unknown)'}`)
@@ -271,8 +312,21 @@ function renderTranscriptsForPrompt(material: GatheredMaterial): string {
       parts.push(`\n## AI Call ${i + 1} (${call.durationSecs}s, result=${call.callSuccessful ?? 'n/a'})`)
       if (call.summary) parts.push(`Summary: ${call.summary}`)
       if (call.transcript.length > 0) {
-        parts.push(`Transcript:`)
-        call.transcript.forEach((t) => parts.push(`  [${t.role}] ${t.message}`))
+        // Cap each call's transcript at AI_CALL_TRANSCRIPT_CAP_MESSAGES turns
+        // so a single long call can't eat the prompt budget. Then enforce the
+        // global TOTAL_TRANSCRIPT_CAP_CHARS budget by truncating the end.
+        const trimmedMessages = call.transcript.length > AI_CALL_TRANSCRIPT_CAP_MESSAGES
+          ? call.transcript.slice(-AI_CALL_TRANSCRIPT_CAP_MESSAGES) // last N — closing matters most for booking outcomes
+          : call.transcript
+        const block = trimmedMessages.map((t) => `  [${t.role}] ${t.message}`).join('\n')
+        const constrained = block.length > remaining ? truncateToHead(block, Math.max(remaining, 1000)) : block
+        if (call.transcript.length > AI_CALL_TRANSCRIPT_CAP_MESSAGES) {
+          parts.push(`Transcript (last ${trimmedMessages.length} of ${call.transcript.length} turns):`)
+        } else {
+          parts.push(`Transcript:`)
+        }
+        parts.push(constrained)
+        remaining -= constrained.length
       } else {
         parts.push(`(transcript empty)`)
       }
@@ -320,7 +374,14 @@ function renderTranscriptsForPrompt(material: GatheredMaterial): string {
             duration !== null ? `, ${duration}min` : ''
           }`,
         )
-        parts.push(`Transcript:\n${m.transcript!.trim()}`)
+        // Cap each meeting transcript at MEETING_TRANSCRIPT_CAP_CHARS, then
+        // enforce the running global budget. Meeting transcripts skew long;
+        // a 30-min interview can easily be 30k+ chars on its own.
+        const fullText = m.transcript!.trim()
+        const perMeetingCap = Math.min(MEETING_TRANSCRIPT_CAP_CHARS, remaining)
+        const block = perMeetingCap > 0 ? truncateToHead(fullText, perMeetingCap) : '(transcript truncated to fit prompt budget — earlier transcripts already at cap)'
+        parts.push(`Transcript:\n${block}`)
+        remaining -= block.length
       })
     }
 
@@ -513,7 +574,7 @@ async function scoreCandidate(
       ? `\n\nRole success factors (the outcomes this rubric was built from):\n` +
         derivation.roleSuccessFactors.map((f) => `  - ${f}`).join('\n')
       : ''
-  const completion = await openai.chat.completions.create({
+  const completion = await callWithRetry('scoreCandidate', () => openai.chat.completions.create({
     model: SCORE_MODEL,
     temperature: 0.2,
     response_format: {
@@ -594,7 +655,7 @@ async function scoreCandidate(
         )}\n\nCandidate material:\n\n${renderTranscriptsForPrompt(material)}${observationBlock}`,
       },
     ],
-  })
+  }))
 
   const raw = completion.choices[0]?.message?.content
   if (!raw) throw new Error('Empty evaluation response from model')
@@ -746,7 +807,7 @@ export async function compareEvaluations(
     throw new Error('Need at least 2 evaluations to produce a comparison')
   }
 
-  const completion = await openai.chat.completions.create({
+  const completion = await callWithRetry('compareEvaluations', () => openai.chat.completions.create({
     model: COMPARE_MODEL,
     temperature: 0.2,
     response_format: {
@@ -816,7 +877,7 @@ export async function compareEvaluations(
         )}`,
       },
     ],
-  })
+  }))
 
   const raw = completion.choices[0]?.message?.content
   if (!raw) throw new Error('Empty comparison response from model')

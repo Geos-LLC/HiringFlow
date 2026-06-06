@@ -27,6 +27,11 @@ import { openai } from '@/lib/openai'
 import { prisma } from '@/lib/prisma'
 import { s3Download } from '@/lib/s3'
 import { extractFramesFromBuffer } from './video-frames'
+import { promises as fs } from 'fs'
+import path from 'path'
+import os from 'os'
+import { spawn } from 'child_process'
+import ffmpegPath from 'ffmpeg-static'
 
 // Voice observation runs in TWO stages because audio-capable OpenAI models
 // (`gpt-audio`, `gpt-audio-mini`) DO NOT accept any response_format param —
@@ -125,16 +130,65 @@ async function fetchAudioBytes(input: VoiceClipInput): Promise<{ data: Buffer; m
   }
 }
 
-function mimeToFormat(mime: string): 'mp3' | 'wav' | 'flac' | 'opus' | 'ogg' | 'm4a' | 'webm' | 'mp4' {
+// gpt-audio / gpt-audio-mini ONLY accept 'wav' and 'mp3' as input format
+// values, contrary to the broader list the API used to support. Anything
+// else (opus, ogg, m4a, webm, mp4-audio, flac) has to be transcoded to mp3
+// before sending. transcodeToMp3 below uses ffmpeg-static, which we already
+// ship in the function bundle for the video frame extractor.
+function mimeIsMp3(mime: string): boolean {
   const m = mime.toLowerCase()
-  if (m.includes('mp3') || m.includes('mpeg')) return 'mp3'
-  if (m.includes('wav')) return 'wav'
-  if (m.includes('flac')) return 'flac'
-  if (m.includes('opus')) return 'opus'
-  if (m.includes('ogg')) return 'ogg'
-  if (m.includes('m4a')) return 'm4a'
-  if (m.includes('webm')) return 'webm'
-  return 'mp4'
+  return m.includes('mp3') || m.includes('mpeg')
+}
+function mimeIsWav(mime: string): boolean {
+  return mime.toLowerCase().includes('wav')
+}
+
+async function transcodeToMp3(input: Buffer): Promise<Buffer | null> {
+  if (!ffmpegPath) return null
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hfaud-'))
+  const srcPath = path.join(tmpDir, 'src')
+  const outPath = path.join(tmpDir, 'out.mp3')
+  try {
+    await fs.writeFile(srcPath, input)
+    await new Promise<void>((resolve, reject) => {
+      // -ac 1 → mono (smaller, voice models don't need stereo), -ar 16000 →
+      // 16kHz (transcription-grade), -b:a 64k → small but intelligible.
+      // Total: roughly 0.5 MB / minute.
+      const proc = spawn(ffmpegPath as string, [
+        '-y', '-i', srcPath,
+        '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k',
+        '-f', 'mp3', outPath,
+      ])
+      let stderr = ''
+      proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+      proc.on('error', reject)
+      proc.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-300)}`))
+      })
+    })
+    return await fs.readFile(outPath)
+  } catch (err) {
+    console.error('[media-observation] transcode to mp3 failed', (err as Error).message)
+    return null
+  } finally {
+    try { await fs.rm(tmpDir, { recursive: true, force: true }) } catch { /* swallow */ }
+  }
+}
+
+/**
+ * Returns the bytes + the format string to send to the audio model. If the
+ * source is already mp3/wav, it's passed through; otherwise it's transcoded
+ * to mp3 (mono 16kHz 64kbps — voice-grade, small).
+ */
+async function prepareAudioForVoiceModel(
+  input: { data: Buffer; mimeType: string },
+): Promise<{ data: Buffer; format: 'mp3' | 'wav' } | null> {
+  if (mimeIsMp3(input.mimeType)) return { data: input.data, format: 'mp3' }
+  if (mimeIsWav(input.mimeType)) return { data: input.data, format: 'wav' }
+  const mp3 = await transcodeToMp3(input.data)
+  if (!mp3) return null
+  return { data: mp3, format: 'mp3' }
 }
 
 const VOICE_AUDIO_SYSTEM_PROMPT = `You observe a candidate audio recording for a hiring manager. Report DESCRIPTIVE observations only — pace, clarity, hesitation, energy, articulation. Each observation is one short sentence with neutral language. Never make claims about trustworthiness, honesty, attractiveness, intelligence, age, or personality. Never invent content not present in the audio. If the audio is silent or too short to assess a dimension, say so plainly.
@@ -192,6 +246,15 @@ async function observeVoiceClip(
     )
   }
 
+  // gpt-audio-mini only accepts mp3 / wav. Transcode anything else (opus,
+  // m4a, webm, ogg) to mp3 first.
+  const prepared = await prepareAudioForVoiceModel(audio)
+  if (!prepared) {
+    throw new Error(
+      `Audio transcoding to mp3 failed (mime=${audio.mimeType}). ffmpeg-static may be missing from the function bundle.`,
+    )
+  }
+
   // Stage 1: free-form headed text from the audio model.
   const audioCompletion = await openai.chat.completions.create({
     model: VOICE_AUDIO_MODEL,
@@ -204,8 +267,8 @@ async function observeVoiceClip(
           {
             type: 'input_audio',
             input_audio: {
-              data: audio.data.toString('base64'),
-              format: mimeToFormat(audio.mimeType),
+              data: prepared.data.toString('base64'),
+              format: prepared.format,
             },
           } as any,
           {
