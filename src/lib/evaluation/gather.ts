@@ -21,6 +21,7 @@ import { prisma } from '@/lib/prisma'
 import { fetchWithEachKey, getElevenLabsApiKeys } from '@/lib/elevenlabs'
 import type { VoiceClipInput, VideoClipInput } from './media-observation'
 import { fetchMeetingTranscript } from './meeting-transcript'
+import { ensureCaptureTranscribed } from './capture-transcription'
 
 export interface GatheredMaterial {
   session: {
@@ -153,14 +154,37 @@ export async function gatherCandidateMaterial(
     : []
 
   const captureRows = session.captureResponses
-  const captures = captureRows.map((c) => ({
-    id: c.id,
-    mode: c.mode,
-    prompt: c.prompt,
-    durationSec: c.durationSec,
-    transcript: c.transcript,
-    aiSummary: c.aiSummary,
-  }))
+
+  // On-demand Deepgram for captures that landed in S3 but never got a
+  // transcript. Either the originating flow step had transcription
+  // disabled, or the file predates the pipeline. We backfill at gather-
+  // time so the scoring prompt sees real candidate words — without this,
+  // a self-intro recording is invisible to text scoring and the criteria
+  // for it would have to be marked null. Persists back to the row so a
+  // re-run doesn't pay Deepgram twice.
+  const captures = await Promise.all(
+    captureRows.map(async (c) => {
+      let transcript = c.transcript
+      const needsTranscribe = !transcript?.trim() && !!c.storageKey && (c.mode === 'audio' || c.mode === 'video' || c.mode === 'audio_video')
+      if (needsTranscribe) {
+        const text = await ensureCaptureTranscribed({
+          id: c.id,
+          storageKey: c.storageKey,
+          mimeType: c.mimeType,
+          durationSec: c.durationSec,
+        })
+        if (text) transcript = text
+      }
+      return {
+        id: c.id,
+        mode: c.mode,
+        prompt: c.prompt,
+        durationSec: c.durationSec,
+        transcript,
+        aiSummary: c.aiSummary,
+      }
+    }),
+  )
 
   // Voice + video clips for the observation engine.
   //   - Audio captures (mode='audio') feed voice only.
