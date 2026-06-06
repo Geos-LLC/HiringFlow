@@ -75,8 +75,14 @@ export interface ScoredCriterion extends DerivedCriterion {
   // that WERE scored, with their weights renormalized to sum to 100.
   score: number | null // 0..100 or null when not scored
   evidence: string
-  // Short reason when score is null ("no video recording", "no AI-call
-  // transcript"). Empty string when the criterion was actually scored.
+  // Short reason when score is null. The model is now required to pick
+  // between two shapes per the SCORE_CANDIDATE_SYSTEM_PROMPT contract:
+  //   form (a) — DATA SOURCE missing:
+  //              "no AI-call transcript available for this candidate"
+  //   form (b) — DATA SOURCE present, BEHAVIOR not observed:
+  //              "no complaint or recovery moment observed across the
+  //               10 AI-call transcripts provided"
+  // Reason is empty string when the criterion was actually scored.
   notScoredReason: string
 }
 
@@ -97,8 +103,12 @@ export interface EvaluationResult {
   // judgment, and gives the recruiter visibility into why each score
   // landed where it did. Surfaced in the UI as a "Reasoning" block.
   analysis: string
-  // Coverage gaps that affected the score (e.g. "no AI-call transcript
-  // available"). Empty when the candidate had full material.
+  // Coverage gaps — missing DATA SOURCES only (not "behavior wasn't
+  // observed in the data"). When a candidate has 0 AI calls in the
+  // prompt: "no AI-call transcript available for this candidate".
+  // When a candidate has 10 AI calls but never quoted a price: that's
+  // a behavioral finding for the relevant criterion, NOT a coverage
+  // gap. Empty array when every modality the rubric needs is present.
   coverageGaps: string[]
   // Carried from the derivation step so the API route can persist the
   // factors the rubric was built from. Not scored by the model — purely
@@ -474,33 +484,65 @@ Evidence rules:
     as a measure of trustworthiness, honesty, or personality.
 
 Missing data — SKIP, don't penalize (CRITICAL):
-  - If a criterion's required data modality isn't available for this
-    candidate, set its score to null and fill notScoredReason with a
-    short explanation ("no video recording", "no AI-call transcript",
-    "no interview meeting attended"). DO NOT guess a score and DO NOT
-    penalize the candidate for the gap. Missing data is just missing.
+  - If a criterion cannot be scored, set its score to null and write a
+    PRECISE notScoredReason. DO NOT guess a score and DO NOT penalize
+    the candidate for the gap. Missing data is just missing.
+
+  - The notScoredReason MUST distinguish two situations:
+      (a) Missing DATA SOURCE — the modality that could carry the
+          evidence simply isn't in the prompt. Examples:
+            "no AI-call transcript available for this candidate"
+            "no self-intro video capture available"
+            "no interview meeting transcript available"
+          Use this form ONLY when the relevant section is genuinely
+          absent from the candidate material above.
+      (b) Missing BEHAVIOR — the data source IS present but does not
+          contain any instance of the behavior the criterion measures.
+          Examples (use this exact shape):
+            "no complaint or recovery moment observed across the
+             {N} AI-call transcripts provided"
+            "no pricing objection arose in any of the recorded calls,
+             so objection-handling could not be observed"
+            "interview transcripts cover scheduling logistics only;
+             no upsell discussion took place"
+          The reason MUST reference what WAS present (e.g. "across
+          the 10 AI calls") so the recruiter can tell whether to dig
+          deeper or accept it as "behavior simply didn't come up".
+
+  - VERIFY before writing. Before citing "no AI-call transcript", count
+    the AI Call sections in the prompt above — if N ≥ 1, you MUST use
+    form (b), not form (a). Same for captures and meetings. Writing
+    "no X transcript" when X transcripts ARE in the prompt makes the
+    output look like a data bug to the recruiter; it is a self-
+    inflicted credibility wound.
+
   - Concretely:
-      • No AI-call / phone-roleplay transcript → criteria that can only
-        be observed on a live call (Booking Control, Pricing Delivery,
-        Objection Handling, Complaint Recovery, Lead Qualification by
-        phone) get score=null with notScoredReason="no AI-call transcript".
-      • No video / self-intro recording → camera-presence / presentation
-        / engagement criteria get score=null with notScoredReason="no
-        video recording".
-      • No interview meeting attended → meeting-only criteria get
-        score=null.
-  - DO score the criteria you CAN observe. If a candidate has a strong
-    AI-call but no video, they're scored on the phone behaviors and the
-    video-only criteria are null. Their overall reflects their actual
-    demonstrated performance on the criteria that were evaluable — no
-    artificial cap, no artificial floor.
+      • Phone behaviors (Booking Control, Pricing Delivery, Objection
+        Handling, Complaint Recovery, Lead Qualification by phone)
+        require call evidence. If no AI calls or meetings exist → (a).
+        If they exist but the candidate never demonstrated the
+        behavior → (b).
+      • Camera presence / presentation / engagement criteria require
+        a self-intro VIDEO capture. Meeting recordings do not feed
+        video frames into this prompt — only their text transcripts —
+        so a candidate with 2 meeting recordings but no self-intro
+        video is missing data for these criteria. Write:
+        "no self-intro video capture (meeting recordings feed text
+         transcripts only, not video frames)".
+      • Meeting-only criteria when no meeting transcript is present
+        → (a). When meetings exist but the relevant behavior wasn't
+        observed → (b).
+
+  - DO score the criteria you CAN observe. Their overall reflects
+    their actual demonstrated performance on the criteria that were
+    evaluable — no artificial cap, no artificial floor.
   - The OUTPUT overallScore field is for YOUR weighted average of the
     SCORED criteria. The engine will renormalize weights so the criteria
     you scored sum to 100; you don't need to do that math. Just compute
     the weighted average over the criteria you actually scored.
-  - Populate coverageGaps with the list of missing modalities so the UI
-    can show what wasn't evaluated. Empty array when the candidate had
-    full material for the rubric.
+  - Populate coverageGaps with the list of missing DATA SOURCES (form
+    (a) gaps only — behaviors not observed are NOT coverage gaps).
+    Empty array when every data modality the rubric needs is present.
 
 Overall score & recommendation:
   - overallScore: weighted average over the criteria you actually scored

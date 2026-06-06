@@ -195,7 +195,7 @@ describe('SCORE_CANDIDATE_SYSTEM_PROMPT', () => {
     expect(p).toMatch(/skip,\s*don'?t penalize/i)
     expect(p).toMatch(/set its score to null/i)
     expect(p).toMatch(/notscoredreason/i)
-    expect(p).toMatch(/do not guess a score and do not\s+penalize the candidate/i)
+    expect(p).toMatch(/do not guess a score and do not\s+penalize\s+the candidate/i)
     expect(p).toMatch(/no ai-?call.*transcript|phone-roleplay.*transcript/i)
     expect(p).toMatch(/no video|video recording/i)
     // Engine renormalizes server-side; the prompt names it so the model
@@ -205,6 +205,42 @@ describe('SCORE_CANDIDATE_SYSTEM_PROMPT', () => {
     // resurface — it was unfair to candidates with partial coverage.
     expect(p).not.toMatch(/50-65 cap/i)
     expect(p).not.toMatch(/discount the overall score/i)
+  })
+
+  it('forces notScoredReason to distinguish missing-source vs missing-behavior', () => {
+    // Prod bug 2026-06-06: model emitted notScoredReason="no AI-call
+    // transcript" for Nazar's Complaint Recovery + Team Coordination
+    // criteria even though he had 10 AI-call transcripts in the prompt.
+    // The recruiter reads that as a system data bug. New rule: the
+    // model MUST distinguish source-missing (form a) from behavior-
+    // not-observed (form b). Lock in both forms by name.
+    const p = SCORE_CANDIDATE_SYSTEM_PROMPT
+    // Both forms must be named and labeled (a) / (b).
+    expect(p).toMatch(/\(a\) Missing DATA SOURCE/i)
+    expect(p).toMatch(/\(b\) Missing BEHAVIOR/i)
+    // The "verify-before-citing" rule that catches Nazar-style mistakes.
+    expect(p).toMatch(/VERIFY before writing/i)
+    expect(p).toMatch(/count\s+the AI Call sections in the prompt above/i)
+    expect(p).toMatch(/credibility wound/i)
+    // The behavior-form example shape with explicit "across {N} transcripts".
+    expect(p.toLowerCase()).toMatch(/across\s+the\s+\{n\}|across the [0-9n]+ ai-call transcripts/i)
+  })
+
+  it('clarifies that meeting recordings are TEXT only, not video frames', () => {
+    // Prod confusion 2026-06-06: Nazar has 2 meeting recordings (which
+    // contain video) but coverage gap said "no video recording". The
+    // engine doesn't extract video frames from meeting recordings — only
+    // text transcripts — so the model should write the explicit form so
+    // the recruiter isn't left guessing.
+    const p = SCORE_CANDIDATE_SYSTEM_PROMPT
+    expect(p).toMatch(/no self-intro video capture/i)
+    expect(p).toMatch(/meeting recordings feed text\s+transcripts only,\s+not video frames/i)
+  })
+
+  it('coverageGaps lists MISSING SOURCES only, not behaviors-not-observed', () => {
+    const p = SCORE_CANDIDATE_SYSTEM_PROMPT
+    expect(p).toMatch(/list of missing DATA SOURCES/i)
+    expect(p).toMatch(/behaviors not observed are NOT coverage gaps/i)
   })
 
   it('requires the model to write a pre-scoring analysis BEFORE committing to scores', () => {
