@@ -249,10 +249,18 @@ export async function gatherCandidateMaterial(
     }
   }
 
-  // Meetings — fetch transcripts in parallel from Recall.ai / Drive.
-  // Each lookup is best-effort: a failure means the meeting falls back to
-  // attendance metadata for this run, not an error.
-  const meetingsWithTranscript = await Promise.all(
+  // Meetings — fetch transcripts in parallel from Recall.ai / Drive, then
+  // FILTER to only meetings that produced a substantive transcript. Rule
+  // per recruiter spec: "we need only meetings with records and where the
+  // candidate attended because we analyze transcripts."
+  //
+  // A transcript exists ⇔ a recording bot or Meet/Gemini was in the room
+  // capturing speech. ≥200 chars of content ⇒ real conversation happened
+  // (not a 1-min host-only join with no audio). Below the threshold we
+  // treat the meeting as "scheduled but unusable for scoring" and drop it
+  // from material AND sources entirely.
+  const MIN_TRANSCRIPT_CHARS = 200
+  const meetingsAll = await Promise.all(
     session.interviewMeetings.map(async (m) => {
       const t = await fetchMeetingTranscript({
         id: m.id,
@@ -274,7 +282,9 @@ export async function gatherCandidateMaterial(
       }
     }),
   )
-  const meetings = meetingsWithTranscript
+  const meetings = meetingsAll.filter(
+    (m) => !!m.transcript && m.transcript.trim().length >= MIN_TRANSCRIPT_CHARS,
+  )
 
   const material: GatheredMaterial = {
     session: {

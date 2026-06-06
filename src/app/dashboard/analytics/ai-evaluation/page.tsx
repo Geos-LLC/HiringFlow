@@ -242,13 +242,12 @@ function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
     out.push({ icon: '📝', label: `${textCaptures.length} text`, tone: 'evaluated' })
   }
 
-  // Meetings — split into transcribed (real evidence) and attendance-only.
-  // Transcribed meetings are emerald and use the 📋 icon to distinguish them
-  // from the meeting-attendance pill. Attendance-only stays gray so the
-  // recruiter can see that "2 meetings attended" is NOT 2 transcripts.
-  const meetingsAttended = s.meetings.filter((m) => m.attended)
-  const meetingsTranscribed = meetingsAttended.filter((m) => m.hasTranscript)
-  const meetingsAttendanceOnly = meetingsAttended.filter((m) => !m.hasTranscript)
+  // Meetings: only transcribed-and-attended meetings make it into the
+  // sources list now — gather drops everything else before this point.
+  // So we render a single emerald 📋 badge per meeting transcript. No
+  // attendance-only gray badge anymore (a meeting with no transcript is
+  // not evaluable evidence — the recruiter shouldn't be told otherwise).
+  const meetingsTranscribed = s.meetings // already filtered
   if (meetingsTranscribed.length > 0) {
     const mins = Math.round(
       meetingsTranscribed.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60,
@@ -258,18 +257,6 @@ function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
       label: `${meetingsTranscribed.length} meeting transcript${meetingsTranscribed.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
       tone: 'evaluated',
       title: 'Recorded interview transcript fed to the scorer.',
-    })
-  }
-  if (meetingsAttendanceOnly.length > 0) {
-    const mins = Math.round(
-      meetingsAttendanceOnly.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60,
-    )
-    out.push({
-      icon: '🗓️',
-      label: `${meetingsAttendanceOnly.length} meeting${meetingsAttendanceOnly.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
-      tone: 'attendance',
-      title:
-        'Attendance metadata only — no transcript was available for these meetings. Treat as a "showed up" signal, not as evidence of phone behaviors.',
     })
   }
 

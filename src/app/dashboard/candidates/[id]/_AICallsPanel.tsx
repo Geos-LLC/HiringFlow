@@ -146,10 +146,9 @@ function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
   }
   if (text.length > 0) out.push({ icon: '📝', label: `${text.length} text`, tone: 'evaluated' })
 
-  // Meetings — split transcribed (real evidence) from attendance-only.
-  const meetingsAttended = s.meetings.filter((m) => m.attended)
-  const meetingsTranscribed = meetingsAttended.filter((m) => m.hasTranscript)
-  const meetingsAttendOnly = meetingsAttended.filter((m) => !m.hasTranscript)
+  // Meetings: only transcribed meetings make it into sources now —
+  // gather already filtered everything else out. Single emerald badge.
+  const meetingsTranscribed = s.meetings
   if (meetingsTranscribed.length > 0) {
     const mins = Math.round(meetingsTranscribed.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60)
     out.push({
@@ -157,15 +156,6 @@ function describeSources(s: SourcesSummary | undefined): SourceBadge[] {
       label: `${meetingsTranscribed.length} meeting transcript${meetingsTranscribed.length === 1 ? '' : 's'}${mins ? ` · ${mins}m` : ''}`,
       tone: 'evaluated',
       title: 'Recorded interview transcript fed to the scorer.',
-    })
-  }
-  if (meetingsAttendOnly.length > 0) {
-    const mins = Math.round(meetingsAttendOnly.reduce((a, b) => a + (b.durationSec ?? 0), 0) / 60)
-    out.push({
-      icon: '🗓️',
-      label: `${meetingsAttendOnly.length} meeting${meetingsAttendOnly.length === 1 ? '' : 's'} attended${mins ? ` · ${mins}m` : ''}`,
-      tone: 'attendance',
-      title: 'Attendance metadata only — no transcript was available for these meetings.',
     })
   }
 
