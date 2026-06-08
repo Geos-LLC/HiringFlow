@@ -239,6 +239,11 @@ export default function CampaignPositionPage() {
         description={`${positionAds.length} ad${positionAds.length === 1 ? '' : 's'} for this position`}
         actions={
           <div className="flex flex-wrap gap-2">
+            {!isUnassigned && (
+              <Link href={`/dashboard/campaigns?new=1&position=${encodeURIComponent(positionLabel)}`}>
+                <Button size="sm">+ New Campaign</Button>
+              </Link>
+            )}
             <Button variant="secondary" size="sm" onClick={openAddModal} disabled={bulkSaving}>
               Add existing ads
             </Button>
@@ -308,12 +313,20 @@ export default function CampaignPositionPage() {
           <>
             {positionAds.length === 0 ? (
               <div className="section-card text-center py-12">
-                <p className="text-grey-35">
-                  No ads tagged with this position yet.{' '}
-                  <Link href="/dashboard/campaigns" className="text-brand-500 hover:text-brand-600 font-medium">
-                    Back to Campaigns
+                <p className="text-grey-35 mb-4">No ads tagged with this position yet.</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {!isUnassigned && (
+                    <Link href={`/dashboard/campaigns?new=1&position=${encodeURIComponent(positionLabel)}`}>
+                      <Button size="sm">+ New Campaign in this position</Button>
+                    </Link>
+                  )}
+                  <Button variant="secondary" size="sm" onClick={openAddModal}>
+                    Add existing ads
+                  </Button>
+                  <Link href="/dashboard/campaigns">
+                    <Button variant="secondary" size="sm">Back to Campaigns</Button>
                   </Link>
-                </p>
+                </div>
               </div>
             ) : (
               <div className="bg-white rounded-[12px] border border-surface-border overflow-hidden">

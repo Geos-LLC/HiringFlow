@@ -216,6 +216,16 @@ function CampaignsPageInner() {
     for (const a of ads) if (a.targetPosition) set.add(a.targetPosition)
     return Array.from(set).sort()
   }, [ads])
+
+  // Position is a free-text string on Ad, not a standalone row, so "create"
+  // means: jump to the per-position detail page where the recruiter can add
+  // ads to it. The card on the overview only renders once at least one ad is
+  // tagged — that's by design (cards summarize ads, not empty buckets).
+  const createNewPosition = () => {
+    const name = window.prompt('Position name (e.g. Dispatcher, Cleaner, Office Manager):', '')
+    if (!name?.trim()) return
+    router.push(`/dashboard/campaigns/${encodeURIComponent(name.trim())}`)
+  }
   const renamePositionInline = async (currentLabel: string) => {
     const next = window.prompt(`Rename "${currentLabel}" to:`, currentLabel)
     if (next === null) return
@@ -260,6 +270,25 @@ function CampaignsPageInner() {
     // it would re-run this effect every time any setter inside fires.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, ads])
+
+  // Auto-open the *create* modal when ?new=1 is on the URL, pre-filling
+  // targetPosition with the &position= param. The "+ New Campaign in this
+  // position" button on the per-position detail page deep-links here so
+  // recruiters can spin up a new ad scoped to that role in one flow. Strips
+  // both params after handling so refresh / back-nav doesn't re-fire.
+  useEffect(() => {
+    if (searchParams?.get('new') !== '1') return
+    if (flows.length === 0) return
+    const presetPosition = searchParams.get('position') ?? ''
+    openCreate()
+    if (presetPosition) setTargetPosition(presetPosition)
+    const nextParams = new URLSearchParams(searchParams.toString())
+    nextParams.delete('new')
+    nextParams.delete('position')
+    const qs = nextParams.toString()
+    router.replace(qs ? `/dashboard/campaigns?${qs}` : '/dashboard/campaigns')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, flows])
 
   // Persist a new workspace-level source. Round-trips current settings so we
   // don't clobber other keys (funnelStages, customStatuses, etc.). After save
@@ -674,7 +703,12 @@ function CampaignsPageInner() {
         eyebrow={`${ads.length} campaign${ads.length === 1 ? '' : 's'}`}
         title="Campaigns"
         description="Acquisition and source tracking. Spin up tracked links, monitor where applicants come from, and reuse ad copy templates."
-        actions={<Button size="sm" onClick={openCreate}>+ New Campaign</Button>}
+        actions={
+          <div className="flex gap-2">
+            <Button size="sm" variant="secondary" onClick={createNewPosition}>+ New Position</Button>
+            <Button size="sm" onClick={openCreate}>+ New Campaign</Button>
+          </div>
+        }
       />
 
       <div className="px-8 py-4">
