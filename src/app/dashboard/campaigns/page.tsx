@@ -164,6 +164,58 @@ function CampaignsPageInner() {
   // Triggered from the inline Edit button on each card so the recruiter can
   // tidy positions without entering the per-position detail page.
   const [renamingPosition, setRenamingPosition] = useState<string | null>(null)
+  // "Assign to position" modal — only reachable from the Unassigned card so a
+  // fresh workspace with no positions yet can still build them. Picks
+  // unassigned ads + a new (or existing) position name, then bulk-PATCHes.
+  const [assignModalOpen, setAssignModalOpen] = useState(false)
+  const [assignPositionName, setAssignPositionName] = useState('')
+  const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set())
+  const [assignSaving, setAssignSaving] = useState(false)
+  const openAssignModal = () => {
+    setAssignPositionName('')
+    // Default to selecting every unassigned ad — recruiter who clicks the
+    // button on a 27/27 Unassigned card almost always wants "all of them"
+    // and can deselect outliers before submitting.
+    setAssignSelectedIds(new Set(ads.filter((a) => !a.targetPosition).map((a) => a.id)))
+    setAssignModalOpen(true)
+  }
+  const toggleAssignSelected = (id: string) => {
+    setAssignSelectedIds((cur) => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const submitAssign = async () => {
+    const name = assignPositionName.trim()
+    if (!name || assignSelectedIds.size === 0 || assignSaving) return
+    setAssignSaving(true)
+    try {
+      await Promise.all(
+        Array.from(assignSelectedIds).map((id) =>
+          fetch(`/api/ads/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetPosition: name }),
+          })
+        )
+      )
+      await refresh()
+      setAssignModalOpen(false)
+    } finally {
+      setAssignSaving(false)
+    }
+  }
+  // List of currently-unassigned ads. Drives the Assign modal's checkbox
+  // list — recalculated on every render so toggling sticks even after a
+  // partial PATCH succeeds and the parent list refreshes.
+  const unassignedAds = useMemo(() => ads.filter((a) => !a.targetPosition), [ads])
+  const existingPositionNames = useMemo(() => {
+    const set = new Set<string>()
+    for (const a of ads) if (a.targetPosition) set.add(a.targetPosition)
+    return Array.from(set).sort()
+  }, [ads])
   const renamePositionInline = async (currentLabel: string) => {
     const next = window.prompt(`Rename "${currentLabel}" to:`, currentLabel)
     if (next === null) return
@@ -708,7 +760,16 @@ function CampaignsPageInner() {
                   </div>
 
                   <div className="mt-auto pt-3 border-t border-surface-divider space-y-2 text-[12px]">
-                    {g.key !== UNASSIGNED_POSITION_SLUG && (
+                    {g.key === UNASSIGNED_POSITION_SLUG ? (
+                      <button
+                        type="button"
+                        onClick={openAssignModal}
+                        className="w-full inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] bg-ink text-white hover:bg-grey-15 font-medium"
+                        title="Pick unassigned ads and assign them to a position"
+                      >
+                        Assign to position
+                      </button>
+                    ) : (
                       <button
                         type="button"
                         onClick={() => renamePositionInline(g.label)}
@@ -1388,6 +1449,120 @@ function CampaignsPageInner() {
             <div className="flex gap-3 mt-5">
               <button onClick={() => setDuplicatingAd(null)} disabled={duplicating} className="btn-secondary flex-1">Cancel</button>
               <button onClick={confirmDuplicate} disabled={duplicating || !duplicateName.trim()} className="btn-primary flex-1 disabled:opacity-50">{duplicating ? 'Duplicating...' : 'Duplicate'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {assignModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setAssignModalOpen(false) }}
+        >
+          <div className="w-full max-w-2xl rounded-[14px] bg-white shadow-xl border border-surface-border flex flex-col max-h-[85vh]">
+            <div className="px-5 py-4 border-b border-surface-divider flex items-center justify-between">
+              <div>
+                <h2 className="text-[15px] font-semibold text-ink">Assign ads to a position</h2>
+                <p className="mt-0.5 text-[12px] text-grey-35">
+                  Pick a name (new or existing) and which currently-unassigned ads belong to it.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAssignModalOpen(false)}
+                className="w-7 h-7 flex items-center justify-center rounded-md text-grey-50 hover:text-ink hover:bg-surface-light"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="px-5 py-3 border-b border-surface-divider">
+              <label className="block text-[12px] font-medium text-ink mb-1">Position name</label>
+              <input
+                type="text"
+                value={assignPositionName}
+                onChange={(e) => setAssignPositionName(e.target.value)}
+                placeholder="e.g. Dispatcher, Cleaner, Office Manager"
+                list="campaigns-assign-position-list"
+                autoFocus
+                className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              />
+              <datalist id="campaigns-assign-position-list">
+                {existingPositionNames.map((p) => <option key={p} value={p} />)}
+              </datalist>
+              <p className="mt-1 text-[11px] text-grey-40">
+                Typing a name that doesn't exist yet creates that position; matching an existing name merges into it.
+              </p>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3">
+              {unassignedAds.length === 0 ? (
+                <p className="text-[13px] text-grey-40 py-6 text-center">No unassigned ads.</p>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-2 text-[12px] text-grey-40">
+                    <span>{assignSelectedIds.size} of {unassignedAds.length} selected</span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setAssignSelectedIds(new Set(unassignedAds.map((a) => a.id)))}
+                        className="text-brand-500 hover:text-brand-600"
+                      >
+                        Select all
+                      </button>
+                      <span aria-hidden>·</span>
+                      <button
+                        type="button"
+                        onClick={() => setAssignSelectedIds(new Set())}
+                        className="text-grey-40 hover:text-grey-15"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <ul className="divide-y divide-surface-divider">
+                    {unassignedAds.map((ad) => {
+                      const checked = assignSelectedIds.has(ad.id)
+                      return (
+                        <li key={ad.id}>
+                          <label className="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-surface-light/40 rounded-[8px] px-2">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleAssignSelected(ad.id)}
+                              className="cursor-pointer"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[13px] font-medium text-ink truncate">{ad.name}</div>
+                              <div className="text-[11px] text-grey-40 flex items-center gap-2">
+                                <span className="capitalize">{ad.source}</span>
+                                {!ad.isActive && (
+                                  <>
+                                    <span aria-hidden>·</span>
+                                    <span className="text-amber-700">Archived</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </label>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-end gap-2">
+              <Button type="button" variant="secondary" size="sm" onClick={() => setAssignModalOpen(false)} disabled={assignSaving}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={submitAssign}
+                disabled={assignSaving || !assignPositionName.trim() || assignSelectedIds.size === 0}
+              >
+                {assignSaving ? 'Assigning…' : `Assign ${assignSelectedIds.size} to "${assignPositionName.trim() || '…'}"`}
+              </Button>
             </div>
           </div>
         </div>
