@@ -14,7 +14,7 @@
 
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button, Badge, Card, Eyebrow, PageHeader, Stat, type BadgeTone } from '@/components/design'
@@ -93,7 +93,19 @@ function biggestDropoff(stages: Array<{ label: string; value: number }>): { labe
   return worst
 }
 
+// useSearchParams forces the page off the static-export path, and Next.js
+// requires it to be wrapped in a Suspense boundary so the prerender pass has
+// a fallback to use when bailing out. Keep the wrapper trivial — all real
+// content lives in AnalyticsPageInner below.
 export default function AnalyticsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AnalyticsPageInner />
+    </Suspense>
+  )
+}
+
+function AnalyticsPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [data, setData] = useState<AnalyticsData | null>(null)

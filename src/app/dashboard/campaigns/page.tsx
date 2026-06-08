@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { Suspense, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button, Card, Eyebrow, PageHeader, Stat } from '@/components/design'
@@ -39,7 +39,18 @@ const DEFAULT_AD_COPY: Record<string, { headline: string; body: string; requirem
   _default: { headline: 'We Are Hiring!', body: 'Join our team! We have openings available and are looking for great people.', requirements: '', benefits: '- Competitive pay\n- Great team', cta: 'Apply now through our quick online process!' },
 }
 
+// Suspense wrapper required because CampaignsPageInner uses useSearchParams
+// (for the ?edit=<adId> deep-link from the position detail page) — Next.js
+// would otherwise fail the prerender pass with a missing-suspense error.
 export default function CampaignsPage() {
+  return (
+    <Suspense fallback={null}>
+      <CampaignsPageInner />
+    </Suspense>
+  )
+}
+
+function CampaignsPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [ads, setAds] = useState<Ad[]>([])

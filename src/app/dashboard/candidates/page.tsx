@@ -12,7 +12,7 @@
 
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Badge, Button, Card, PageHeader, WipBadge } from '@/components/design'
@@ -155,7 +155,19 @@ interface PipelineSummary {
 
 const STAGE_SORT_KEY = 'hiringflow:kanban-stage-sorts'
 
+// Suspense wrapper required because CandidatesPageInner uses useSearchParams
+// (?targetPosition= deep-link from Campaigns + ?view= from position cards).
+// Next.js prerender bails on the page without an explicit boundary, breaking
+// the build.
 export default function CandidatesPage() {
+  return (
+    <Suspense fallback={null}>
+      <CandidatesPageInner />
+    </Suspense>
+  )
+}
+
+function CandidatesPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   // targetPosition is set from the URL by deep-links on the Campaigns page
