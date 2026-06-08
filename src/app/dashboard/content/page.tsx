@@ -405,14 +405,19 @@ export default function ContentPage() {
   }
   const saveSmsAsNew = async () => {
     if (!smsName.trim() || !smsBody.trim()) return
-    setSmsSaving(true)
-    const proposedName = editingSms && smsName.trim() === editingSms.name
+    // Prompt up front so the recruiter names the copy intentionally. Default
+    // suggests "(Copy)" when the field still matches the source row — they
+    // can override before hitting OK.
+    const suggested = editingSms && smsName.trim() === editingSms.name
       ? `${smsName.trim()} (Copy)`
       : smsName.trim()
+    const newName = window.prompt('Name for new template', suggested)
+    if (!newName?.trim()) return
+    setSmsSaving(true)
     const res = await fetch('/api/sms-templates', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: proposedName, body: smsBody }),
+      body: JSON.stringify({ name: newName.trim(), body: smsBody }),
     })
     setSmsSaving(false)
     if (!res.ok) {
@@ -471,14 +476,16 @@ export default function ContentPage() {
   // the original so we don't hit the unique (workspaceId, name) constraint.
   const saveEmailAsNew = async () => {
     if (!emailName.trim() || !emailSubject.trim() || !emailBody.trim()) return
-    setEmailSaving(true)
-    const proposedName = editingEmail && emailName.trim() === editingEmail.name
+    const suggested = editingEmail && emailName.trim() === editingEmail.name
       ? `${emailName.trim()} (Copy)`
       : emailName.trim()
+    const newName = window.prompt('Name for new template', suggested)
+    if (!newName?.trim()) return
+    setEmailSaving(true)
     const res = await fetch('/api/email-templates', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: proposedName, subject: emailSubject, bodyHtml: plainTextToHtml(emailBody), bodyText: emailBody }),
+      body: JSON.stringify({ name: newName.trim(), subject: emailSubject, bodyHtml: plainTextToHtml(emailBody), bodyText: emailBody }),
     })
     setEmailSaving(false)
     if (!res.ok) {
@@ -540,14 +547,16 @@ export default function ContentPage() {
   }
   const saveAdAsNew = async () => {
     if (!adName.trim() || !adHeadline.trim() || !adBody.trim()) return
-    setAdSaving(true)
-    const proposedName = editingAd && adName.trim() === editingAd.name
+    const suggested = editingAd && adName.trim() === editingAd.name
       ? `${adName.trim()} (Copy)`
       : adName.trim()
+    const newName = window.prompt('Name for new template', suggested)
+    if (!newName?.trim()) return
+    setAdSaving(true)
     const res = await fetch('/api/ad-templates', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: proposedName, source: adSource, headline: adHeadline, bodyText: adBody, requirements: adRequirements || null, benefits: adBenefits || null, callToAction: adCta || null }),
+      body: JSON.stringify({ name: newName.trim(), source: adSource, headline: adHeadline, bodyText: adBody, requirements: adRequirements || null, benefits: adBenefits || null, callToAction: adCta || null }),
     })
     setAdSaving(false)
     if (!res.ok) {
