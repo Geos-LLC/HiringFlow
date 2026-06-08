@@ -160,6 +160,35 @@ function CampaignsPageInner() {
 
   const refresh = async () => { const r = await fetch('/api/ads'); if (r.ok) setAds(await r.json()) }
 
+  // Rename a position by bulk-PATCHing every ad whose targetPosition matches.
+  // Triggered from the inline Edit button on each card so the recruiter can
+  // tidy positions without entering the per-position detail page.
+  const [renamingPosition, setRenamingPosition] = useState<string | null>(null)
+  const renamePositionInline = async (currentLabel: string) => {
+    const next = window.prompt(`Rename "${currentLabel}" to:`, currentLabel)
+    if (next === null) return
+    const trimmed = next.trim()
+    if (!trimmed) {
+      alert('Position name cannot be empty.')
+      return
+    }
+    if (trimmed === currentLabel) return
+    setRenamingPosition(currentLabel)
+    try {
+      const matching = ads.filter((a) => a.targetPosition === currentLabel)
+      await Promise.all(matching.map((ad) =>
+        fetch(`/api/ads/${ad.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetPosition: trimmed }),
+        })
+      ))
+      await refresh()
+    } finally {
+      setRenamingPosition(null)
+    }
+  }
+
   // Auto-open the edit modal when ?edit=<adId> is on the URL — used by the
   // Edit button on the per-position detail page so recruiters land directly
   // in the same modal they'd open from the "All Campaigns" tab. Strips the
@@ -649,8 +678,18 @@ function CampaignsPageInner() {
                         {g.adsCount} ad{g.adsCount === 1 ? '' : 's'} · {g.activeCount} active
                       </div>
                     </div>
-                    {g.key === UNASSIGNED_POSITION_SLUG && (
+                    {g.key === UNASSIGNED_POSITION_SLUG ? (
                       <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-surface-light text-grey-50">No position</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => renamePositionInline(g.label)}
+                        disabled={renamingPosition === g.label}
+                        className="text-[11px] font-medium text-brand-500 hover:text-brand-600 disabled:opacity-50"
+                        title="Rename this position (bulk-updates every ad in it)"
+                      >
+                        {renamingPosition === g.label ? 'Renaming…' : 'Rename'}
+                      </button>
                     )}
                   </div>
 
