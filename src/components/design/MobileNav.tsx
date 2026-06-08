@@ -151,9 +151,49 @@ export function MobileNav({ items, workspaceName, user, footer }: MobileNavProps
           </button>
         </div>
 
-        {/* Link list */}
-        <nav className="flex-1 overflow-y-auto p-2">
+        {/* Link list. Groups (items with `children`) render as a section
+            header + a card containing the children. Flat items render as a
+            single row. The visual style follows the design screenshot:
+            uppercase group label, items in a soft-grey container.  */}
+        <nav className="flex-1 overflow-y-auto p-3 space-y-4">
           {items.map((it) => {
+            if (it.children && it.children.length > 0) {
+              return (
+                <section key={it.href}>
+                  <h3 className="font-semibold text-[15px] text-ink mb-2 px-1">{it.label}</h3>
+                  <div
+                    className="rounded-[12px] p-1.5"
+                    style={{ background: 'var(--surface-light, #FCFAF6)' }}
+                  >
+                    {it.children.map((child) => {
+                      const active = isActivePath(pathname, child)
+                      return (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          data-active={active || undefined}
+                          onClick={() => setOpen(false)}
+                          className={`flex items-center justify-between px-3 py-2 rounded-[10px] font-mono text-[13px] transition-colors ${
+                            active ? 'text-ink' : 'text-grey-35 hover:bg-white hover:text-ink'
+                          }`}
+                          style={active ? { background: 'var(--brand-dim)' } : undefined}
+                        >
+                          <span>{child.label}</span>
+                          <span
+                            className="w-1.5 h-1.5 rounded-full transition-opacity"
+                            style={{
+                              background: 'var(--brand-primary)',
+                              opacity: active ? 1 : 0,
+                            }}
+                          />
+                        </Link>
+                      )
+                    })}
+                  </div>
+                </section>
+              )
+            }
+            // Flat item — back-compat for callers that don't use groups.
             const active = isActivePath(pathname, it)
             return (
               <Link

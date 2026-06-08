@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:15-alpine
+    # Pinned to 18-alpine to match Railway prod (which is on PG 18). A v15
+    # client can't dump from a v18 server, so the local image needs to match
+    # for `pg_dump`/`pg_restore` to work against prod snapshots.
+    image: postgres:18-alpine
     container_name: hiringflow-db
     restart: unless-stopped
     environment:
@@ -12,7 +15,10 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PG 18 changed the recommended mount point — /var/lib/postgresql now
+      # holds a versioned subdirectory so pg_upgrade --link works across
+      # version bumps without mount boundary issues.
+      - postgres_data:/var/lib/postgresql
 
 volumes:
   postgres_data:

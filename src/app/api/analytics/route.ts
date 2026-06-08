@@ -7,6 +7,10 @@ export async function GET(request: NextRequest) {
   if (!ws) return unauthorized()
 
   const range = request.nextUrl.searchParams.get('range') || 'all'
+  // Optional Hiring Process scope. The funnel chart honors it; source/ad/status
+  // breakdowns ignore it for now since their value is comparing across
+  // sources/ads, not within one process.
+  const processId = request.nextUrl.searchParams.get('processId') || undefined
 
   let filter: DateFilter | undefined
   const now = new Date()
@@ -15,6 +19,9 @@ export async function GET(request: NextRequest) {
     filter = { from: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) }
   } else if (range === '30d') {
     filter = { from: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) }
+  }
+  if (processId) {
+    filter = { ...(filter || {}), processId }
   }
 
   const [funnel, sources, ads, status] = await Promise.all([

@@ -102,11 +102,19 @@ export async function PATCH(
       // Plain-text job description used as the default input for AI candidate
       // evaluation. Pass null to clear and fall back to the linked Ad copy.
       positionDescription?: string | null
+      // Workflow classification for the list page filter. Validated against
+      // a closed enum so a typo doesn't poison the badge.
+      workflowType?: string | null
     }
     const { name, isPublished, startMessage, endMessage, branding,
       videoInterviewTimeoutDays, trainingTimeoutDays, noShowTimeoutHours,
       schedulingTimeoutHours, backgroundCheckTimeoutDays, pipelineId,
-      canvasLayout, positionDescription } = body
+      canvasLayout, positionDescription, workflowType } = body
+
+    const WORKFLOW_TYPES = ['application', 'interview', 'assessment', 'training', 'survey', 'custom']
+    if (workflowType !== undefined && workflowType !== null && !WORKFLOW_TYPES.includes(workflowType)) {
+      return NextResponse.json({ error: `workflowType must be one of: ${WORKFLOW_TYPES.join(', ')} or null` }, { status: 400 })
+    }
 
     // Only allow positive integers (or null to clear). Reject other shapes
     // so a typo in the drawer doesn't write garbage to the DB.
@@ -158,6 +166,7 @@ export async function PATCH(
         ...(pipelineId !== undefined && { pipelineId }),
         ...(canvasLayout !== undefined && { canvasLayout: canvasLayout as object }),
         ...(positionDescription !== undefined && { positionDescription }),
+        ...(workflowType !== undefined && { workflowType }),
       },
     })
 

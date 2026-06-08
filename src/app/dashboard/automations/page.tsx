@@ -1195,15 +1195,15 @@ function AutomationsPageInner() {
   return (
     <div className="-mx-6 lg:-mx-[132px]">
       <PageHeader
-        eyebrow={`${rules.length} rule${rules.length === 1 ? '' : 's'}`}
+        eyebrow={`${rules.length} automation${rules.length === 1 ? '' : 's'}`}
         title="Automations"
-        description="Trigger emails and SMS when candidates complete flows, trainings, or interviews."
+        description="What the system does automatically — send emails, SMS, or kick off training when candidates progress through a journey."
         actions={
           <>
             <Link href="/dashboard/content" className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-[10px] text-[13px] font-medium text-ink bg-transparent border border-surface-border hover:bg-surface-light transition-colors">
               Templates
             </Link>
-            <Button size="sm" onClick={() => openCreate()}>+ New rule</Button>
+            <Button size="sm" onClick={() => openCreate()}>+ New Automation</Button>
           </>
         }
       />
@@ -1279,6 +1279,7 @@ function AutomationsPageInner() {
         </div>
       )}
 
+
       {rules.length > 0 && <AutomationPipeline
         rules={rules}
         stages={stages}
@@ -1324,7 +1325,7 @@ function AutomationsPageInner() {
           <p className="text-grey-35 mb-4">Create email templates first, then set up automations</p>
           <div className="flex gap-3 justify-center">
             <Link href="/dashboard/content" className="btn-secondary">Create Template</Link>
-            <button onClick={() => openCreate()} className="btn-primary">+ Create Automation</button>
+            <button onClick={() => openCreate()} className="btn-primary">+ New Automation</button>
           </div>
         </div>
       ) : (
@@ -1361,7 +1362,7 @@ function AutomationsPageInner() {
                   </button>
                 </th>
                 <th className="px-5 py-3 text-left text-xs font-medium text-grey-40 uppercase">Trigger</th>
-                <th className="px-5 py-3 text-left text-xs font-medium text-grey-40 uppercase">Flow</th>
+                <th className="px-5 py-3 text-left text-xs font-medium text-grey-40 uppercase">Workflow</th>
                 <th className="px-5 py-3 text-left text-xs font-medium text-grey-40 uppercase">Steps</th>
                 <th className="px-5 py-3 text-left text-xs font-medium text-grey-40 uppercase">First step</th>
                 <th className="px-5 py-3 text-left text-xs font-medium text-grey-40 uppercase">Sent</th>
@@ -1417,7 +1418,7 @@ function AutomationsPageInner() {
                         )}
                       </td>
                       <td className="px-5 py-4"><span className={`text-xs px-2.5 py-1 rounded-full font-medium ${r.triggerType === 'training_completed' ? 'bg-green-50 text-green-700' : 'bg-brand-50 text-brand-600'}`}>{TRIGGER_LABELS[r.triggerType] || r.triggerType}</span></td>
-                      <td className="px-5 py-4 text-sm text-grey-35">{r.flow?.name || 'Any flow'}</td>
+                      <td className="px-5 py-4 text-sm text-grey-35">{r.flow?.name || 'Any workflow'}</td>
                       <td className="px-5 py-4 text-xs text-grey-35">
                         {r.steps && r.steps.length > 0 ? (
                           <span className="inline-flex items-center gap-1 flex-wrap">

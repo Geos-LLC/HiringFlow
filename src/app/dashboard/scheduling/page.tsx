@@ -8,7 +8,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Badge, Button, Card, Eyebrow, PageHeader } from '@/components/design'
+import { Badge, Button, Card, Eyebrow, PageHeader, Stat, WipBadge, WipSection } from '@/components/design'
 import { BookingRulesEditor } from './_BookingRulesEditor'
 import { defaultBookingRules, parseBookingRulesOrDefault, type BookingRules } from '@/lib/scheduling/booking-rules'
 
@@ -56,6 +56,11 @@ export default function SchedulingPage() {
   const [configs, setConfigs] = useState<SchedulingConfig[]>([])
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [meetingsTab, setMeetingsTab] = useState<'upcoming' | 'past'>('upcoming')
+  // Top-level tab: list of booking pages (existing surface) vs. calendar
+  // grid view (WIP). The calendar view is a placeholder per spec — once
+  // the grid renderer + slot aggregation are wired it'll show booked /
+  // cancelled / rescheduled / "result" cells per day.
+  const [topTab, setTopTab] = useState<'pages' | 'calendar'>('pages')
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<SchedulingConfig | null>(null)
@@ -155,13 +160,83 @@ export default function SchedulingPage() {
   return (
     <div className="-mx-6 lg:-mx-[132px]">
       <PageHeader
-        eyebrow="Calendly links & meetings"
+        eyebrow="Scheduling"
         title="Scheduling"
-        description="Booking links you send to candidates and meetings logged by Calendar sync."
-        actions={<Button size="sm" onClick={openCreate}>+ Add link</Button>}
+        description="How interviews are booked. Manage your booking pages and watch the calendar fill up."
+        actions={<Button size="sm" onClick={openCreate}>+ New Booking Page</Button>}
       />
 
       <div className="px-8 py-6 space-y-6">
+
+        {/* === Metric strip ===
+            Today / This Week / No Shows / Booking Rate. The first two are
+            computed from the live meetings array; the latter two are
+            placeholders until the no-show + click→booking aggregator are
+            wired. Surfaced so the recruiter has at-a-glance numbers to
+            decide whether to dig into the calendar tab. */}
+        {(() => {
+          const now = new Date()
+          const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+          const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60_000)
+          // Week start: Sunday at 00:00 (recruiter's locale would be nice,
+          // but the spec column header is Mon-Fri so Sunday-start is fine).
+          const day = now.getDay()
+          const startOfWeek = new Date(startOfToday.getTime() - day * 24 * 60 * 60_000)
+          const endOfWeek = new Date(startOfWeek.getTime() + 7 * 24 * 60 * 60_000)
+
+          const todayCount = meetings.filter((m) => {
+            const start = m.scheduledStart ? new Date(m.scheduledStart) : (m.metadata?.scheduledAt ? new Date(m.metadata.scheduledAt) : new Date(m.eventAt))
+            return start >= startOfToday && start < endOfToday && !m.noShow
+          }).length
+          const weekCount = meetings.filter((m) => {
+            const start = m.scheduledStart ? new Date(m.scheduledStart) : (m.metadata?.scheduledAt ? new Date(m.metadata.scheduledAt) : new Date(m.eventAt))
+            return start >= startOfWeek && start < endOfWeek && !m.noShow
+          }).length
+          const noShowCount = meetings.filter((m) => m.noShow).length
+
+          return (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat label="Today" value={todayCount} />
+              <Stat label="This week" value={weekCount} />
+              <Stat label="No-shows" value={noShowCount} deltaTone={noShowCount > 0 ? 'danger' : 'success'} />
+              <div className="rounded-[12px] border border-dashed border-grey-35 p-4 bg-surface-light">
+                <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-50 mb-1 flex items-center gap-1">
+                  Booking rate <WipBadge label="WIP" />
+                </div>
+                <div className="text-[18px] font-semibold text-grey-35">—%</div>
+                <div className="text-[11px] text-grey-35 mt-1">Needs link-click ingestion</div>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* === Top tabs: Booking Pages vs. Calendar === */}
+        <div className="flex gap-1 border-b border-surface-border -mb-3">
+          {([
+            { key: 'pages' as const,    label: 'Booking Pages' },
+            { key: 'calendar' as const, label: 'Calendar' },
+          ]).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTopTab(t.key)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                topTab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-grey-40 hover:text-grey-20'
+              }`}
+            >
+              {t.label}
+              {t.key === 'calendar' && <span className="ml-1.5"><WipBadge label="WIP" /></span>}
+            </button>
+          ))}
+        </div>
+
+        {topTab === 'calendar' && (
+          <WipSection
+            title="Weekly calendar view"
+            description="Mon–Fri grid showing booked / cancelled / rescheduled meetings with outcome chips. Will render once the per-slot aggregator is wired."
+          />
+        )}
+
+        {topTab === 'pages' && <>
         {/* Configs */}
         <section>
           <div className="flex items-end justify-between mb-3">
@@ -358,6 +433,7 @@ export default function SchedulingPage() {
             )
           })()}
         </section>
+        </>}
       </div>
 
       {/* Modal */}

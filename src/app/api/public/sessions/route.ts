@@ -3,6 +3,7 @@ import { getWorkspaceSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { logger } from '@/lib/logger'
 import { validateEmail, validatePhone } from '@/lib/contact-validation'
+import { findActiveProcessForFlow } from '@/lib/hiring-processes'
 
 /**
  * True if the email matches anyone "internal" to the workspace: a workspace
@@ -119,6 +120,37 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // HiringProcess attach. If this flow is the entry point of exactly one
+    // active HiringProcess in the workspace, stamp it on the new Session so
+    // the candidate's journey is tied to that process for analytics + UI.
+    //
+    // Ambiguous case (multiple active processes on the same flow) returns
+    // null — the API layer rejects this configuration at create/activate,
+    // but the candidate path is defensive so a race or hand-written DB
+    // change can't silently misattribute. We log a warning so it's visible.
+    let processId: string | null = null
+    const active = await findActiveProcessForFlow(prisma, {
+      workspaceId: flow.workspaceId,
+      flowId: flow.id,
+    })
+    if (active) {
+      processId = active.id
+    } else {
+      // Distinguish "no process" (the common case) from "ambiguous" (a real
+      // configuration error). The lib returns null for both, so we do a
+      // count here only when we want to log the warning, not on every call.
+      const activeCount = await prisma.hiringProcess.count({
+        where: { workspaceId: flow.workspaceId, flowId: flow.id, status: 'active' },
+      })
+      if (activeCount > 1) {
+        logger.warn('Multiple active HiringProcesses on flow — leaving processId null', {
+          flowId: flow.id,
+          workspaceId: flow.workspaceId,
+          activeCount,
+        })
+      }
+    }
+
     const session = await prisma.session.create({
       data: {
         flowId: flow.id,
@@ -133,10 +165,11 @@ export async function POST(request: NextRequest) {
         adId: adId || null,
         source: effectiveSource,
         campaign: campaign || null,
+        processId,
       },
     })
 
-    logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource })
+    logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource, processId })
 
     return NextResponse.json({
       id: session.id,

@@ -160,6 +160,18 @@ interface CandidateDetail {
   // rows. Drives the "Access revoked" badge + Revoke/Restore toggle on the
   // Current Activity card.
   trainingAccessStatus?: Record<string, 'active' | 'revoked' | 'none'>
+  // Hiring Process this candidate was attached to at flow-entry time.
+  // Null for sessions created before the HiringProcess feature shipped, or
+  // for flows that don't have an active process pointing at them.
+  process?: {
+    id: string
+    name: string
+    status: 'draft' | 'active' | 'archived'
+    flow: { id: string; name: string } | null
+    training: { id: string; title: string } | null
+    schedulingConfig: { id: string; name: string } | null
+    pipeline: { id: string; name: string } | null
+  } | null
 }
 
 const REJECTION_PRESETS = ['No-show', 'Not qualified', 'Wrong schedule', 'Declined offer', 'Wrong location', 'Pay expectations']

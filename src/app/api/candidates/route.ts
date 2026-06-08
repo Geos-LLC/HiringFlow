@@ -12,6 +12,12 @@ export async function GET(request: NextRequest) {
   const status = request.nextUrl.searchParams.get('status')
   const flowId = request.nextUrl.searchParams.get('flowId')
   const pipelineId = request.nextUrl.searchParams.get('pipelineId')
+  // Filter by Hiring Process — set by the candidates list dropdown and by
+  // deep-links from the processes page ("X candidates"). Strict match: only
+  // sessions whose processId equals this value (we deliberately don't fall
+  // back to processes that *would* match via flowId — analytics need historical
+  // attribution, not a "what would this look like today" projection).
+  const processId = request.nextUrl.searchParams.get('processId')
   const search = request.nextUrl.searchParams.get('search')
   // `candidateStatus` is the new orthogonal axis (active/stalled/lost/...)
   // Accepts a comma-separated list, e.g. ?candidateStatus=active,waiting for
@@ -96,6 +102,9 @@ export async function GET(request: NextRequest) {
   }
   if (flowId) {
     where.flowId = flowId
+  }
+  if (processId) {
+    where.processId = processId
   }
   if (interestingParam === '1' || interestingParam === 'true') {
     where.interestingAt = { not: null }

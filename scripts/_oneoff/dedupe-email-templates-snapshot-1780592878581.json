@@ -1,0 +1,119 @@
+{
+  "takenAt": "2026-06-04T17:07:58.581Z",
+  "workspaceId": "739bcd71-69fd-4b30-a39e-242521b7ab20",
+  "interviewKeep": {
+    "id": "51f8603e-7d92-41c1-a470-1a75b84f9627",
+    "workspaceId": "739bcd71-69fd-4b30-a39e-242521b7ab20",
+    "createdById": "80de094a-c6ad-4e41-a3fb-30071904a1df",
+    "name": "Interview Confirmation",
+    "subject": "Your interview is confirmed, {{candidate_name}}",
+    "bodyHtml": "<p>Hi {{candidate_name}},</p>\n<p>Your interview for <strong>{{flow_name}}</strong> is confirmed.</p>\n<p><strong>When:</strong> {{meeting_time}}</p>\n<p><strong>Join link:</strong> <a href=\"{{meeting_link}}\">{{meeting_link}}</a></p>\n<p style=\"margin:24px 0\"><a href=\"{{meeting_link}}\" style=\"background:#FF9500;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;\">Join Interview</a></p>\n<p>If you need to reschedule, please let us know as soon as possible.</p>\n<p>See you then,<br/>The Hiring Team</p>",
+    "bodyText": null,
+    "isActive": true,
+    "createdAt": "2026-04-15T23:25:34.825Z",
+    "updatedAt": "2026-04-15T23:25:34.825Z"
+  },
+  "interviewDelete": {
+    "id": "03a38899-7c36-4e58-9696-069e33d608e1",
+    "workspaceId": "739bcd71-69fd-4b30-a39e-242521b7ab20",
+    "createdById": "80de094a-c6ad-4e41-a3fb-30071904a1df",
+    "name": "Interview Confirmation",
+    "subject": "Your interview is confirmed, {{candidate_name}}",
+    "bodyHtml": "<p>Hi {{candidate_name}},</p>\n<p>Your interview for <strong>{{flow_name}}</strong> is confirmed.</p>\n<p><strong>When:</strong> {{meeting_time}}</p>\n<p><strong>Join link:</strong> <a href=\"{{meeting_link}}\">{{meeting_link}}</a></p>\n<p style=\"margin:24px 0\"><a href=\"{{meeting_link}}\" style=\"background:#FF9500;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;\">Join Interview</a></p>\n<p>If you need to reschedule, please let us know as soon as possible.</p>\n<p>See you then,<br/>The Hiring Team</p>",
+    "bodyText": null,
+    "isActive": true,
+    "createdAt": "2026-04-28T20:32:30.101Z",
+    "updatedAt": "2026-04-28T20:32:30.101Z"
+  },
+  "interviewDeleteRules": [
+    {
+      "id": "11c173d2-a38e-44b7-b015-f2c3cf771f51",
+      "workspaceId": "739bcd71-69fd-4b30-a39e-242521b7ab20",
+      "createdById": "80de094a-c6ad-4e41-a3fb-30071904a1df",
+      "name": "Meeting norification Company",
+      "triggerType": "meeting_scheduled",
+      "stageId": null,
+      "flowId": null,
+      "pipelineId": "418cac55-be00-4412-bf57-1412bf54218a",
+      "triggerAutomationId": null,
+      "actionType": "send_email",
+      "channel": "email",
+      "emailTemplateId": "03a38899-7c36-4e58-9696-069e33d608e1",
+      "smsBody": null,
+      "emailDestination": "company",
+      "emailDestinationAddress": null,
+      "nextStepType": "email",
+      "nextStepUrl": null,
+      "trainingId": null,
+      "schedulingConfigId": null,
+      "delayMinutes": 0,
+      "minutesBefore": null,
+      "waitForRecording": false,
+      "allowedForStatuses": [],
+      "isActive": true,
+      "createdAt": "2026-04-28T20:32:33.099Z",
+      "updatedAt": "2026-05-13T18:01:04.910Z"
+    }
+  ],
+  "interviewDeleteSteps": [
+    {
+      "id": "787018a3-4ea8-427c-9120-10c8723e2d9a",
+      "ruleId": "11c173d2-a38e-44b7-b015-f2c3cf771f51",
+      "order": 0,
+      "timingMode": "trigger",
+      "delayMinutes": 0,
+      "channel": "email",
+      "emailTemplateId": "03a38899-7c36-4e58-9696-069e33d608e1",
+      "smsTemplateId": null,
+      "smsBody": null,
+      "emailDestination": "company",
+      "emailDestinationAddress": null,
+      "smsDestination": "applicant",
+      "smsDestinationNumber": null,
+      "nextStepType": "email",
+      "nextStepUrl": null,
+      "trainingId": null,
+      "schedulingConfigId": null,
+      "createdAt": "2026-05-04T18:09:25.471Z",
+      "updatedAt": "2026-05-04T18:09:25.471Z"
+    }
+  ],
+  "nextStepDelete": [
+    {
+      "id": "23f8c1e7-92cd-40f7-b16c-d1b80285fa5a",
+      "workspaceId": "739bcd71-69fd-4b30-a39e-242521b7ab20",
+      "createdById": "80de094a-c6ad-4e41-a3fb-30071904a1df",
+      "name": "Next Step",
+      "subject": "Next steps — {{flow_name}}",
+      "bodyHtml": "<p>Hi {{candidate_name}},</p>\n<p>Here's what comes next for {{flow_name}}.</p>\n<p><a href=\"https://hiringflow-kappa.vercel.app/t/UEOT2SdAXg\" style=\"background:#FF9500;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;\">Continue</a></p>",
+      "bodyText": null,
+      "isActive": true,
+      "createdAt": "2026-04-14T21:06:20.651Z",
+      "updatedAt": "2026-04-14T21:06:20.651Z"
+    },
+    {
+      "id": "22ce2471-2ef7-4064-a17c-80f01d27dbb6",
+      "workspaceId": "739bcd71-69fd-4b30-a39e-242521b7ab20",
+      "createdById": "80de094a-c6ad-4e41-a3fb-30071904a1df",
+      "name": "Next Step",
+      "subject": "Next steps — {{flow_name}}",
+      "bodyHtml": "<p>Hi {{candidate_name}},</p>\n<p>Here's what comes next for {{flow_name}}.</p>\n<p><a href=\"{{https://hiringflow-kappa.vercel.app/t/UEOT2SdAXg}}\" style=\"background:#FF9500;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;\">Continue</a></p>",
+      "bodyText": null,
+      "isActive": true,
+      "createdAt": "2026-04-14T21:32:56.496Z",
+      "updatedAt": "2026-04-14T21:32:56.496Z"
+    }
+  ],
+  "trainingRename": {
+    "id": "565094ab-68e5-4cf1-bb2e-b6ce0e655e6b",
+    "workspaceId": "739bcd71-69fd-4b30-a39e-242521b7ab20",
+    "createdById": "80de094a-c6ad-4e41-a3fb-30071904a1df",
+    "name": "Training Invitation",
+    "subject": "Your training is ready, {{candidate_name}}!",
+    "bodyHtml": "<p>Hi {{candidate_name}},</p>\n<p>You've passed the screening for {{flow_name}}.</p>\n<p><a href=\"{{training_link}}\" style=\"background:#FF9500;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:bold;\">Start Training</a></p>",
+    "bodyText": null,
+    "isActive": true,
+    "createdAt": "2026-04-14T16:43:40.360Z",
+    "updatedAt": "2026-04-14T16:43:40.360Z"
+  }
+}

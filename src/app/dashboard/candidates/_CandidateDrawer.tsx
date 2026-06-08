@@ -1,0 +1,222 @@
+/**
+ * CandidateDrawer — slide-in side panel that opens when the recruiter clicks
+ * a candidate card on the kanban.
+ *
+ * Phase 1 (this PR): renders a summary header + quick-action buttons. The
+ * deeper sections (Journey/Process, AI Evaluation, Timeline, Next action)
+ * are PLACEHOLDERS — the data already exists on /dashboard/candidates/[id]
+ * but the drawer-side rendering is queued for a follow-up so the kanban
+ * page doesn't have to import the entire detail page tree right now.
+ *
+ * The full-detail page link at the bottom guarantees the recruiter can
+ * always escape the drawer to the existing surface.
+ */
+
+'use client'
+
+import * as React from 'react'
+import Link from 'next/link'
+import { Badge, WipBadge, WipSection } from '@/components/design'
+
+export interface CandidateDrawerCandidate {
+  id: string
+  candidateName: string | null
+  candidateEmail: string | null
+  pipelineStatus: string | null
+  status: string | null
+  flow: { id: string; name: string } | null
+  startedAt: string
+  nextMeetingAt?: string | null
+  latestStep?: { label: string; at: string } | null
+}
+
+export interface CandidateDrawerProps {
+  candidate: CandidateDrawerCandidate | null
+  onClose: () => void
+  // Quick-action callbacks. Each one is optional — when omitted the button
+  // renders disabled with a "Coming soon" badge so the layout reads as
+  // intentional, not broken.
+  onMoveStage?: () => void
+  onSendMessage?: () => void
+  onRunAutomation?: () => void
+  onScheduleInterview?: () => void
+}
+
+const STATUS_TONE: Record<string, 'brand' | 'neutral' | 'success' | 'warn' | 'danger' | 'info'> = {
+  active: 'brand',
+  waiting: 'info',
+  stalled: 'warn',
+  nurture: 'neutral',
+  hired: 'success',
+  lost: 'danger',
+}
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString()
+}
+
+export function CandidateDrawer({
+  candidate,
+  onClose,
+  onMoveStage,
+  onSendMessage,
+  onRunAutomation,
+  onScheduleInterview,
+}: CandidateDrawerProps) {
+  // Esc dismisses the drawer — matches the MobileNav contract so the muscle
+  // memory works across both surfaces.
+  React.useEffect(() => {
+    if (!candidate) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [candidate, onClose])
+
+  const open = !!candidate
+
+  return (
+    <>
+      {/* Scrim */}
+      <div
+        aria-hidden
+        onClick={onClose}
+        className={`fixed inset-0 z-[55] transition-opacity duration-200 ${
+          open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        }`}
+        style={{ background: 'rgba(23,23,26,0.35)', backdropFilter: 'blur(2px)' }}
+      />
+
+      {/* Panel */}
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label="Candidate detail"
+        className={`fixed top-0 right-0 bottom-0 z-[56] w-full md:w-[440px] flex flex-col bg-white transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          open ? 'translate-x-0' : 'translate-x-full'
+        }`}
+        style={{ boxShadow: '-20px 0 40px -20px rgba(0,0,0,0.2)' }}
+      >
+        {candidate && (
+          <>
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-surface-border flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35 mb-1">
+                  Candidate
+                </div>
+                <div className="font-semibold text-[16px] text-ink truncate">
+                  {candidate.candidateName || 'Unnamed'}
+                </div>
+                <div className="text-[12px] text-grey-35 truncate">
+                  {candidate.candidateEmail || '—'}
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                aria-label="Close"
+                className="w-9 h-9 rounded-[10px] inline-flex items-center justify-center text-ink hover:bg-surface-light"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <path d="M6 6l12 12M6 18 18 6" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {/* Summary chips */}
+              <div className="flex flex-wrap gap-2">
+                {candidate.status && (
+                  <Badge tone={STATUS_TONE[candidate.status] || 'neutral'}>
+                    {candidate.status}
+                  </Badge>
+                )}
+                {candidate.pipelineStatus && (
+                  <Badge tone="neutral">Stage: {candidate.pipelineStatus}</Badge>
+                )}
+              </div>
+
+              {/* Snapshot */}
+              <section className="rounded-[12px] border border-surface-border p-3">
+                <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35 mb-2">
+                  Snapshot
+                </div>
+                <dl className="grid grid-cols-2 gap-y-2 text-[12px]">
+                  <dt className="text-grey-35">Flow</dt>
+                  <dd className="text-ink truncate">{candidate.flow?.name || '—'}</dd>
+                  <dt className="text-grey-35">Applied</dt>
+                  <dd className="text-ink">{fmtDate(candidate.startedAt)}</dd>
+                  <dt className="text-grey-35">Next meeting</dt>
+                  <dd className="text-ink">{fmtDate(candidate.nextMeetingAt)}</dd>
+                  <dt className="text-grey-35">Last step</dt>
+                  <dd className="text-ink">{candidate.latestStep?.label || '—'}</dd>
+                </dl>
+              </section>
+
+              {/* Placeholders for sections per spec — backend exists at
+                  /dashboard/candidates/[id] but the drawer-side render is
+                  queued. */}
+              <WipSection
+                title="Current journey / process"
+                description="Will show the linked Journey and its Flow / Training / Scheduling / Pipeline once wired."
+              />
+              <WipSection
+                title="AI evaluation"
+                description="Score + rubric breakdown from the candidate evaluation engine."
+              />
+              <WipSection
+                title="Recent timeline"
+                description="Last 5 events (answers, training, meetings, automations)."
+              />
+              <WipSection
+                title="Suggested next action"
+                description="Heuristic recommendation based on current stage + last activity."
+              />
+            </div>
+
+            {/* Footer — quick actions + escape to full detail */}
+            <div className="border-t border-surface-border p-4 space-y-3">
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35">
+                Quick actions
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <QuickAction label="Move stage" onClick={onMoveStage} />
+                <QuickAction label="Send message" onClick={onSendMessage} />
+                <QuickAction label="Run automation" onClick={onRunAutomation} />
+                <QuickAction label="Schedule interview" onClick={onScheduleInterview} />
+              </div>
+              <Link
+                href={`/dashboard/candidates/${candidate.id}`}
+                className="flex items-center justify-center gap-1.5 w-full py-2 rounded-[10px] bg-ink text-white text-[13px] font-medium hover:bg-grey-15"
+              >
+                Open full detail
+                <span aria-hidden>→</span>
+              </Link>
+            </div>
+          </>
+        )}
+      </aside>
+    </>
+  )
+}
+
+function QuickAction({ label, onClick }: { label: string; onClick?: () => void }) {
+  const disabled = !onClick
+  return (
+    <button
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex items-center justify-between gap-1 px-3 py-2 rounded-[10px] border text-[12px] font-medium transition-colors ${
+        disabled
+          ? 'border-dashed border-grey-35 text-grey-35 cursor-not-allowed'
+          : 'border-surface-border text-ink hover:bg-surface-light'
+      }`}
+    >
+      <span className="truncate">{label}</span>
+      {disabled && <WipBadge label="WIP" />}
+    </button>
+  )
+}

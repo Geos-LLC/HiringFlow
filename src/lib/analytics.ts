@@ -5,6 +5,11 @@ import { excludeTestSessions } from './session-filters'
 export interface DateFilter {
   from?: Date
   to?: Date
+  // Optional HiringProcess scope. When set, every metric only counts sessions
+  // attached to this process. Keeps analytics drill-downs consistent with the
+  // candidates-list filter — recruiters who slice by process on the list
+  // expect the same slice on the funnel chart.
+  processId?: string
 }
 
 function dateWhere(filter?: DateFilter) {
@@ -17,13 +22,17 @@ function dateWhere(filter?: DateFilter) {
   }
 }
 
+function processWhere(filter?: DateFilter) {
+  return filter?.processId ? { processId: filter.processId } : {}
+}
+
 /**
  * Funnel metrics — session-based counts through each pipeline stage.
  * Test-source sessions are excluded (see src/lib/session-filters.ts) so
  * recruiter analytics reflect real candidates, not test sends.
  */
 export async function getFunnelMetrics(workspaceId: string, filter?: DateFilter) {
-  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter) }
+  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter), ...processWhere(filter) }
 
   const [
     started,

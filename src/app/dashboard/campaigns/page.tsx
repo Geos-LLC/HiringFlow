@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
-import { Button, Card, Eyebrow, PageHeader, Stat } from '@/components/design'
+import { Button, Card, Eyebrow, PageHeader, Stat, WipBadge, WipSection } from '@/components/design'
 import { BUILTIN_AD_SOURCES, normalizeCustomSources } from '@/lib/sources'
 
 interface Flow { id: string; name: string; slug: string; isPublished?: boolean }
@@ -44,7 +44,13 @@ export default function CampaignsPage() {
   const [flowId, setFlowId] = useState('')
   const [saving, setSaving] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
-  const [tab, setTab] = useState<'ads' | 'sources' | 'links'>('ads')
+  // Tab structure follows the Recruiting > Campaigns spec:
+  //   overview  — metric cards + at-a-glance charts (new landing surface)
+  //   campaigns — list of every ad/campaign (was the legacy 'ads' tab)
+  //   sources   — per-source breakdown (existing)
+  //   templates — reusable ad-copy templates (replaces the old 'links' tab;
+  //               the per-campaign tracked URL is still copyable inline)
+  const [tab, setTab] = useState<'overview' | 'campaigns' | 'sources' | 'templates'>('overview')
   // Filters for the Ads tab. Empty string means "all". Both filters intersect.
   const [adsSourceFilter, setAdsSourceFilter] = useState<string>('')
   const [adsFlowFilter, setAdsFlowFilter] = useState<string>('')
@@ -458,27 +464,21 @@ export default function CampaignsPage() {
   return (
     <div className="-mx-6 lg:-mx-[132px]">
       <PageHeader
-        eyebrow={`${ads.length} ad${ads.length === 1 ? '' : 's'}`}
+        eyebrow={`${ads.length} campaign${ads.length === 1 ? '' : 's'}`}
         title="Campaigns"
-        description="Manage hiring traffic — ads, sources, and tracked links."
-        actions={<Button size="sm" onClick={openCreate}>+ New ad</Button>}
+        description="Acquisition and source tracking. Spin up tracked links, monitor where applicants come from, and reuse ad copy templates."
+        actions={<Button size="sm" onClick={openCreate}>+ New Campaign</Button>}
       />
 
       <div className="px-8 py-4">
-      {/* Quick Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <Stat label="Total ads" value={ads.length} />
-        <Stat label="Active" value={activeAds} delta={ads.length > 0 ? `${Math.round((activeAds / ads.length) * 100)}%` : undefined} deltaTone="success" />
-        <Stat label="Total candidates" value={totalSessions} />
-        <Stat label="Sources used" value={sourcesUsed} />
-      </div>
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-surface-border">
         {[
-          { key: 'ads' as const, label: `Ads (${ads.length})` },
-          { key: 'sources' as const, label: `Sources (${sourceStats.length})` },
-          { key: 'links' as const, label: 'Tracked Links' },
+          { key: 'overview' as const,  label: 'Overview' },
+          { key: 'campaigns' as const, label: `All Campaigns (${ads.length})` },
+          { key: 'sources' as const,   label: `Sources (${sourceStats.length})` },
+          { key: 'templates' as const, label: `Templates (${adTemplates.length})` },
         ].map(t => (
           <button
             key={t.key}
@@ -492,8 +492,47 @@ export default function CampaignsPage() {
         ))}
       </div>
 
-      {/* ADS TAB */}
-      {tab === 'ads' && (
+      {/* OVERVIEW TAB — metric cards + breakdowns. Cost-per-applicant and
+          Best source are marked WIP because there's no spend ingestion yet
+          (no Ad.spend column or per-click tracking). The other two are real.  */}
+      {tab === 'overview' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat label="Total campaigns" value={ads.length} />
+            <Stat label="Applicants" value={totalSessions} />
+            <div className="rounded-[12px] border border-dashed border-grey-35 p-4 bg-surface-light">
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-50 mb-1 flex items-center gap-1">
+                Cost per applicant <WipBadge label="WIP" />
+              </div>
+              <div className="text-[18px] font-semibold text-grey-35">—</div>
+              <div className="text-[11px] text-grey-35 mt-1">Needs spend ingestion</div>
+            </div>
+            <div className="rounded-[12px] border border-dashed border-grey-35 p-4 bg-surface-light">
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-50 mb-1 flex items-center gap-1">
+                Best source <WipBadge label="WIP" />
+              </div>
+              <div className="text-[18px] font-semibold text-grey-35">
+                {sourceStats[0]?.label || '—'}
+              </div>
+              <div className="text-[11px] text-grey-35 mt-1">Will rank by conversion once tracked</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <WipSection
+              title="Applicants by source"
+              description="Bar chart breakdown — will render once the analytics aggregator returns per-source counts to this surface."
+            />
+            <WipSection
+              title="Conversion by source"
+              description="Funnel chart — % of applicants from each source that reach Hired."
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ALL CAMPAIGNS TAB — was the legacy 'ads' tab. Content unchanged. */}
+      {tab === 'campaigns' && (
         <>
           {ads.length === 0 ? (
             <div className="section-card text-center py-16">
@@ -682,7 +721,53 @@ export default function CampaignsPage() {
       )}
 
       {/* TRACKED LINKS TAB */}
-      {tab === 'links' && (
+      {/* TEMPLATES TAB — reusable ad-copy templates (AdTemplate rows). The
+          legacy 'Tracked Links' panel moved into the campaign row's "Copy
+          link" affordance on the All Campaigns tab; no information was lost. */}
+      {tab === 'templates' && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-[14px] text-ink">Ad copy templates</h3>
+              <p className="text-[12px] text-grey-35">Reusable headline / body / CTA presets that prefill the campaign editor.</p>
+            </div>
+            <button
+              onClick={() => { setEditingTemplate(null); setTemplateEditorOpen(true) }}
+              className="px-3 py-2 rounded-[10px] border border-surface-border text-[13px] text-ink hover:bg-surface-light"
+            >
+              + New template
+            </button>
+          </div>
+          {adTemplates.length === 0 ? (
+            <div className="bg-white rounded-[12px] border border-surface-border p-8 text-center text-grey-40">
+              No templates yet. Seed defaults from a campaign you've already written, or click <b>+ New template</b>.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {adTemplates.map((t) => (
+                <Card key={t.id} padding={16}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="font-medium text-[14px] text-ink">{t.name}</div>
+                    <span className="text-[11px] text-grey-35 capitalize">{t.source}</span>
+                  </div>
+                  <div className="text-[12px] text-grey-15 mb-2 line-clamp-2">{t.headline}</div>
+                  <div className="text-[11px] text-grey-35 line-clamp-3">{t.bodyText}</div>
+                  <button
+                    onClick={() => { setEditingTemplate(t); setTemplateEditorOpen(true) }}
+                    className="mt-3 text-[12px] text-ink underline"
+                  >
+                    Edit
+                  </button>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Hidden — legacy 'links' tab kept compiled for backwards-compat
+          string maps. Never selected because the tab type doesn't include it. */}
+      {false && (
         <div className="space-y-3">
           {ads.length === 0 ? (
             <div className="bg-white rounded-[12px] border border-surface-border p-8 text-center text-grey-40">No tracked links yet</div>

@@ -11,9 +11,9 @@
 // `pipelineId = null` fall back to that default at runtime. The default
 // can't be deleted but can be swapped with another via "Make default".
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { PageHeader, Card, Button } from '@/components/design'
+import { PageHeader, Card, Button, WipBadge, WipSection } from '@/components/design'
 import type { FunnelStage } from '@/lib/funnel-stages'
 import { StageSettingsDrawer } from '@/app/dashboard/candidates/_StageSettingsDrawer'
 
@@ -56,6 +56,17 @@ export default function PipelinesPage() {
   const [setupTarget, setSetupTarget] = useState<PipelineRow | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Editor state — the new top section. Selected pipeline drives the
+  // visual stage map; selected stage drives the details + candidates
+  // panels. Both default to the workspace's default pipeline and its
+  // first stage once the API responds. `selectedStageId` is a string
+  // (stage id) rather than the FunnelStage object so it survives
+  // refetches without going stale.
+  const [editorPipelineId, setEditorPipelineId] = useState<string | null>(null)
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null)
+  const [stageCandidates, setStageCandidates] = useState<Array<{ id: string; candidateName: string | null; flow: { name: string } | null }>>([])
+  const [stageCandidatesLoading, setStageCandidatesLoading] = useState(false)
+
   const load = useCallback(async () => {
     setLoading(true)
     const [pRes, fRes] = await Promise.all([
@@ -68,6 +79,48 @@ export default function PipelinesPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Pick a default selected pipeline + stage once data lands. Keeps the
+  // editor view "always populated" rather than empty until the recruiter
+  // picks a pipeline manually.
+  useEffect(() => {
+    if (editorPipelineId || pipelines.length === 0) return
+    const def = pipelines.find((p) => p.isDefault) ?? pipelines[0]
+    setEditorPipelineId(def.id)
+    setSelectedStageId(def.stages[0]?.id ?? null)
+  }, [pipelines, editorPipelineId])
+
+  const editorPipeline = useMemo(
+    () => pipelines.find((p) => p.id === editorPipelineId) ?? null,
+    [pipelines, editorPipelineId],
+  )
+  const selectedStage = useMemo(
+    () => editorPipeline?.stages.find((s) => s.id === selectedStageId) ?? null,
+    [editorPipeline, selectedStageId],
+  )
+
+  // Fetch the candidates-in-selected-stage panel data. The candidates list
+  // endpoint already filters by pipelineStatus, so we reuse it instead of
+  // adding a new aggregate. Limited to first 25 — this panel is at-a-glance,
+  // not a full board.
+  useEffect(() => {
+    if (!editorPipelineId || !selectedStageId) {
+      setStageCandidates([])
+      return
+    }
+    setStageCandidatesLoading(true)
+    const params = new URLSearchParams({
+      pipelineId: editorPipelineId,
+      status: selectedStageId,
+    })
+    fetch(`/api/candidates?${params.toString()}`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((rows: Array<{ id: string; candidateName: string | null; flow: { name: string } | null }>) => {
+        setStageCandidates(rows.slice(0, 25))
+      })
+      .catch(() => setStageCandidates([]))
+      .finally(() => setStageCandidatesLoading(false))
+  }, [editorPipelineId, selectedStageId])
 
   const create = async () => {
     const name = newName.trim()
@@ -222,16 +275,51 @@ export default function PipelinesPage() {
   return (
     <div>
       <PageHeader
-        eyebrow={`${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'}`}
-        title="Pipelines"
-        description="Create separate stage lists for different roles. Edit each pipeline's stages from the kanban (Stages button) while the matching pipeline is selected."
+        eyebrow={editorPipeline ? `${editorPipeline.stages.length} stages` : `${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'}`}
+        title="Pipeline"
+        description="Configure the stages a candidate moves through. Each stage has its own movement rules and entry automations."
         actions={
-          <Link
-            href="/dashboard/candidates"
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-surface-border text-[13px] text-ink hover:bg-surface-light"
-          >
-            &larr; Back to kanban
-          </Link>
+          <div className="flex items-center gap-2">
+            {/* Pipeline selector. Drives the visual stage map below. */}
+            <select
+              value={editorPipelineId ?? ''}
+              onChange={(e) => {
+                const id = e.target.value || null
+                setEditorPipelineId(id)
+                const p = pipelines.find((x) => x.id === id)
+                setSelectedStageId(p?.stages[0]?.id ?? null)
+              }}
+              className="px-3 py-2 border border-surface-border rounded-[10px] text-[13px] text-ink bg-white"
+            >
+              {pipelines.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}{p.isDefault ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => editorPipeline && setSetupTarget(editorPipeline)}
+              disabled={!editorPipeline}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-surface-border text-[13px] text-ink hover:bg-surface-light disabled:opacity-50"
+              title="Open the Stages drawer to add, rename, reorder, or delete stages"
+            >
+              + Add Stage
+            </button>
+            <button
+              disabled
+              title="Bulk save will land when the visual map editor is live. For now use the Stages drawer."
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-dashed border-grey-35 text-[13px] text-grey-35 cursor-not-allowed"
+            >
+              Save changes
+              <WipBadge label="WIP" />
+            </button>
+            <Link
+              href="/dashboard/candidates"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-surface-border text-[13px] text-ink hover:bg-surface-light"
+            >
+              &larr; Kanban
+            </Link>
+          </div>
         }
       />
 
@@ -240,6 +328,162 @@ export default function PipelinesPage() {
           {error}
         </div>
       )}
+
+      {/* === New editor section: visual map + details + candidates === */}
+      {editorPipeline && (
+        <>
+          {/* Visual stage map. Placeholder rendering: a horizontal strip of
+              stage chips with arrows between them. The "flowchart" version
+              (drag to reorder, branching from a stage to multiple targets) is
+              queued — until then the strip lets the recruiter at least click
+              a stage to drill in. */}
+          <Card padding={20} className="mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="font-semibold text-[14px] text-ink">Visual stage map</h2>
+                <p className="text-[12px] text-grey-35">Click a stage to inspect its details and current candidates.</p>
+              </div>
+              <WipBadge label="Drag-to-reorder coming" />
+            </div>
+            <div className="flex items-center gap-2 overflow-x-auto pb-2">
+              {editorPipeline.stages.map((stage, idx) => {
+                const isSelected = stage.id === selectedStageId
+                return (
+                  <div key={stage.id} className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => setSelectedStageId(stage.id)}
+                      className={`inline-flex items-center gap-2 px-3 py-2 rounded-[10px] border transition-all whitespace-nowrap ${
+                        isSelected
+                          ? 'border-ink bg-ink text-white shadow-sm'
+                          : 'border-surface-border bg-white text-ink hover:border-grey-50'
+                      }`}
+                    >
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{ background: isSelected ? 'white' : stage.color }}
+                      />
+                      <span className="text-[13px] font-medium">{stage.label}</span>
+                    </button>
+                    {idx < editorPipeline.stages.length - 1 && (
+                      <svg width="20" height="14" viewBox="0 0 20 14" className="text-grey-50 shrink-0">
+                        <path d="M2 7h14m0 0l-4-4m4 4l-4 4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+
+          {/* Stage details + candidates panel. Spec: middle = stage details
+              with Name/Type/Rules; right = candidates currently in selected
+              stage. Type field is NEW (not modeled yet on FunnelStage) so
+              renders as WIP. Rules sections inherit from the existing
+              StageSettingsDrawer which we open via "Edit rules". */}
+          {selectedStage && (
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 mb-6">
+              <Card padding={20}>
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35 mb-1">Stage details</div>
+                    <h2 className="font-semibold text-[16px] text-ink">{selectedStage.label}</h2>
+                  </div>
+                  <button
+                    onClick={() => editorPipeline && setSetupTarget(editorPipeline)}
+                    className="text-[12px] px-2.5 py-1 rounded-[8px] border border-surface-border text-ink hover:bg-surface-light"
+                  >
+                    Edit in drawer →
+                  </button>
+                </div>
+
+                <dl className="grid grid-cols-[120px_1fr] gap-y-2 text-[13px] mb-4">
+                  <dt className="text-grey-35">Name</dt>
+                  <dd className="text-ink">{selectedStage.label}</dd>
+                  <dt className="text-grey-35">Stage id</dt>
+                  <dd className="font-mono text-[12px] text-grey-15">{selectedStage.id}</dd>
+                  <dt className="text-grey-35">Order</dt>
+                  <dd className="text-ink">{selectedStage.order}</dd>
+                  <dt className="text-grey-35 flex items-center gap-1">
+                    Type <WipBadge label="WIP" />
+                  </dt>
+                  <dd className="text-grey-35">
+                    Active / Hired / Lost classification — not modeled yet.
+                  </dd>
+                  <dt className="text-grey-35">Entry triggers</dt>
+                  <dd className="text-ink">
+                    {selectedStage.triggers && selectedStage.triggers.length > 0
+                      ? selectedStage.triggers.map((t) => t.event).join(', ')
+                      : <span className="text-grey-35">None configured</span>
+                    }
+                  </dd>
+                </dl>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <WipSection
+                    title="Auto-move rules"
+                    description="View & edit PipelineTransitionRule rows for this stage. Available via Edit in drawer →"
+                  />
+                  <WipSection
+                    title="Stage entry automations"
+                    description="AutomationRules with stage_entered trigger on this stage."
+                  />
+                  <WipSection
+                    title="Stale rule"
+                    description="Per-stage stalled threshold override. Workspace default applies today."
+                  />
+                  <WipSection
+                    title="Notifications"
+                    description="Recruiter notification when a candidate enters this stage."
+                  />
+                </div>
+              </Card>
+
+              <Card padding={20}>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-semibold text-[14px] text-ink">In this stage</h2>
+                  {stageCandidates.length > 0 && (
+                    <Link
+                      href={`/dashboard/candidates?pipelineId=${editorPipeline.id}&status=${selectedStage.id}`}
+                      className="text-[12px] text-grey-35 hover:text-ink underline"
+                    >
+                      Open in kanban
+                    </Link>
+                  )}
+                </div>
+                {stageCandidatesLoading ? (
+                  <div className="text-[13px] text-grey-35">Loading…</div>
+                ) : stageCandidates.length === 0 ? (
+                  <div className="text-[13px] text-grey-35">No candidates currently in this stage.</div>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {stageCandidates.map((c) => (
+                      <li key={c.id}>
+                        <Link
+                          href={`/dashboard/candidates/${c.id}`}
+                          className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-[8px] hover:bg-surface-light"
+                        >
+                          <span className="text-[13px] text-ink truncate">{c.candidateName || 'Anonymous'}</span>
+                          {c.flow && (
+                            <span className="text-[11px] text-grey-35 truncate shrink-0 max-w-[120px]">{c.flow.name}</span>
+                          )}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* === Existing pipeline library section, kept under its own header === */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold text-[15px] text-ink">Pipeline library</h2>
+          <p className="text-[12px] text-grey-35">Create, rename, archive, and reassign flows across pipelines.</p>
+        </div>
+      </div>
 
       <Card padding={20} className="mb-6">
         <h2 className="font-semibold text-[14px] text-ink mb-3">New pipeline</h2>
@@ -466,9 +710,6 @@ export default function PipelinesPage() {
         </div>
       )}
 
-      <p className="mt-6 text-xs text-grey-40">
-        Stages, movement rules, and actions can also be edited from the kanban &rarr; <b>Stages</b> button while the pipeline is selected.
-      </p>
 
       {/* Stage Settings drawer — same component the kanban uses. Mounted
           here so a pipeline can be configured immediately after create

@@ -1180,13 +1180,14 @@ export default function FlowBuilderPage() {
             </button>
             <button
               onClick={() => setViewMode('schema')}
+              title="Visual flow — branching, conditions, routing"
               className={`px-3 py-1.5 text-sm ${
                 viewMode === 'schema'
                   ? 'bg-brand-500 text-white'
                   : 'bg-white text-gray-600 hover:bg-gray-50'
               }`}
             >
-              Schema
+              Visual Flow
             </button>
             <button
               onClick={() => setViewMode('branding')}

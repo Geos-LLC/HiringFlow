@@ -22,17 +22,56 @@ import { TranscodeBanner } from './_components/TranscodeBanner'
 import { UploadProvider } from './_components/UploadProvider'
 import { DeliveryFailureToaster } from './_components/DeliveryFailureToaster'
 
+// Grouped navigation. Row 1 shows the five group labels (Recruiting /
+// Process / Content / Insights / Admin); row 2 shows the active group's
+// children. The group's own `href` is the first child's route so clicking
+// the group lands on a real page.
+//
+// Routes deliberately not surfaced in nav: /dashboard/flows (reached via
+// Journey editor), /dashboard/branding (reached via Settings). They still
+// work as direct URLs — this is a regroup, not a removal.
 const NAV_ITEMS: TopNavItem[] = [
-  { href: '/dashboard/candidates', label: 'Candidates' },
-  { href: '/dashboard/campaigns', label: 'Campaigns' },
-  { href: '/dashboard/flows', label: 'Screening' },
-  { href: '/dashboard/automations', label: 'Automations' },
-  { href: '/dashboard/scheduling', label: 'Scheduling' },
-  { href: '/dashboard/trainings', label: 'Trainings', matches: ['/dashboard/trainings', '/dashboard/ai-calls'] },
-  { href: '/dashboard/content', label: 'Assets', matches: ['/dashboard/content', '/dashboard/videos'] },
-  { href: '/dashboard/branding', label: 'Branding' },
-  { href: '/dashboard/analytics', label: 'Analytics' },
-  { href: '/dashboard/settings', label: 'Settings' },
+  {
+    label: 'Recruiting',
+    href: '/dashboard/candidates',
+    children: [
+      { label: 'Candidates', href: '/dashboard/candidates' },
+      { label: 'Pipeline',   href: '/dashboard/pipelines' },
+      { label: 'Campaigns',  href: '/dashboard/campaigns' },
+    ],
+  },
+  {
+    label: 'Process',
+    href: '/dashboard/flows',
+    children: [
+      { label: 'Workflows',   href: '/dashboard/flows' },
+      { label: 'Automations', href: '/dashboard/automations' },
+      { label: 'Scheduling',  href: '/dashboard/scheduling' },
+    ],
+  },
+  {
+    label: 'Content',
+    href: '/dashboard/trainings',
+    children: [
+      { label: 'Trainings', href: '/dashboard/trainings', matches: ['/dashboard/ai-calls'] },
+      { label: 'Templates', href: '/dashboard/content' },
+      { label: 'Media',     href: '/dashboard/videos' },
+    ],
+  },
+  {
+    label: 'Insights',
+    href: '/dashboard/analytics',
+    children: [
+      { label: 'Analytics', href: '/dashboard/analytics' },
+    ],
+  },
+  {
+    label: 'Admin',
+    href: '/dashboard/settings',
+    children: [
+      { label: 'Settings', href: '/dashboard/settings' },
+    ],
+  },
 ]
 
 // Routes that own their own horizontal drag (flow builder canvas, training

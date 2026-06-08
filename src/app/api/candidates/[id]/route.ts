@@ -78,6 +78,20 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         },
       },
       schedulingEvents: { orderBy: { eventAt: 'desc' } },
+      // Hiring Process this candidate was attached to at flow-entry time.
+      // Sticky — even if the recruiter later reassigns the flow, processId
+      // stays on the historical record so analytics keep their attribution.
+      process: {
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          flow: { select: { id: true, name: true } },
+          training: { select: { id: true, title: true } },
+          schedulingConfig: { select: { id: true, name: true } },
+          pipeline: { select: { id: true, name: true } },
+        },
+      },
     },
   })
 

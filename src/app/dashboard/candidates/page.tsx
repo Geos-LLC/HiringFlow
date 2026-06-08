@@ -15,7 +15,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Badge, Button, Card, PageHeader } from '@/components/design'
+import { Badge, Button, Card, PageHeader, WipBadge } from '@/components/design'
+import { CandidateDrawer, type CandidateDrawerCandidate } from './_CandidateDrawer'
 import {
   DEFAULT_FUNNEL_STAGES,
   type FunnelStage,
@@ -208,6 +209,12 @@ export default function CandidatesPage() {
   const [customStatuses, setCustomStatuses] = useState<CustomStatus[]>([])
   const [customSources, setCustomSources] = useState<string[]>([])
   const [createOpen, setCreateOpen] = useState(false)
+  // Right-side quick-preview drawer. Opens when the recruiter clicks a
+  // candidate card; the existing full-detail page at /dashboard/candidates/[id]
+  // is still available via the "Open full detail" CTA at the bottom of the
+  // drawer. State lives at the page level so the drawer survives sort/filter
+  // re-renders.
+  const [previewCandidate, setPreviewCandidate] = useState<CandidateDrawerCandidate | null>(null)
   // View mode toggle. Kanban is the default; table is a flat list with
   // checkboxes for bulk operations (move-to-stage, delete) and sortable
   // columns. Persisted so the recruiter's preferred view sticks across
@@ -735,13 +742,24 @@ export default function CandidatesPage() {
               Stages
             </button>
             <button
+              disabled
+              title="CSV/Excel export of the current filter selection — coming soon"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-dashed border-grey-35 text-[13px] text-grey-35 cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+              </svg>
+              Export
+              <WipBadge label="WIP" />
+            </button>
+            <button
               onClick={() => setCreateOpen(true)}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] bg-brand-500 text-white font-semibold text-[13px] hover:bg-brand-600 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
-              New candidate
+              Add Candidate
             </button>
           </div>
         }
@@ -1139,9 +1157,28 @@ export default function CandidatesPage() {
                               >
                                 {c.interestingAt ? '★' : '☆'}
                               </button>
-                              <Link href={`/dashboard/candidates/${c.id}`} className="font-medium text-[13px] text-ink hover:text-[color:var(--brand-primary)] leading-tight truncate">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setPreviewCandidate({
+                                    id: c.id,
+                                    candidateName: c.candidateName,
+                                    candidateEmail: c.candidateEmail,
+                                    pipelineStatus: c.pipelineStatus,
+                                    status: c.status,
+                                    flow: c.flow,
+                                    startedAt: c.startedAt,
+                                    nextMeetingAt: c.nextMeetingAt,
+                                    latestStep: c.latestStep,
+                                  })
+                                }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                draggable={false}
+                                className="font-medium text-[13px] text-ink hover:text-[color:var(--brand-primary)] leading-tight truncate text-left"
+                                title="Open preview drawer"
+                              >
                                 {c.candidateName || 'Anonymous'}
-                              </Link>
+                              </button>
                             </div>
                             <button
                               onClick={(e) => { e.stopPropagation(); deleteCandidate(c) }}
@@ -1547,6 +1584,14 @@ export default function CandidatesPage() {
           router.push(`/dashboard/candidates/${id}`)
         }}
       />
+      <CandidateDrawer
+        candidate={previewCandidate}
+        onClose={() => setPreviewCandidate(null)}
+        // Quick actions intentionally undefined for now — render disabled
+        // with WIP markers. When the implementations land they get wired
+        // here (move stage will call the existing pipelineStatus PATCH,
+        // send-message will open the email modal, etc.).
+      />
     </div>
   )
 }
@@ -1852,17 +1897,17 @@ interface BulkEmailModalProps {
 // One-shot recruiter email to N hand-picked candidates from the table view.
 // Distinct from the automation engine: no AutomationExecution rows, no
 // stage gating — straight SendGrid send through /api/candidates/bulk-email.
-// Optional "Save as template" persists the composed subject + body to
+// The "Save as new template" button persists the composed subject + body to
 // EmailTemplate so it shows up in future automation step pickers AND in
-// the template dropdown on this modal.
+// the template dropdown on this modal — independently of sending.
 function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalProps) {
   const [templates, setTemplates] = useState<EmailTemplateLite[]>([])
   const [templateId, setTemplateId] = useState('')
   const [subject, setSubject] = useState('')
   const [bodyHtml, setBodyHtml] = useState('')
-  const [saveAsTemplate, setSaveAsTemplate] = useState(false)
-  const [templateName, setTemplateName] = useState('')
   const [sending, setSending] = useState(false)
+  const [savingTemplate, setSavingTemplate] = useState(false)
+  const [savedTemplateName, setSavedTemplateName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<{ sent: number; failed: number } | null>(null)
 
@@ -1871,8 +1916,7 @@ function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalPro
     setTemplateId('')
     setSubject('')
     setBodyHtml('')
-    setSaveAsTemplate(false)
-    setTemplateName('')
+    setSavedTemplateName(null)
     setError(null)
     setResult(null)
     fetch('/api/email-templates')
@@ -1901,7 +1945,6 @@ function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalPro
   const canSubmit = subject.trim().length > 0
     && bodyHtml.trim().length > 0
     && withEmail.length > 0
-    && (!saveAsTemplate || templateName.trim().length > 0)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -1916,14 +1959,13 @@ function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalPro
           ids: recipients.map((c) => c.id),
           subject: subject.trim(),
           bodyHtml,
-          saveAsTemplate: saveAsTemplate ? { name: templateName.trim() } : null,
         }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
         throw new Error(j?.error || 'Failed to send')
       }
-      const j = await res.json() as { sent: number; failed: number; savedTemplateId: string | null }
+      const j = await res.json() as { sent: number; failed: number }
       setResult({ sent: j.sent, failed: j.failed })
       // Auto-close on full success after a brief pause; if any failed, leave
       // the modal open so the recruiter sees the count and can act on it.
@@ -1934,6 +1976,37 @@ function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalPro
       setError(err instanceof Error ? err.message : 'Failed to send')
     } finally {
       setSending(false)
+    }
+  }
+
+  // "Save as new template" — POST the composed subject + body to
+  // /api/email-templates directly so the recruiter can stash a reusable
+  // copy without sending the bulk email. Prompts for a name (defaults to
+  // the subject) and refreshes the template dropdown on success.
+  const saveAsNewTemplate = async () => {
+    if (!subject.trim() || !bodyHtml.trim() || savingTemplate) return
+    const suggested = subject.trim().slice(0, 80)
+    const name = window.prompt('Name this template', suggested)
+    if (!name?.trim()) return
+    setSavingTemplate(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/email-templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), subject: subject.trim(), bodyHtml }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j?.error || 'Failed to save template')
+      }
+      const saved = await res.json() as EmailTemplateLite
+      setTemplates((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)])
+      setSavedTemplateName(saved.name)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save template')
+    } finally {
+      setSavingTemplate(false)
     }
   }
 
@@ -2019,24 +2092,17 @@ function BulkEmailModal({ open, onClose, recipients, onSent }: BulkEmailModalPro
           </div>
 
           <div className="border-t border-surface-divider pt-3">
-            <label className="inline-flex items-center gap-2 text-[13px] text-ink cursor-pointer">
-              <input
-                type="checkbox"
-                checked={saveAsTemplate}
-                onChange={(e) => setSaveAsTemplate(e.target.checked)}
-                className="cursor-pointer"
-              />
-              Save as email template for reuse
-            </label>
-            {saveAsTemplate && (
-              <input
-                type="text"
-                value={templateName}
-                onChange={(e) => setTemplateName(e.target.value)}
-                placeholder="Template name (e.g. Follow-up after no-show)"
-                className="mt-2 w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
-                required
-              />
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={!subject.trim() || !bodyHtml.trim() || savingTemplate}
+              onClick={saveAsNewTemplate}
+            >
+              {savingTemplate ? 'Saving…' : 'Save as new template'}
+            </Button>
+            {savedTemplateName && (
+              <p className="mt-2 text-[12px] text-green-700">Saved &ldquo;{savedTemplateName}&rdquo; — pick it from the template dropdown next time.</p>
             )}
           </div>
 

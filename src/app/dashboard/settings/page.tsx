@@ -142,6 +142,16 @@ export default function SettingsPage() {
         >
           Billing
         </a>
+        {/* Branding moved here from the top nav per the Content section
+            redesign — recruiters only edit branding once in a while, so it
+            belongs under Settings rather than competing for prime nav
+            space. Still its own page; we just link to it. */}
+        <a
+          href="/dashboard/branding"
+          className="px-4 py-2.5 text-[13px] font-medium border-b-2 -mb-px transition-colors border-transparent text-grey-35 hover:text-ink"
+        >
+          Branding
+        </a>
       </div>
 
       {/* BUSINESS TAB */}

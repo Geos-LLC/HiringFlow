@@ -51,3 +51,7 @@ public/uploads/*
 
 # Claude Code per-machine settings (may contain DB URLs / secrets)
 .claude/settings.local.json
+
+# Local DB snapshots pulled from prod for offline dev
+dump.sql
+dump-*.sql

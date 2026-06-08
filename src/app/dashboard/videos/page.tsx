@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { SubNav } from '../_components/SubNav'
-import { Card, Eyebrow, PageHeader } from '@/components/design'
+import { Card, Eyebrow, PageHeader, WipBadge } from '@/components/design'
 import { useUploads } from '../_components/UploadProvider'
 import { DashboardVideoPreview } from '../_components/DashboardVideoPreview'
 
@@ -205,8 +205,8 @@ export default function MediaPage() {
     <div className="-mx-6 lg:-mx-[132px]">
       <PageHeader
         eyebrow={`${totalItems} item${totalItems === 1 ? '' : 's'}`}
-        title="Assets"
-        description="Reusable templates and media for your flows, campaigns, and trainings."
+        title="Media"
+        description="Central media library — videos, audio, images, and documents reused across workflows, trainings, and campaigns."
         actions={uploadButton}
       />
 
@@ -215,8 +215,8 @@ export default function MediaPage() {
       </div>
 
       <div className="px-8 pt-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="inline-flex gap-1 rounded-[10px] bg-surface-weak p-1">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="inline-flex gap-1 rounded-[10px] bg-surface-weak p-1 flex-wrap">
             {tabs.map((t) => (
               <button
                 key={t.k}
@@ -228,6 +228,23 @@ export default function MediaPage() {
                 {t.l} <span className="ml-1 font-mono text-[11px] text-grey-50">{t.count}</span>
               </button>
             ))}
+            {/* Audio + Documents per spec — not modeled yet so rendered
+                disabled with a Coming-soon badge so the recruiter sees the
+                intended structure. */}
+            <button
+              disabled
+              title="Audio uploads not modeled yet"
+              className="px-3.5 py-1.5 rounded-[8px] text-[13px] font-medium text-grey-50 cursor-not-allowed inline-flex items-center gap-1.5"
+            >
+              Audio <WipBadge label="WIP" />
+            </button>
+            <button
+              disabled
+              title="Document uploads not modeled yet"
+              className="px-3.5 py-1.5 rounded-[8px] text-[13px] font-medium text-grey-50 cursor-not-allowed inline-flex items-center gap-1.5"
+            >
+              Documents <WipBadge label="WIP" />
+            </button>
           </div>
           {tab !== 'pictures' && (
             <label className="inline-flex items-center gap-2 text-[12px] text-grey-35 cursor-pointer select-none">
@@ -325,6 +342,12 @@ export default function MediaPage() {
                     <div className="font-mono text-[11px] text-ink truncate mb-1" title={p.filename}>
                       {p.displayName || p.filename}
                     </div>
+                    {/* Used-in tracker — per spec, key UX to prevent
+                        accidental deletion. Not aggregated yet (would need
+                        a Picture→Training/Workflow reference scan). */}
+                    <div className="text-[10px] text-grey-50 mb-1.5 flex items-center gap-1">
+                      Used in — <WipBadge label="WIP" />
+                    </div>
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="font-mono text-grey-35">{fmtFileSize(p.sizeBytes)}</span>
                       <button
@@ -406,6 +429,13 @@ export default function MediaPage() {
                       {v.summary && (
                         <p className="text-[11px] text-grey-35 line-clamp-2 mb-2">{v.summary}</p>
                       )}
+                      {/* Used-in tracker placeholder — same idea as the
+                          pictures card. Will list workflows + trainings
+                          that reference this video once the back-reference
+                          query lands. */}
+                      <div className="text-[10px] text-grey-50 mb-1.5 flex items-center gap-1">
+                        Used in — <WipBadge label="WIP" />
+                      </div>
                       <div className="flex items-center justify-between text-[11px]">
                         <span className="font-mono text-grey-35">
                           {fmtFileSize(v.sizeBytes)} · {new Date(v.createdAt).toLocaleDateString()}

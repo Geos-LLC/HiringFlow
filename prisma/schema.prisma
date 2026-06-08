@@ -120,6 +120,7 @@ model Workspace {
   stageEntries      StageEntry[]
   billingEvents     BillingEvent[]
   candidateEvaluations CandidateEvaluation[]
+  hiringProcesses   HiringProcess[]
 
   @@map("workspaces")
 }
@@ -177,10 +178,86 @@ model Pipeline {
   automationRules AutomationRule[]
   transitionRules PipelineTransitionRule[]
   stageEntries    StageEntry[]
+  hiringProcesses HiringProcess[]
 
   @@index([workspaceId])
   @@index([workspaceId, isDefault])
   @@map("pipelines")
+}
+
+// A "Hiring Process" is the reusable, top-level recruiting journey for a role
+// (e.g. "Residential Cleaner"). It is purely an orchestration layer — it does
+// NOT own any new builders. Instead it points at existing primitives:
+//
+//   - Flow              (the application form)
+//   - Training          (optional onboarding course)
+//   - SchedulingConfig  (optional interview booker)
+//   - Pipeline          (the kanban stage list candidates flow through)
+//   - AutomationRule[]  (the default rules wired up for this role)
+//
+// Lifecycle: a process is created as `draft`. A draft cannot accept candidates
+// — the candidate-attach path on /f/:slug only matches rows with
+// status='active'. Activating requires both flowId AND pipelineId to be set
+// (enforced at the API). `archived` is the soft-retire state: existing
+// candidates keep their processId, but new sessions stop attaching.
+//
+// Uniqueness: at most one ACTIVE process per (workspaceId, flowId). This is
+// what makes the "find by flowId" lookup at session-create unambiguous.
+// Enforced via partial unique index, defined inline below.
+model HiringProcess {
+  id                 String                    @id @default(uuid())
+  workspaceId        String                    @map("workspace_id")
+  workspace          Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name               String
+  description        String?
+  // 'draft' | 'active' | 'archived'. New rows start as 'draft'. Validation
+  // for 'active' lives at the API layer (requires flowId + pipelineId).
+  status             String                    @default("draft")
+  // All four references are nullable on purpose: drafts can be saved with
+  // partial wiring, then completed later. onDelete: SetNull so deleting the
+  // underlying flow/training/etc. doesn't cascade-destroy the process — the
+  // recruiter just sees an empty slot and re-picks.
+  flowId             String?                   @map("flow_id")
+  flow               Flow?                     @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  trainingId         String?                   @map("training_id")
+  training           Training?                 @relation(fields: [trainingId], references: [id], onDelete: SetNull)
+  schedulingConfigId String?                   @map("scheduling_config_id")
+  schedulingConfig   SchedulingConfig?         @relation(fields: [schedulingConfigId], references: [id], onDelete: SetNull)
+  pipelineId         String?                   @map("pipeline_id")
+  pipeline           Pipeline?                 @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+  createdAt          DateTime                  @default(now()) @map("created_at")
+  updatedAt          DateTime                  @updatedAt @map("updated_at")
+
+  automations HiringProcessAutomation[]
+  sessions    Session[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+  // Partial unique on active-per-flow is what we'd want long-term, but
+  // Prisma doesn't model partial indexes natively yet. We rely on app-level
+  // validation in /api/processes for the "one active per flow" rule; tests
+  // cover the contract. A raw migration can add the partial index later
+  // without rewriting the model.
+  @@index([flowId, status])
+  @@map("hiring_processes")
+}
+
+// Join row between a HiringProcess and the AutomationRule[]s that fire for
+// candidates in that process. `order` is the display order in the editor;
+// runtime dispatch still goes through the AutomationRule's own trigger so the
+// engine doesn't need to know about HiringProcess.
+model HiringProcessAutomation {
+  id               String         @id @default(uuid())
+  processId        String         @map("process_id")
+  process          HiringProcess  @relation(fields: [processId], references: [id], onDelete: Cascade)
+  automationRuleId String         @map("automation_rule_id")
+  automationRule   AutomationRule @relation(fields: [automationRuleId], references: [id], onDelete: Cascade)
+  order            Int            @default(0)
+  createdAt        DateTime       @default(now()) @map("created_at")
+
+  @@unique([processId, automationRuleId])
+  @@index([automationRuleId])
+  @@map("hiring_process_automations")
 }
 
 // Configurable rule that decides when a candidate moves between stages.
@@ -589,6 +666,13 @@ model Flow {
   // Dispatcher → no-training).
   pipelineId                 String?           @map("pipeline_id")
   pipeline                   Pipeline?         @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+  // User-facing classification of what this workflow is: an Application
+  // form, an Interview, an Assessment, a Training course, a Survey, or a
+  // Custom one-off. Drives the workflow-list filter and the workflow card's
+  // type badge — no functional change to the flow engine itself, every
+  // type runs through the same step executor. Nullable for back-compat
+  // (existing flows default to 'application' at the API layer).
+  workflowType               String?           @map("workflow_type")
   // Schema-view canvas layout: { [stepId]: { x: number, y: number } }.
   // Persists the user's manual arrangement of cards so reopening the schema
   // restores their layout instead of re-running BFS from scratch.
@@ -599,6 +683,7 @@ model Flow {
   ads                        Ad[]
   automationRules            AutomationRule[]
   captureResponses           CaptureResponse[]
+  hiringProcesses            HiringProcess[]
 
   @@index([pipelineId])
   @@map("flows")
@@ -773,6 +858,18 @@ model Session {
   // doubles as the sort key so the most recently flagged candidates surface
   // first when filtering by interesting.
   interestingAt           DateTime?              @map("interesting_at")
+  // Hiring Process this session belongs to. Set at session create time when
+  // the candidate enters through a flow that's wired to a single active
+  // HiringProcess (see /api/public/sessions). Stays null for:
+  //   - sessions on flows with no active process
+  //   - sessions on flows with multiple active processes (ambiguous — logged
+  //     as a warning; app-layer validation in /api/processes prevents this)
+  //   - manually-added candidates (recruiter chooses the flow, not a process)
+  // Once set, the value is sticky — manual flow reassignments do NOT rewrite
+  // processId. The candidate's journey was started under this process and
+  // analytics need the historical attribution.
+  processId               String?                @map("process_id")
+  process                 HiringProcess?         @relation(fields: [processId], references: [id])
   answers                 SessionAnswer[]
   submissions             CandidateSubmission[]
   trainingEnrollments     TrainingEnrollment[]
@@ -792,6 +889,7 @@ model Session {
   // for the cron stalled detector's per-workspace sweep — both query by
   // workspaceId + status repeatedly.
   @@index([workspaceId, status])
+  @@index([workspaceId, processId])
   @@map("sessions")
 }
 
@@ -891,6 +989,7 @@ model Training {
   accessTokens    TrainingAccessToken[]
   automationRules AutomationRule[]
   automationSteps AutomationStep[]      @relation("StepTraining")
+  hiringProcesses HiringProcess[]
 
   @@map("trainings")
 }
@@ -1296,6 +1395,7 @@ model AutomationRule {
   updatedAt               DateTime              @updatedAt @map("updated_at")
   executions              AutomationExecution[]
   steps                   AutomationStep[]
+  hiringProcesses         HiringProcessAutomation[]
 
   @@index([pipelineId])
   @@map("automation_rules")
@@ -1558,6 +1658,7 @@ model SchedulingConfig {
   automationRules     AutomationRule[]
   automationSteps     AutomationStep[]  @relation("StepSchedulingConfig")
   events              SchedulingEvent[]
+  hiringProcesses     HiringProcess[]
 
   @@map("scheduling_configs")
 }

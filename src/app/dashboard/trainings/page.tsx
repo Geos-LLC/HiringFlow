@@ -6,10 +6,10 @@
 
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import Link from 'next/link'
 import { SubNav } from '../_components/SubNav'
-import { Badge, Button, Card, Eyebrow, PageHeader } from '@/components/design'
+import { Badge, Button, Card, Eyebrow, PageHeader, WipBadge, WipSection } from '@/components/design'
 
 const TRAINING_NAV = [
   { href: '/dashboard/trainings', label: 'Trainings' },
@@ -35,6 +35,12 @@ export default function TrainingsPage() {
   const [trainings, setTrainings] = useState<Training[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  // List view state — search + status tab + which top-level tab is active.
+  // Trainings doesn't have an explicit "archived" column today, so that tab
+  // is WIP. Active = isPublished, Draft = !isPublished.
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'draft' | 'archived'>('all')
+  const [primaryTab, setPrimaryTab] = useState<'list' | 'analytics'>('list')
   const [newTitle, setNewTitle] = useState('')
   const [newTimeLimit, setNewTimeLimit] = useState<{ type: string; value?: number }>({ type: 'unlimited' })
   const [newPricing, setNewPricing] = useState<{ type: string; price?: number }>({ type: 'free' })
@@ -119,6 +125,26 @@ export default function TrainingsPage() {
     }
   }
 
+  // Apply search + tab filter before render.
+  const filteredTrainings = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return trainings.filter((t) => {
+      if (statusFilter === 'active' && !t.isPublished) return false
+      if (statusFilter === 'draft' && t.isPublished) return false
+      if (statusFilter === 'archived') return false // archived not modeled yet
+      if (q && !(t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q))) return false
+      return true
+    })
+  }, [trainings, search, statusFilter])
+
+  // Tab counts use the unfiltered list so the badges reflect totals, not
+  // current selection.
+  const statusCounts = useMemo(() => {
+    const active = trainings.filter((t) => t.isPublished).length
+    const draft = trainings.length - active
+    return { all: trainings.length, active, draft, archived: 0 }
+  }, [trainings])
+
   if (loading) {
     return <div className="py-14 text-center font-mono text-[11px] uppercase text-grey-35" style={{ letterSpacing: '0.1em' }}>Loading…</div>
   }
@@ -128,8 +154,8 @@ export default function TrainingsPage() {
       <PageHeader
         eyebrow={`${trainings.length} training${trainings.length === 1 ? '' : 's'}`}
         title="Trainings"
-        description="Course programs for onboarding, compliance, and up-skilling."
-        actions={<Button size="sm" onClick={() => setShowCreate(true)}>+ New training</Button>}
+        description="Teach candidates — onboarding, compliance, and up-skilling courses."
+        actions={<Button size="sm" onClick={() => setShowCreate(true)}>+ New Training</Button>}
       />
 
       <div className="px-8 pt-5">
@@ -137,7 +163,101 @@ export default function TrainingsPage() {
       </div>
 
       <div className="px-8 py-4">
-        {trainings.length === 0 ? (
+        {/* Primary tab: list vs. analytics. Analytics is a placeholder per
+            spec — drop-off point, average score, and average time aren't
+            aggregated yet. The full TrainingEnrollment table has the raw
+            data so this is a UI-only build-out once the aggregator lands. */}
+        <div className="flex gap-1 mb-4 border-b border-surface-border">
+          {([
+            { key: 'list' as const,      label: 'Trainings' },
+            { key: 'analytics' as const, label: 'Analytics' },
+          ]).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setPrimaryTab(t.key)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                primaryTab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-grey-40 hover:text-grey-20'
+              }`}
+            >
+              {t.label}
+              {t.key === 'analytics' && <span className="ml-1.5"><WipBadge label="WIP" /></span>}
+            </button>
+          ))}
+        </div>
+
+        {primaryTab === 'analytics' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <WipSection
+              title="Started vs. completed"
+              description="Funnel of who started each training vs. who finished. The TrainingEnrollment table already records both — just needs aggregation."
+            />
+            <WipSection
+              title="Average score"
+              description="Across all quizzes per training."
+            />
+            <WipSection
+              title="Drop-off point"
+              description="Section the average candidate stops at — flags where the course is too long or unclear."
+            />
+            <WipSection
+              title="Average time"
+              description="Median time to complete from start."
+            />
+          </div>
+        )}
+
+        {primaryTab === 'list' && <>
+        {/* Search + status tabs */}
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-[220px] max-w-[400px]">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-grey-35" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search trainings"
+              className="w-full pl-9 pr-3 py-2 rounded-[10px] border border-surface-border text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-primary"
+            />
+          </div>
+          <div className="flex gap-1">
+            {([
+              { k: 'all'      as const, l: 'All' },
+              { k: 'active'   as const, l: 'Active' },
+              { k: 'draft'    as const, l: 'Draft' },
+              { k: 'archived' as const, l: 'Archived' },
+            ]).map((t) => {
+              const isActive = statusFilter === t.k
+              return (
+                <button
+                  key={t.k}
+                  onClick={() => setStatusFilter(t.k)}
+                  disabled={t.k === 'archived'}
+                  title={t.k === 'archived' ? 'Archived status not modeled yet' : undefined}
+                  className={`px-3 py-2 rounded-[10px] text-[13px] font-medium transition-colors ${
+                    isActive ? 'bg-ink text-white'
+                      : t.k === 'archived' ? 'text-grey-50 cursor-not-allowed'
+                      : 'text-grey-35 hover:text-ink hover:bg-surface-light'
+                  }`}
+                >
+                  {t.l}
+                  <span className={`ml-1.5 font-mono text-[11px] tabular-nums ${isActive ? 'text-white/80' : 'text-grey-50'}`}>
+                    {statusCounts[t.k]}
+                  </span>
+                  {t.k === 'archived' && <span className="ml-1.5"><WipBadge label="WIP" /></span>}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {filteredTrainings.length === 0 && trainings.length > 0 ? (
+          <Card padding={32} className="text-center">
+            <p className="text-[13px] text-grey-35">No trainings match the current filter.</p>
+          </Card>
+        ) : trainings.length === 0 ? (
           <Card padding={48} className="text-center">
             <div className="w-16 h-16 mx-auto mb-4 bg-brand-50 rounded-xl flex items-center justify-center">
               <svg className="w-8 h-8" style={{ color: 'var(--brand-primary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -150,7 +270,7 @@ export default function TrainingsPage() {
           </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-            {trainings.map((t) => {
+            {filteredTrainings.map((t) => {
               const paid = (t.pricing as { type: string })?.type === 'paid'
               const price = (t.pricing as { price?: number })?.price || 0
               const limitType = (t.timeLimit as { type: string })?.type
@@ -207,6 +327,7 @@ export default function TrainingsPage() {
             })}
           </div>
         )}
+        </>}
       </div>
 
       {/* Rename modal */}

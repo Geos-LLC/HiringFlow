@@ -1,20 +1,26 @@
 /**
- * TopNav (responsive) — brand + tabs + search + CTA + avatar.
+ * TopNav (responsive) — brand + grouped tabs + search + CTA + avatar.
  *
- * Three breakpoints:
+ * Two-tier nav structure:
  *
- *   < md (768px)     — Mobile. Tabs hide; a MobileNav drawer + search icon
- *                      take over. Search collapses to icon-only.
- *   md → xl          — Narrow desktop / tablet. Two-row layout: row 1 keeps
- *                      brand, search, CTA, avatar; row 2 is a dedicated tab
- *                      strip (scrolls horizontally as a last resort). This
- *                      avoids the single-row scrolling bug between ~820px
- *                      and ~1120px where all 10 tabs could not fit.
- *   xl+ (1280px)     — Full desktop. Single 60px row with inline tabs,
- *                      exactly as before.
+ *   Row 1 (groups):  Recruiting | Process | Content | Insights | Admin
+ *   Row 2 (sub-tabs): children of the active group
  *
- * Wordmark kept as "HireFunnel" (capital F) per product decision; the
- * design source uses "Hirefunnel".
+ * A group tab is "active" when the current path matches any of its children
+ * (or the group's own href as a fallback). Clicking a group label routes to
+ * the group's href — usually the first child — so the user lands on a real
+ * page instead of staring at an empty content area. Items without children
+ * still render as flat tabs (back-compat with old callers).
+ *
+ * Breakpoints:
+ *
+ *   < md (768px)     — Mobile. Tabs hide; MobileNav drawer renders groups
+ *                      as section headers (matches design screenshot).
+ *   md+              — Two visible rows: group row (60px) + sub-tab strip
+ *                      (40px). Sub-tab strip only renders when the active
+ *                      group has children.
+ *
+ * Wordmark kept as "HireFunnel" (capital F) per product decision.
  */
 
 'use client'
@@ -29,6 +35,11 @@ export interface TopNavItem {
   label: string
   href: string
   matches?: string[]        // additional path prefixes that count as active
+  // Group support. When children is present, the item renders as a primary
+  // group tab on row 1 with its children appearing on row 2 when active.
+  // The group's `href` is the landing route when the group label is clicked
+  // (set to the first child's href in most cases).
+  children?: TopNavItem[]
 }
 
 export interface TopNavProps {
@@ -51,6 +62,16 @@ function initialsFromName(name?: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
 }
 
+// A path matches an item iff it equals the item's href, starts with
+// `href + '/'` (subroute), or matches one of the `matches` prefixes the
+// same way. We deliberately do NOT use `startsWith(p)` without the slash —
+// that produced false positives like `/dashboard/processes` activating
+// `/dashboard/process`-prefixed routes.
+function pathMatchesItem(pathname: string, it: TopNavItem): boolean {
+  const prefixes = [it.href, ...(it.matches || [])]
+  return prefixes.some((p) => pathname === p || pathname.startsWith(p + '/'))
+}
+
 export function TopNav({
   items,
   workspaceName,
@@ -62,18 +83,33 @@ export function TopNav({
   mobileFooter,
 }: TopNavProps) {
   const pathname = usePathname() || ''
-  const isActive = (it: TopNavItem) => {
+
+  // Active-group resolution. A group is active when the current path matches
+  // it or any of its children. Used both for the group-tab highlight on row 1
+  // and to pick which children render on row 2.
+  const isGroupActive = (it: TopNavItem): boolean => {
     if (current) return current === it.label
-    const prefixes = [it.href, ...(it.matches || [])]
-    return prefixes.some((p) => pathname === p || pathname.startsWith(p + '/') || pathname.startsWith(p))
+    if (pathMatchesItem(pathname, it)) return true
+    return (it.children || []).some((c) => pathMatchesItem(pathname, c))
   }
+  const isSubActive = (it: TopNavItem): boolean => {
+    if (current) return current === it.label
+    return pathMatchesItem(pathname, it)
+  }
+
+  const activeGroup = items.find(isGroupActive) || null
+  const subTabs = activeGroup?.children || []
+
   const initials = user?.initials || initialsFromName(user?.name)
 
-  // Tab row — reused in both inline (xl+) and second-row (md→xl) placement.
-  const tabRow = (
+  // Row 1 — group tabs (primary). Reused inline (xl+) and on the dedicated
+  // strip (md→xl). Renders both items with children (groups) and items
+  // without (flat back-compat tabs) — both look identical so the recruiter
+  // doesn't see seams.
+  const groupRow = (
     <nav className="flex gap-0.5 items-center">
       {items.map((it) => {
-        const active = isActive(it)
+        const active = isGroupActive(it)
         return (
           <Link
             key={it.href}
@@ -94,7 +130,7 @@ export function TopNav({
     <header
       className={`bg-white border-b border-surface-border shrink-0 ${className}`.trim()}
     >
-      {/* Row 1: brand (+ inline tabs on xl+) + right cluster */}
+      {/* Row 1: brand (+ inline group tabs on xl+) + right cluster */}
       <div className="h-[60px] flex items-center gap-3 xl:gap-7 px-4 md:px-6">
         {/* Brand */}
         <div className="flex items-center gap-2.5 shrink-0">
@@ -118,26 +154,12 @@ export function TopNav({
           )}
         </div>
 
-        {/* Inline tabs — xl+ only (desktop wide). On md→xl, tabs live in row 2. */}
-        <nav className="hidden xl:flex gap-0.5 flex-1 items-center overflow-x-auto">
-          {items.map((it) => {
-            const active = isActive(it)
-            return (
-              <Link
-                key={it.href}
-                href={it.href}
-                className={`px-3 py-2 text-[14px] font-medium rounded-[8px] whitespace-nowrap transition-colors ${
-                  active ? 'text-ink' : 'text-grey-35 hover:text-ink hover:bg-surface-light'
-                }`}
-                style={active ? { background: 'var(--brand-dim)' } : undefined}
-              >
-                {it.label}
-              </Link>
-            )
-          })}
-        </nav>
+        {/* Inline group tabs — xl+ only. Below xl, groups live on row 2. */}
+        <div className="hidden xl:flex flex-1 items-center overflow-x-auto">
+          {groupRow}
+        </div>
 
-        {/* Spacer when tabs are NOT inline (mobile and md→xl). */}
+        {/* Spacer when group tabs are NOT inline (mobile and md→xl). */}
         <div className="flex-1 xl:hidden" />
 
         {/* Right cluster */}
@@ -183,15 +205,42 @@ export function TopNav({
         </div>
       </div>
 
-      {/* Row 2 — tab strip, only visible md → xl. */}
+      {/* Row 2 — group strip on md→xl (where row 1 doesn't have inline groups). */}
       <div
         className="hidden md:block xl:hidden border-t border-surface-border"
         style={{ background: 'var(--surface-light, #FCFAF6)' }}
       >
         <div className="h-12 px-4 md:px-6 flex items-center overflow-x-auto">
-          {tabRow}
+          {groupRow}
         </div>
       </div>
+
+      {/* Sub-tab strip — children of the active group. Only renders on md+
+          when the active group actually has children. Mobile uses the
+          drawer instead, where groups + children are always co-visible. */}
+      {subTabs.length > 0 && (
+        <div
+          className="hidden md:block border-t border-surface-border"
+          style={{ background: 'var(--surface-light, #FCFAF6)' }}
+        >
+          <div className="h-10 px-4 md:px-6 flex items-center gap-0.5 overflow-x-auto">
+            {subTabs.map((sub) => {
+              const active = isSubActive(sub)
+              return (
+                <Link
+                  key={sub.href}
+                  href={sub.href}
+                  className={`px-3 py-1.5 text-[13px] font-medium rounded-[8px] whitespace-nowrap transition-colors ${
+                    active ? 'text-ink bg-white border border-surface-border' : 'text-grey-35 hover:text-ink'
+                  }`}
+                >
+                  {sub.label}
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </header>
   )
 }

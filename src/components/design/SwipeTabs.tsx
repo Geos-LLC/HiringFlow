@@ -41,10 +41,30 @@ function matchIndex(pathname: string, items: TopNavItem[]): number {
   return -1
 }
 
+// Swipe nav operates on leaf items (the actual pages), not on the grouped
+// structure. A group's `href` may be a route too (typically the first
+// child) — flattening to children gives us the swipe sequence the user
+// expects: swiping from Candidates lands on Pipeline, not on the next group.
+function flattenLeaves(items: TopNavItem[]): TopNavItem[] {
+  const out: TopNavItem[] = []
+  for (const it of items) {
+    if (it.children && it.children.length > 0) {
+      out.push(...it.children)
+    } else {
+      out.push(it)
+    }
+  }
+  return out
+}
+
 export function SwipeTabs({ items, children, mobileBreakpoint = 768, disabledPaths }: SwipeTabsProps) {
   const router = useRouter()
   const pathname = usePathname() || ''
-  const currentIndex = matchIndex(pathname, items)
+  // Use the leaf list everywhere — currentIndex, total, and the next/prev
+  // target. Otherwise swiping inside a group would jump to a sibling group
+  // and skip the rest of the current group's pages.
+  const leaves = React.useMemo(() => flattenLeaves(items), [items])
+  const currentIndex = matchIndex(pathname, leaves)
 
   // Only enable below the breakpoint — desktop keeps native click nav.
   const [isMobile, setIsMobile] = React.useState(false)
@@ -66,7 +86,7 @@ export function SwipeTabs({ items, children, mobileBreakpoint = 768, disabledPat
   const [snapping, setSnapping] = React.useState(false)
 
   const onCommit = React.useCallback((nextIndex: number) => {
-    const target = items[nextIndex]
+    const target = leaves[nextIndex]
     if (!target) return
     setSnapping(true)
     // Small delay lets the drag transform animate to 0 before route swap.
@@ -74,14 +94,14 @@ export function SwipeTabs({ items, children, mobileBreakpoint = 768, disabledPat
       router.push(target.href)
       // Snap state clears when the new page mounts (see effect below).
     }, 180)
-  }, [items, router])
+  }, [leaves, router])
 
   // When the pathname changes, clear the snapping lock.
   React.useEffect(() => { setSnapping(false) }, [pathname])
 
   const { dx, dragging, bind } = useSwipeNav({
     currentIndex,
-    total: items.length,
+    total: leaves.length,
     onCommit,
     disabled,
   })
