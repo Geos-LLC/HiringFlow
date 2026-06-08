@@ -54,6 +54,9 @@ export default function CampaignsPage() {
   // Filters for the Ads tab. Empty string means "all". Both filters intersect.
   const [adsSourceFilter, setAdsSourceFilter] = useState<string>('')
   const [adsFlowFilter, setAdsFlowFilter] = useState<string>('')
+  // Time window — filters the Ads table by Ad.createdAt so recruiters can
+  // narrow to "campaigns launched this week" / etc. 'all' is the default.
+  const [adsDateFilter, setAdsDateFilter] = useState<'all' | 'today' | '7d' | '30d' | '90d' | 'thisMonth' | 'lastMonth'>('all')
   // Ad copy fields in modal
   const [adHeadline, setAdHeadline] = useState('')
   const [adBody, setAdBody] = useState('')
@@ -427,15 +430,44 @@ export default function CampaignsPage() {
   const activeAds = ads.filter(a => a.isActive).length
   const sourcesUsed = new Set(ads.map(a => a.source)).size
 
+  // Resolve the date preset into a [from, to) range over Ad.createdAt.
+  // `null` means "no constraint". thisMonth / lastMonth use calendar bounds;
+  // rolling windows count back N days from now.
+  const adsDateBounds = useMemo<{ from: Date | null; to: Date | null }>(() => {
+    if (adsDateFilter === 'all') return { from: null, to: null }
+    const now = new Date()
+    const day = 24 * 60 * 60 * 1000
+    if (adsDateFilter === 'today') {
+      const start = new Date(now); start.setHours(0, 0, 0, 0)
+      return { from: start, to: null }
+    }
+    if (adsDateFilter === '7d') return { from: new Date(now.getTime() - 7 * day), to: null }
+    if (adsDateFilter === '30d') return { from: new Date(now.getTime() - 30 * day), to: null }
+    if (adsDateFilter === '90d') return { from: new Date(now.getTime() - 90 * day), to: null }
+    if (adsDateFilter === 'thisMonth') return { from: new Date(now.getFullYear(), now.getMonth(), 1), to: null }
+    if (adsDateFilter === 'lastMonth') {
+      return {
+        from: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+        to: new Date(now.getFullYear(), now.getMonth(), 1),
+      }
+    }
+    return { from: null, to: null }
+  }, [adsDateFilter])
+
   // Filtered ad list — drives the Ads tab table. Filters intersect; empty
   // filter means "no constraint on that axis".
   const filteredAds = useMemo(() => {
     return ads.filter((a) => {
       if (adsSourceFilter && a.source !== adsSourceFilter) return false
       if (adsFlowFilter && a.flowId !== adsFlowFilter) return false
+      if (adsDateBounds.from || adsDateBounds.to) {
+        const created = new Date(a.createdAt)
+        if (adsDateBounds.from && created < adsDateBounds.from) return false
+        if (adsDateBounds.to && created >= adsDateBounds.to) return false
+      }
       return true
     })
-  }, [ads, adsSourceFilter, adsFlowFilter])
+  }, [ads, adsSourceFilter, adsFlowFilter, adsDateBounds])
 
   // Sources breakdown — built up from the ads' actual source values so
   // custom workspace sources appear in the table alongside built-ins.
@@ -572,10 +604,24 @@ export default function CampaignsPage() {
                   <option value="">All flows</option>
                   {flows.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select>
-                {(adsSourceFilter || adsFlowFilter) && (
+                <select
+                  value={adsDateFilter}
+                  onChange={(e) => setAdsDateFilter(e.target.value as typeof adsDateFilter)}
+                  className="px-3 py-2 border border-surface-border rounded-[8px] text-sm text-grey-15 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  title="Filter ads by launch date"
+                >
+                  <option value="all">All time</option>
+                  <option value="today">Today</option>
+                  <option value="7d">Last 7 days</option>
+                  <option value="30d">Last 30 days</option>
+                  <option value="90d">Last 90 days</option>
+                  <option value="thisMonth">This month</option>
+                  <option value="lastMonth">Last month</option>
+                </select>
+                {(adsSourceFilter || adsFlowFilter || adsDateFilter !== 'all') && (
                   <>
                     <button
-                      onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter('') }}
+                      onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter(''); setAdsDateFilter('all') }}
                       className="px-3 py-2 text-sm text-grey-40 hover:text-grey-15"
                     >
                       Clear
@@ -590,7 +636,7 @@ export default function CampaignsPage() {
                 <div className="section-card text-center py-12">
                   <p className="text-grey-35">No ads match the current filters.</p>
                   <button
-                    onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter('') }}
+                    onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter(''); setAdsDateFilter('all') }}
                     className="mt-3 text-sm text-brand-500 hover:text-brand-600 font-medium"
                   >
                     Clear filters

@@ -35,8 +35,24 @@ export async function GET(request: NextRequest) {
   // manual add or by ?source= URL param on flow entry) is used. Comma-list
   // accepted to filter to multiple sources at once.
   const sourceParam = request.nextUrl.searchParams.get('source')
+  // Date range — bounded on `Session.startedAt`. Both params are ISO strings.
+  // Parsing failures are ignored so a malformed param can't 500 the kanban.
+  const startedAfterParam = request.nextUrl.searchParams.get('startedAfter')
+  const startedBeforeParam = request.nextUrl.searchParams.get('startedBefore')
 
   const where: Record<string, unknown> = { workspaceId: ws.workspaceId }
+  const startedAtRange: Record<string, Date> = {}
+  if (startedAfterParam) {
+    const d = new Date(startedAfterParam)
+    if (!Number.isNaN(d.getTime())) startedAtRange.gte = d
+  }
+  if (startedBeforeParam) {
+    const d = new Date(startedBeforeParam)
+    if (!Number.isNaN(d.getTime())) startedAtRange.lte = d
+  }
+  if (Object.keys(startedAtRange).length > 0) {
+    where.startedAt = startedAtRange
+  }
   // Exclude `source='test'` rows produced by the automation test endpoint
   // from the kanban. They live in the same table as real candidates but are
   // throwaway by design. Pushed into AND so it composes with any source

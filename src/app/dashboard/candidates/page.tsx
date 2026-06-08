@@ -198,6 +198,10 @@ export default function CandidatesPage() {
   const [stageFilter, setStageFilter] = useState('')
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
+  // Time window — filters by Session.startedAt. Presets cover the common
+  // recruiter questions ("who applied this week?"). 'all' (default) sends no
+  // date params so existing behavior is preserved.
+  const [dateRange, setDateRange] = useState<'all' | 'today' | '7d' | '30d' | '90d' | 'thisMonth' | 'lastMonth'>('all')
   // Toggle: when true, only show recruiter-starred candidates (interestingAt
   // not null). Persisted in localStorage so the recruiter's shortlist view
   // sticks across refreshes.
@@ -445,7 +449,7 @@ export default function CandidatesPage() {
   // to rows that may no longer be in the visible list.
   useEffect(() => {
     setSelectedIds(new Set())
-  }, [view, statusTab, flowFilter, sourceFilter, stageFilter, search, interestingOnly, selectedPipelineId])
+  }, [view, statusTab, flowFilter, sourceFilter, stageFilter, search, interestingOnly, selectedPipelineId, dateRange])
 
   // Stage ids are scoped to a pipeline; switching pipelines invalidates
   // whatever stage was selected.
@@ -507,6 +511,32 @@ export default function CandidatesPage() {
 
   const statusTabs = useMemo(() => buildStatusTabs(customStatuses), [customStatuses])
 
+  // Resolve the date-range preset into ISO startedAfter / startedBefore params.
+  // `today` is "since midnight local", rolling windows count back N days from
+  // now. thisMonth / lastMonth use calendar boundaries.
+  const dateRangeParams = useMemo(() => {
+    if (dateRange === 'all') return null
+    const now = new Date()
+    const day = 24 * 60 * 60 * 1000
+    if (dateRange === 'today') {
+      const start = new Date(now); start.setHours(0, 0, 0, 0)
+      return { startedAfter: start.toISOString() }
+    }
+    if (dateRange === '7d') return { startedAfter: new Date(now.getTime() - 7 * day).toISOString() }
+    if (dateRange === '30d') return { startedAfter: new Date(now.getTime() - 30 * day).toISOString() }
+    if (dateRange === '90d') return { startedAfter: new Date(now.getTime() - 90 * day).toISOString() }
+    if (dateRange === 'thisMonth') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1)
+      return { startedAfter: start.toISOString() }
+    }
+    if (dateRange === 'lastMonth') {
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      const end = new Date(now.getFullYear(), now.getMonth(), 1)
+      return { startedAfter: start.toISOString(), startedBefore: end.toISOString() }
+    }
+    return null
+  }, [dateRange])
+
   const load = useCallback((opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true)
     const params = new URLSearchParams()
@@ -516,6 +546,8 @@ export default function CandidatesPage() {
     if (stageFilter) params.set('status', stageFilter)
     if (search) params.set('search', search)
     if (interestingOnly) params.set('interesting', '1')
+    if (dateRangeParams?.startedAfter) params.set('startedAfter', dateRangeParams.startedAfter)
+    if (dateRangeParams?.startedBefore) params.set('startedBefore', dateRangeParams.startedBefore)
     const tab = statusTabs.find((t) => t.key === statusTab)
     if (tab && tab.statuses) params.set('candidateStatus', tab.statuses.join(','))
     fetch(`/api/candidates?${params}`)
@@ -531,6 +563,8 @@ export default function CandidatesPage() {
     else if (selectedPipelineId) countParams.set('pipelineId', selectedPipelineId)
     if (sourceFilter) countParams.set('source', sourceFilter)
     if (search) countParams.set('search', search)
+    if (dateRangeParams?.startedAfter) countParams.set('startedAfter', dateRangeParams.startedAfter)
+    if (dateRangeParams?.startedBefore) countParams.set('startedBefore', dateRangeParams.startedBefore)
     fetch(`/api/candidates?${countParams}`)
       .then((r) => r.json())
       .then((all: Candidate[]) => {
@@ -545,7 +579,7 @@ export default function CandidatesPage() {
         setStatusCounts(buckets)
       })
       .catch(() => {})
-  }, [flowFilter, sourceFilter, stageFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId])
+  }, [flowFilter, sourceFilter, stageFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId, dateRangeParams])
 
   useEffect(() => {
     // Don't fire the first candidates fetch until the pipeline picker is
@@ -938,6 +972,20 @@ export default function CandidatesPage() {
                 {customSources.map((s) => <option key={s} value={s}>{s}</option>)}
               </optgroup>
             )}
+          </select>
+          <select
+            value={dateRange}
+            onChange={(e) => setDateRange(e.target.value as typeof dateRange)}
+            className="px-3 py-2 border border-surface-border rounded-[10px] text-[13px] text-ink bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            title="Filter by when the candidate applied"
+          >
+            <option value="all">All time</option>
+            <option value="today">Today</option>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="thisMonth">This month</option>
+            <option value="lastMonth">Last month</option>
           </select>
           <button
             onClick={() => setInterestingOnly((v) => !v)}
