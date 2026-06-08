@@ -10,6 +10,10 @@ export interface DateFilter {
   // candidates-list filter — recruiters who slice by process on the list
   // expect the same slice on the funnel chart.
   processId?: string
+  // Optional target-position scope. Matches Ad.targetPosition via the
+  // session→ad relation. '__unassigned' means "no ad attribution OR ad with
+  // null targetPosition", matching the Campaigns Unassigned bucket.
+  targetPosition?: string
 }
 
 function dateWhere(filter?: DateFilter) {
@@ -26,13 +30,21 @@ function processWhere(filter?: DateFilter) {
   return filter?.processId ? { processId: filter.processId } : {}
 }
 
+function positionWhere(filter?: DateFilter) {
+  if (!filter?.targetPosition) return {}
+  if (filter.targetPosition === '__unassigned') {
+    return { OR: [{ adId: null }, { ad: { targetPosition: null } }] }
+  }
+  return { ad: { targetPosition: filter.targetPosition } }
+}
+
 /**
  * Funnel metrics — session-based counts through each pipeline stage.
  * Test-source sessions are excluded (see src/lib/session-filters.ts) so
  * recruiter analytics reflect real candidates, not test sends.
  */
 export async function getFunnelMetrics(workspaceId: string, filter?: DateFilter) {
-  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter), ...processWhere(filter) }
+  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter), ...processWhere(filter), ...positionWhere(filter) }
 
   const [
     started,
@@ -59,7 +71,7 @@ export async function getFunnelMetrics(workspaceId: string, filter?: DateFilter)
  * Source metrics — grouped by session.source (from Ad attribution or direct).
  */
 export async function getSourceMetrics(workspaceId: string, filter?: DateFilter) {
-  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter) }
+  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter), ...positionWhere(filter) }
 
   const sessions = await prisma.session.groupBy({
     by: ['source'],
@@ -95,7 +107,14 @@ export async function getSourceMetrics(workspaceId: string, filter?: DateFilter)
  */
 export async function getAdMetrics(workspaceId: string, filter?: DateFilter) {
   const ads = await prisma.ad.findMany({
-    where: { workspaceId },
+    where: {
+      workspaceId,
+      ...(filter?.targetPosition && filter.targetPosition !== '__unassigned'
+        ? { targetPosition: filter.targetPosition }
+        : filter?.targetPosition === '__unassigned'
+        ? { targetPosition: null }
+        : {}),
+    },
     select: { id: true, name: true, source: true, slug: true },
     orderBy: { createdAt: 'desc' },
   })
@@ -172,7 +191,7 @@ export async function getAdMetrics(workspaceId: string, filter?: DateFilter) {
  * stages). Analytics UI computes that client-side from the funnel data.
  */
 export async function getStatusMetrics(workspaceId: string, filter?: DateFilter) {
-  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter) }
+  const where = { workspaceId, ...excludeTestSessions(), ...dateWhere(filter), ...positionWhere(filter) }
 
   const [byStatus, lostByReason, stalledByReason, reactivated] = await Promise.all([
     prisma.session.groupBy({

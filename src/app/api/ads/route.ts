@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
   if (!ws) return unauthorized()
 
   const body = await request.json()
-  const { name, source, campaign, flowId, imageUrl, placementUrl, templateId, headline, bodyText, requirements, benefits, callToAction, notes } = body
+  const { name, source, campaign, targetPosition, flowId, imageUrl, placementUrl, templateId, headline, bodyText, requirements, benefits, callToAction, notes } = body
 
   if (!name || !source || !flowId) {
     return NextResponse.json({ error: 'name, source, and flowId are required' }, { status: 400 })
@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
       name,
       source,
       campaign: campaign || null,
+      targetPosition: typeof targetPosition === 'string' && targetPosition.trim() ? targetPosition.trim() : null,
       flowId,
       slug: nanoid(10),
       imageUrl: imageUrl || null,

@@ -11,6 +11,10 @@ export async function GET(request: NextRequest) {
   // breakdowns ignore it for now since their value is comparing across
   // sources/ads, not within one process.
   const processId = request.nextUrl.searchParams.get('processId') || undefined
+  // Optional target-position scope — matches Ad.targetPosition via the
+  // session→ad relation so the funnel reflects only candidates hiring for
+  // that role. '__unassigned' covers no-ad + null-position sessions.
+  const targetPosition = request.nextUrl.searchParams.get('targetPosition') || undefined
 
   let filter: DateFilter | undefined
   const now = new Date()
@@ -22,6 +26,9 @@ export async function GET(request: NextRequest) {
   }
   if (processId) {
     filter = { ...(filter || {}), processId }
+  }
+  if (targetPosition) {
+    filter = { ...(filter || {}), targetPosition }
   }
 
   const [funnel, sources, ads, status] = await Promise.all([

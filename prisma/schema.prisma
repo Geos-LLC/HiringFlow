@@ -697,6 +697,10 @@ model Ad {
   name         String
   source       String // 'indeed' | 'facebook' | 'craigslist' | 'google' | 'linkedin' | 'other'
   campaign     String?
+  // Free-text role this ad is hiring for (e.g. "Dispatcher", "Cleaner").
+  // Drives the Campaigns page position-grouped overview and the
+  // ?targetPosition= filter on Candidates / Analytics. Null = "Unassigned".
+  targetPosition String?   @map("target_position")
   flowId       String      @map("flow_id")
   flow         Flow        @relation(fields: [flowId], references: [id])
   slug         String      @unique

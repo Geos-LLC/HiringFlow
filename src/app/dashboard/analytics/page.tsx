@@ -15,6 +15,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Button, Badge, Card, Eyebrow, PageHeader, Stat, type BadgeTone } from '@/components/design'
 import { SubNav } from '../_components/SubNav'
 
@@ -92,17 +94,24 @@ function biggestDropoff(stages: Array<{ label: string; value: number }>): { labe
 }
 
 export default function AnalyticsPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [range, setRange] = useState<RangeValue>('all')
+  // targetPosition is sticky to the URL — Campaigns position cards deep-link
+  // here so every metric scoped to that role. Cleared via the chip below.
+  const targetPosition = searchParams?.get('targetPosition') ?? ''
 
   useEffect(() => {
     setLoading(true)
-    fetch(`/api/analytics?range=${range}`)
+    const params = new URLSearchParams({ range })
+    if (targetPosition) params.set('targetPosition', targetPosition)
+    fetch(`/api/analytics?${params}`)
       .then((r) => r.json())
       .then((d) => { setData(d); setLoading(false) })
       .catch(() => setLoading(false))
-  }, [range])
+  }, [range, targetPosition])
 
   if (loading || !data) {
     return (
@@ -149,6 +158,27 @@ export default function AnalyticsPage() {
 
       <div className="px-8 py-6 space-y-5">
         <SubNav items={ANALYTICS_NAV} />
+        {targetPosition && (
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-brand-50 border border-brand-200 text-[12px] text-brand-700 w-fit">
+            <span className="font-mono uppercase tracking-[0.06em] text-[10px] text-brand-600">Position</span>
+            <span className="font-semibold">
+              {targetPosition === '__unassigned' ? 'Unassigned' : targetPosition}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams?.toString() ?? '')
+                next.delete('targetPosition')
+                const qs = next.toString()
+                router.replace(qs ? `/dashboard/analytics?${qs}` : '/dashboard/analytics')
+              }}
+              className="ml-1 text-brand-600 hover:text-brand-800"
+              aria-label="Clear target position filter"
+            >
+              ×
+            </button>
+          </div>
+        )}
         {/* Status cards (orthogonal to the funnel — counts of where
             candidates currently sit on the active/stalled/lost/hired
             axis). Sits above the funnel stats so recruiters see the

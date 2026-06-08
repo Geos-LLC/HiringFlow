@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Badge, Button, Card, PageHeader, WipBadge } from '@/components/design'
 import { CandidateDrawer, type CandidateDrawerCandidate } from './_CandidateDrawer'
 import {
@@ -157,6 +157,16 @@ const STAGE_SORT_KEY = 'hiringflow:kanban-stage-sorts'
 
 export default function CandidatesPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  // targetPosition is set from the URL by deep-links on the Campaigns page
+  // ("Candidates" / "Pipeline" buttons on each position card). Hydrated
+  // synchronously so the initial /api/candidates fetch already includes it.
+  const initialTargetPosition = (() => {
+    if (typeof window === 'undefined') return ''
+    const v = new URLSearchParams(window.location.search).get('targetPosition')
+    return v ?? ''
+  })()
+  const [targetPositionFilter, setTargetPositionFilter] = useState<string>(initialTargetPosition)
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [flows, setFlows] = useState<Flow[]>([])
   const [stages, setStages] = useState<FunnelStage[]>(DEFAULT_FUNNEL_STAGES)
@@ -225,6 +235,10 @@ export default function CandidatesPage() {
   // sessions.
   const [view, setView] = useState<'kanban' | 'table'>(() => {
     if (typeof window === 'undefined') return 'kanban'
+    // URL ?view= wins over localStorage — Campaigns page "Pipeline" buttons
+    // deep-link to ?view=kanban and recruiters expect the requested view.
+    const urlView = new URLSearchParams(window.location.search).get('view')
+    if (urlView === 'kanban' || urlView === 'table') return urlView
     try {
       const saved = window.localStorage.getItem('hiringflow:candidates-view')
       return saved === 'table' ? 'table' : 'kanban'
@@ -301,6 +315,14 @@ export default function CandidatesPage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  // Pick up changes to ?targetPosition= from in-app navigation (e.g. clicking
+  // a different position card on the Campaigns page) so the list re-filters
+  // without a full reload.
+  useEffect(() => {
+    const v = searchParams?.get('targetPosition') ?? ''
+    setTargetPositionFilter(v)
+  }, [searchParams])
 
   // When kanban is mounted and a stage filter is active, scroll the matching
   // column into view. Without this, switching from list-with-stage-filter back
@@ -449,7 +471,7 @@ export default function CandidatesPage() {
   // to rows that may no longer be in the visible list.
   useEffect(() => {
     setSelectedIds(new Set())
-  }, [view, statusTab, flowFilter, sourceFilter, stageFilter, search, interestingOnly, selectedPipelineId, dateRange])
+  }, [view, statusTab, flowFilter, sourceFilter, stageFilter, search, interestingOnly, selectedPipelineId, dateRange, targetPositionFilter])
 
   // Stage ids are scoped to a pipeline; switching pipelines invalidates
   // whatever stage was selected.
@@ -548,6 +570,7 @@ export default function CandidatesPage() {
     if (interestingOnly) params.set('interesting', '1')
     if (dateRangeParams?.startedAfter) params.set('startedAfter', dateRangeParams.startedAfter)
     if (dateRangeParams?.startedBefore) params.set('startedBefore', dateRangeParams.startedBefore)
+    if (targetPositionFilter) params.set('targetPosition', targetPositionFilter)
     const tab = statusTabs.find((t) => t.key === statusTab)
     if (tab && tab.statuses) params.set('candidateStatus', tab.statuses.join(','))
     fetch(`/api/candidates?${params}`)
@@ -565,6 +588,7 @@ export default function CandidatesPage() {
     if (search) countParams.set('search', search)
     if (dateRangeParams?.startedAfter) countParams.set('startedAfter', dateRangeParams.startedAfter)
     if (dateRangeParams?.startedBefore) countParams.set('startedBefore', dateRangeParams.startedBefore)
+    if (targetPositionFilter) countParams.set('targetPosition', targetPositionFilter)
     fetch(`/api/candidates?${countParams}`)
       .then((r) => r.json())
       .then((all: Candidate[]) => {
@@ -579,7 +603,7 @@ export default function CandidatesPage() {
         setStatusCounts(buckets)
       })
       .catch(() => {})
-  }, [flowFilter, sourceFilter, stageFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId, dateRangeParams])
+  }, [flowFilter, sourceFilter, stageFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId, dateRangeParams, targetPositionFilter])
 
   useEffect(() => {
     // Don't fire the first candidates fetch until the pipeline picker is
@@ -917,6 +941,32 @@ export default function CandidatesPage() {
             )
           })}
         </div>
+
+        {/* Target-position chip — appears when the page was opened from a
+            Campaigns position card. Clearing it strips the URL param so the
+            full candidate list shows again. */}
+        {targetPositionFilter && (
+          <div className="shrink-0 mb-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-brand-50 border border-brand-200 text-[12px] text-brand-700 w-fit">
+            <span className="font-mono uppercase tracking-[0.06em] text-[10px] text-brand-600">Position</span>
+            <span className="font-semibold">
+              {targetPositionFilter === '__unassigned' ? 'Unassigned' : targetPositionFilter}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setTargetPositionFilter('')
+                const next = new URLSearchParams(searchParams?.toString() ?? '')
+                next.delete('targetPosition')
+                const qs = next.toString()
+                router.replace(qs ? `/dashboard/candidates?${qs}` : '/dashboard/candidates')
+              }}
+              className="ml-1 text-brand-600 hover:text-brand-800"
+              aria-label="Clear target position filter"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {/* Filters */}
         <div className="shrink-0 flex gap-2.5 mb-5">

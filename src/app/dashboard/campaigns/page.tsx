@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
-import { Button, Card, Eyebrow, PageHeader, Stat, WipBadge, WipSection } from '@/components/design'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Button, Card, Eyebrow, PageHeader, Stat } from '@/components/design'
 import { BUILTIN_AD_SOURCES, normalizeCustomSources } from '@/lib/sources'
 
 interface Flow { id: string; name: string; slug: string; isPublished?: boolean }
@@ -10,6 +11,7 @@ interface AdTemplateItem { id: string; name: string; source: string; headline: s
 interface Picture { id: string; url: string; filename: string; displayName?: string | null }
 interface Ad {
   id: string; name: string; source: string; campaign: string | null
+  targetPosition: string | null
   slug: string; isActive: boolean; flowId: string; imageUrl: string | null
   placementUrl: string | null; templateId: string | null
   headline: string | null; bodyText: string | null
@@ -17,6 +19,12 @@ interface Ad {
   notes: string | null
   flow: Flow; createdAt: string; _count: { sessions: number }
 }
+
+// Sentinel slug used in URLs for ads with no Ad.targetPosition. Picked so it
+// never collides with a real position name (positions are free-text but
+// double-underscore-prefixed is reserved). Decoded back to `null` when used
+// in /api/candidates and /api/analytics filters.
+const UNASSIGNED_POSITION_SLUG = '__unassigned'
 
 // Built-in source options come from the shared @/lib/sources module so the
 // Campaigns page and the Candidates page agree on the canonical list. The
@@ -32,6 +40,8 @@ const DEFAULT_AD_COPY: Record<string, { headline: string; body: string; requirem
 }
 
 export default function CampaignsPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [ads, setAds] = useState<Ad[]>([])
   const [flows, setFlows] = useState<Flow[]>([])
   const [adTemplates, setAdTemplates] = useState<AdTemplateItem[]>([])
@@ -41,6 +51,10 @@ export default function CampaignsPage() {
   const [name, setName] = useState('')
   const [source, setSource] = useState('indeed')
   const [campaign, setCampaign] = useState('')
+  // Free-text role the ad is hiring for (Dispatcher / Cleaner / etc.). Empty
+  // string saves as null → ad lands in the "Unassigned" bucket on the
+  // position-grouped overview.
+  const [targetPosition, setTargetPosition] = useState('')
   const [flowId, setFlowId] = useState('')
   const [saving, setSaving] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -135,6 +149,26 @@ export default function CampaignsPage() {
 
   const refresh = async () => { const r = await fetch('/api/ads'); if (r.ok) setAds(await r.json()) }
 
+  // Auto-open the edit modal when ?edit=<adId> is on the URL — used by the
+  // Edit button on the per-position detail page so recruiters land directly
+  // in the same modal they'd open from the "All Campaigns" tab. Strips the
+  // param after handling so a back-nav doesn't re-fire on the next mount.
+  useEffect(() => {
+    const editId = searchParams?.get('edit')
+    if (!editId || ads.length === 0) return
+    const ad = ads.find((a) => a.id === editId)
+    if (!ad) return
+    setTab('campaigns')
+    openEdit(ad)
+    const nextParams = new URLSearchParams(searchParams.toString())
+    nextParams.delete('edit')
+    const qs = nextParams.toString()
+    router.replace(qs ? `/dashboard/campaigns?${qs}` : '/dashboard/campaigns')
+    // openEdit is intentionally not a dep — it's stable enough and including
+    // it would re-run this effect every time any setter inside fires.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, ads])
+
   // Persist a new workspace-level source. Round-trips current settings so we
   // don't clobber other keys (funnelStages, customStatuses, etc.). After save
   // the new source is selected and the inline form collapses.
@@ -180,6 +214,7 @@ export default function CampaignsPage() {
 
   const openCreate = () => {
     setEditingAd(null); setName(''); setSource('indeed'); setCampaign(''); setFlowId(flows[0]?.id || '')
+    setTargetPosition('')
     setImageUrl(null); setImageError(null); setShowLibrary(false)
     setSelectedTemplateId('__default__')
     setPlacementUrl('')
@@ -191,6 +226,7 @@ export default function CampaignsPage() {
   }
   const openEdit = (ad: Ad) => {
     setEditingAd(ad); setName(ad.name); setSource(ad.source); setCampaign(ad.campaign || ''); setFlowId(ad.flowId)
+    setTargetPosition(ad.targetPosition || '')
     setImageUrl(ad.imageUrl); setImageError(null); setShowLibrary(false)
     setSelectedTemplateId(ad.templateId || '__default__')
     setPlacementUrl(ad.placementUrl || '')
@@ -282,6 +318,7 @@ export default function CampaignsPage() {
     setSaving(true)
     const payload = {
       name, source, campaign, flowId, imageUrl,
+      targetPosition: targetPosition.trim() || null,
       placementUrl: placementUrl.trim() || null,
       templateId: selectedTemplateId === '__default__' ? null : selectedTemplateId,
       headline: adHeadline,
@@ -366,6 +403,7 @@ export default function CampaignsPage() {
         name: duplicateName.trim(),
         source: duplicatingAd.source,
         campaign: duplicatingAd.campaign,
+        targetPosition: duplicatingAd.targetPosition,
         flowId: duplicatingAd.flowId,
         imageUrl: duplicatingAd.imageUrl,
         // Placement URL deliberately NOT copied — a duplicate exists to post
@@ -429,6 +467,51 @@ export default function CampaignsPage() {
   const totalSessions = ads.reduce((sum, a) => sum + a._count.sessions, 0)
   const activeAds = ads.filter(a => a.isActive).length
   const sourcesUsed = new Set(ads.map(a => a.source)).size
+
+  // Position groups — one bucket per Ad.targetPosition + Unassigned for nulls.
+  // Each group rolls up the metrics the position card on the Overview tab
+  // displays. URL slug for the detail page is just the position string;
+  // Unassigned uses the sentinel constant to round-trip cleanly through
+  // /api/candidates and /api/analytics.
+  const positionGroups = useMemo(() => {
+    const buckets = new Map<string, Ad[]>()
+    for (const ad of ads) {
+      const key = ad.targetPosition ?? UNASSIGNED_POSITION_SLUG
+      const arr = buckets.get(key)
+      if (arr) arr.push(ad)
+      else buckets.set(key, [ad])
+    }
+    const labelByValue = new Map<string, string>(allSources.map((s) => [s.value, s.label]))
+    const rows = Array.from(buckets.entries()).map(([key, groupAds]) => {
+      const totalApplicants = groupAds.reduce((sum, a) => sum + a._count.sessions, 0)
+      const activeCount = groupAds.filter((a) => a.isActive).length
+      const sourceCounts = new Map<string, number>()
+      for (const a of groupAds) sourceCounts.set(a.source, (sourceCounts.get(a.source) ?? 0) + 1)
+      const topSources = Array.from(sourceCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([src]) => labelByValue.get(src) ?? src)
+      const lastActivityMs = groupAds.reduce((mx, a) => Math.max(mx, new Date(a.createdAt).getTime()), 0)
+      return {
+        key,
+        label: key === UNASSIGNED_POSITION_SLUG ? 'Unassigned' : key,
+        adsCount: groupAds.length,
+        activeCount,
+        totalApplicants,
+        topSources,
+        lastActivityAt: lastActivityMs > 0 ? new Date(lastActivityMs) : null,
+      }
+    })
+    // Sort: pinned Unassigned at end; others by applicant count desc, then by
+    // ad count desc, then alphabetically — so the busiest positions surface.
+    return rows.sort((a, b) => {
+      if (a.key === UNASSIGNED_POSITION_SLUG) return 1
+      if (b.key === UNASSIGNED_POSITION_SLUG) return -1
+      if (b.totalApplicants !== a.totalApplicants) return b.totalApplicants - a.totalApplicants
+      if (b.adsCount !== a.adsCount) return b.adsCount - a.adsCount
+      return a.label.localeCompare(b.label)
+    })
+  }, [ads, allSources])
 
   // Resolve the date preset into a [from, to) range over Ad.createdAt.
   // `null` means "no constraint". thisMonth / lastMonth use calendar bounds;
@@ -524,42 +607,96 @@ export default function CampaignsPage() {
         ))}
       </div>
 
-      {/* OVERVIEW TAB — metric cards + breakdowns. Cost-per-applicant and
-          Best source are marked WIP because there's no spend ingestion yet
-          (no Ad.spend column or per-click tracking). The other two are real.  */}
+      {/* OVERVIEW TAB — position-grouped cards. Each card aggregates ads by
+          Ad.targetPosition (null → Unassigned) and offers quick jumps to
+          the existing Candidates / Analytics pages with the targetPosition
+          filter pre-applied. "View ads" deep-links to the per-position
+          detail at /dashboard/campaigns/[position]. */}
       {tab === 'overview' && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Stat label="Total campaigns" value={ads.length} />
+            <Stat label="Active campaigns" value={activeAds} />
             <Stat label="Applicants" value={totalSessions} />
-            <div className="rounded-[12px] border border-dashed border-grey-35 p-4 bg-surface-light">
-              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-50 mb-1 flex items-center gap-1">
-                Cost per applicant <WipBadge label="WIP" />
-              </div>
-              <div className="text-[18px] font-semibold text-grey-35">—</div>
-              <div className="text-[11px] text-grey-35 mt-1">Needs spend ingestion</div>
-            </div>
-            <div className="rounded-[12px] border border-dashed border-grey-35 p-4 bg-surface-light">
-              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-50 mb-1 flex items-center gap-1">
-                Best source <WipBadge label="WIP" />
-              </div>
-              <div className="text-[18px] font-semibold text-grey-35">
-                {sourceStats[0]?.label || '—'}
-              </div>
-              <div className="text-[11px] text-grey-35 mt-1">Will rank by conversion once tracked</div>
-            </div>
+            <Stat label="Positions" value={positionGroups.filter((g) => g.key !== UNASSIGNED_POSITION_SLUG).length} />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <WipSection
-              title="Applicants by source"
-              description="Bar chart breakdown — will render once the analytics aggregator returns per-source counts to this surface."
-            />
-            <WipSection
-              title="Conversion by source"
-              description="Funnel chart — % of applicants from each source that reach Hired."
-            />
-          </div>
+          {positionGroups.length === 0 ? (
+            <div className="section-card text-center py-16">
+              <h2 className="text-xl font-semibold text-grey-15 mb-2">No campaigns yet</h2>
+              <p className="text-grey-35 mb-6">Add your first ad and tag it with a target position to start grouping by role.</p>
+              <button onClick={openCreate} className="btn-primary">+ New Campaign</button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {positionGroups.map((g) => (
+                <div key={g.key} className="rounded-[12px] border border-surface-border bg-white p-5 flex flex-col gap-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[15px] font-semibold text-ink truncate">{g.label}</div>
+                      <div className="text-[12px] text-grey-40 mt-0.5">
+                        {g.adsCount} ad{g.adsCount === 1 ? '' : 's'} · {g.activeCount} active
+                      </div>
+                    </div>
+                    {g.key === UNASSIGNED_POSITION_SLUG && (
+                      <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-surface-light text-grey-50">No position</span>
+                    )}
+                  </div>
+
+                  <dl className="grid grid-cols-2 gap-2 text-[12px]">
+                    <div>
+                      <dt className="font-mono uppercase tracking-[0.08em] text-grey-50 text-[10px] mb-0.5">Applicants</dt>
+                      <dd className="text-ink font-semibold">{g.totalApplicants}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-mono uppercase tracking-[0.08em] text-grey-50 text-[10px] mb-0.5">Last activity</dt>
+                      <dd className="text-grey-15">{g.lastActivityAt ? g.lastActivityAt.toLocaleDateString() : '—'}</dd>
+                    </div>
+                  </dl>
+
+                  <div>
+                    <div className="font-mono uppercase tracking-[0.08em] text-grey-50 text-[10px] mb-1">Main sources</div>
+                    <div className="flex flex-wrap gap-1">
+                      {g.topSources.length === 0 ? (
+                        <span className="text-[12px] text-grey-40">—</span>
+                      ) : (
+                        g.topSources.map((s) => (
+                          <span key={s} className="text-[11px] px-2 py-0.5 rounded-full bg-surface-light text-grey-20 capitalize">{s}</span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-auto pt-3 border-t border-surface-divider grid grid-cols-2 gap-2 text-[12px]">
+                    <Link
+                      href={`/dashboard/campaigns/${encodeURIComponent(g.key)}`}
+                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                    >
+                      View ads
+                    </Link>
+                    <Link
+                      href={`/dashboard/candidates?targetPosition=${encodeURIComponent(g.key)}`}
+                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                    >
+                      Candidates
+                    </Link>
+                    <Link
+                      href={`/dashboard/candidates?view=kanban&targetPosition=${encodeURIComponent(g.key)}`}
+                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                    >
+                      Pipeline
+                    </Link>
+                    <Link
+                      href={`/dashboard/analytics?targetPosition=${encodeURIComponent(g.key)}`}
+                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                    >
+                      Analytics
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -915,6 +1052,24 @@ export default function CampaignsPage() {
                 )}
                 {sourceError && <p className="text-xs text-red-500 mt-1">{sourceError}</p>}
                 <p className="text-xs text-grey-50 mt-1">Changing source loads recommended ad copy for that platform</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-grey-20 mb-1.5">Target position (optional)</label>
+                <input
+                  type="text"
+                  value={targetPosition}
+                  onChange={(e) => setTargetPosition(e.target.value)}
+                  placeholder="e.g. Dispatcher, Cleaner, Office Manager"
+                  list="campaigns-target-positions"
+                  className="w-full px-3 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+                <datalist id="campaigns-target-positions">
+                  {Array.from(new Set(ads.map((a) => a.targetPosition).filter((p): p is string => !!p))).map((p) => (
+                    <option key={p} value={p} />
+                  ))}
+                </datalist>
+                <p className="text-xs text-grey-50 mt-1">Role this ad is hiring for. Drives the position-grouped overview and the targetPosition filter on Candidates / Analytics. Leave blank for Unassigned.</p>
               </div>
 
               <div>

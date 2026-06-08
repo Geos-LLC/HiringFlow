@@ -35,6 +35,12 @@ export async function GET(request: NextRequest) {
   // manual add or by ?source= URL param on flow entry) is used. Comma-list
   // accepted to filter to multiple sources at once.
   const sourceParam = request.nextUrl.searchParams.get('source')
+  // Target position — filters sessions to those attributed to ads with a
+  // matching Ad.targetPosition. The sentinel value '__unassigned' covers
+  // sessions that came through an ad with no position set OR no ad at all
+  // (direct/manual entries) so the "Unassigned" group on Campaigns lines up
+  // with what the candidates list shows.
+  const targetPositionParam = request.nextUrl.searchParams.get('targetPosition')
   // Date range — bounded on `Session.startedAt`. Both params are ISO strings.
   // Parsing failures are ignored so a malformed param can't 500 the kanban.
   const startedAfterParam = request.nextUrl.searchParams.get('startedAfter')
@@ -145,6 +151,21 @@ export async function GET(request: NextRequest) {
           { adId: null, ...sessionMatch },
         ],
       })
+    }
+  }
+  if (targetPositionParam) {
+    // `__unassigned` covers sessions with no ad attribution OR with an ad
+    // whose targetPosition is null — that's how the Campaigns "Unassigned"
+    // bucket is defined, and the candidates list should mirror it.
+    if (targetPositionParam === '__unassigned') {
+      andClauses.push({
+        OR: [
+          { adId: null },
+          { ad: { targetPosition: null } },
+        ],
+      })
+    } else {
+      andClauses.push({ ad: { targetPosition: targetPositionParam } })
     }
   }
   if (andClauses.length > 0) {
