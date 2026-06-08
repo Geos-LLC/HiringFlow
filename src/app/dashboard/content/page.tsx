@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { SubNav } from '../_components/SubNav'
 import { DEFAULT_EMAIL_TEMPLATES, type DefaultEmailTemplate } from '@/lib/email-templates-seed'
 import { DEFAULT_SMS_TEMPLATES, type DefaultSmsTemplate } from '@/lib/sms-templates-seed'
-import { Badge, Button, PageHeader, WipBadge } from '@/components/design'
+import { Badge, Button, PageHeader } from '@/components/design'
 import { plainTextToHtml, htmlToPlainText, applyInlineMarkdown } from '@/lib/markdown'
 
 const ASSETS_NAV = [
@@ -319,12 +319,6 @@ export default function ContentPage() {
   const [adTemplates, setAdTemplates] = useState<AdTemplate[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'email' | 'sms' | 'ad'>('all')
-  // Templates page search — narrows by name across all template types.
-  const [search, setSearch] = useState('')
-  // Use-context filter per spec: General / Workflow / Campaign. The Workflow
-  // and Campaign categories are not modeled on templates yet (they'd map to
-  // template→automation→flow joins), so those buttons are WIP.
-  const [useContext, setUseContext] = useState<'all' | 'workflow' | 'campaign' | 'general'>('all')
   const [sourceFilter, setSourceFilter] = useState('all')
 
   // Email modal
@@ -392,9 +386,6 @@ export default function ContentPage() {
   const openEditSms = (t: SmsTemplate) => {
     setEditingSms(t); setSmsName(t.name); setSmsBody(t.body); setShowSmsModal(true)
   }
-  const duplicateSms = (t: SmsTemplate) => {
-    openCreateSms({ name: `${t.name} (Copy)`, body: t.body })
-  }
   const saveSms = async () => {
     if (!smsName.trim() || !smsBody.trim()) return
     setSmsSaving(true)
@@ -402,25 +393,6 @@ export default function ContentPage() {
     if (editingSms) { await fetch(`/api/sms-templates/${editingSms.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
     else { await fetch('/api/sms-templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
     setSmsSaving(false); setShowSmsModal(false); refreshSms()
-  }
-  const saveSmsAsNew = async () => {
-    if (!smsName.trim() || !smsBody.trim()) return
-    setSmsSaving(true)
-    const proposedName = editingSms && smsName.trim() === editingSms.name
-      ? `${smsName.trim()} (Copy)`
-      : smsName.trim()
-    const res = await fetch('/api/sms-templates', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: proposedName, body: smsBody }),
-    })
-    setSmsSaving(false)
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data?.error || 'Failed to save as new')
-      return
-    }
-    setShowSmsModal(false); refreshSms()
   }
   const deleteSms = async (id: string) => {
     if (!confirm('Delete this SMS template?')) return
@@ -455,9 +427,6 @@ export default function ContentPage() {
     setEmailBody(t.bodyText || htmlToPlainText(t.bodyHtml || ''))
     setShowEmailModal(true)
   }
-  const duplicateEmail = (t: EmailTemplate) => {
-    openCreateEmail({ name: `${t.name} (Copy)`, subject: t.subject, bodyHtml: t.bodyHtml, bodyText: t.bodyText ?? undefined })
-  }
   const saveEmail = async () => {
     if (!emailName.trim() || !emailSubject.trim() || !emailBody.trim()) return
     setEmailSaving(true)
@@ -465,28 +434,6 @@ export default function ContentPage() {
     if (editingEmail) { await fetch(`/api/email-templates/${editingEmail.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
     else { await fetch('/api/email-templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
     setEmailSaving(false); setShowEmailModal(false); refreshEmails()
-  }
-  // POST a new EmailTemplate from the current modal state instead of PATCHing
-  // the one being edited. Auto-suffixes the name with "(Copy)" if it matches
-  // the original so we don't hit the unique (workspaceId, name) constraint.
-  const saveEmailAsNew = async () => {
-    if (!emailName.trim() || !emailSubject.trim() || !emailBody.trim()) return
-    setEmailSaving(true)
-    const proposedName = editingEmail && emailName.trim() === editingEmail.name
-      ? `${emailName.trim()} (Copy)`
-      : emailName.trim()
-    const res = await fetch('/api/email-templates', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: proposedName, subject: emailSubject, bodyHtml: plainTextToHtml(emailBody), bodyText: emailBody }),
-    })
-    setEmailSaving(false)
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data?.error || 'Failed to save as new')
-      return
-    }
-    setShowEmailModal(false); refreshEmails()
   }
   const deleteEmail = async (id: string) => {
     if (!confirm('Delete this email template?')) return
@@ -516,20 +463,6 @@ export default function ContentPage() {
     setAdBody(t.bodyText); setAdRequirements(t.requirements || ''); setAdBenefits(t.benefits || '')
     setAdCta(t.callToAction || ''); setShowAdModal(true)
   }
-  const duplicateAd = (t: AdTemplate) => {
-    // Reuse the create-modal opener with the original row's content; AD_DEFAULTS
-    // infers `benefits`/`callToAction` as `string` (no nulls in the seed array),
-    // so coerce DB nulls to empty strings to match the starter shape.
-    openCreateAd({
-      name: `${t.name} (Copy)`,
-      source: t.source,
-      headline: t.headline,
-      bodyText: t.bodyText,
-      requirements: t.requirements,
-      benefits: t.benefits ?? '',
-      callToAction: t.callToAction ?? '',
-    })
-  }
   const saveAd = async () => {
     if (!adName.trim() || !adHeadline.trim() || !adBody.trim()) return
     setAdSaving(true)
@@ -537,25 +470,6 @@ export default function ContentPage() {
     if (editingAd) { await fetch(`/api/ad-templates/${editingAd.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
     else { await fetch('/api/ad-templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
     setAdSaving(false); setShowAdModal(false); refreshAds()
-  }
-  const saveAdAsNew = async () => {
-    if (!adName.trim() || !adHeadline.trim() || !adBody.trim()) return
-    setAdSaving(true)
-    const proposedName = editingAd && adName.trim() === editingAd.name
-      ? `${adName.trim()} (Copy)`
-      : adName.trim()
-    const res = await fetch('/api/ad-templates', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: proposedName, source: adSource, headline: adHeadline, bodyText: adBody, requirements: adRequirements || null, benefits: adBenefits || null, callToAction: adCta || null }),
-    })
-    setAdSaving(false)
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data?.error || 'Failed to save as new')
-      return
-    }
-    setShowAdModal(false); refreshAds()
   }
   const deleteAd = async (id: string) => { if (!confirm('Delete?')) return; await fetch(`/api/ad-templates/${id}`, { method: 'DELETE' }); refreshAds() }
   const copyAdText = (t: AdTemplate) => {
@@ -573,8 +487,8 @@ export default function ContentPage() {
     <div className="-mx-6 lg:-mx-[132px]">
       <PageHeader
         eyebrow={`${emailTemplates.length + smsTemplates.length + adTemplates.length} template${emailTemplates.length + smsTemplates.length + adTemplates.length === 1 ? '' : 's'}`}
-        title="Templates"
-        description="Reusable communication — email and SMS messages that automations send to candidates, plus ad copy for campaigns."
+        title="Assets"
+        description="Reusable templates and media for your flows and campaigns."
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={async () => {
@@ -606,52 +520,6 @@ export default function ContentPage() {
           <div className="eyebrow mb-0.5">Templates</div>
           <div className="text-[15px] font-semibold text-ink">Emails, SMS &amp; job ads</div>
           <p className="text-grey-35 text-[12px] mt-0.5">Click a default to start, or build from scratch.</p>
-        </div>
-      </div>
-
-      {/* Search */}
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[220px] max-w-[400px]">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-grey-35" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.5-3.5" />
-          </svg>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search templates"
-            className="w-full pl-9 pr-3 py-2 rounded-[10px] border border-surface-border text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-primary"
-          />
-        </div>
-        {/* Use-context filter. Email/SMS = channel (already present below);
-            Workflow/Campaign/General = where the template is used. Workflow
-            and Campaign are WIP — would need a template→automation join. */}
-        <div className="flex gap-1">
-          {([
-            { k: 'all'      as const, l: 'All',      wip: false },
-            { k: 'workflow' as const, l: 'Workflow', wip: true  },
-            { k: 'campaign' as const, l: 'Campaign', wip: true  },
-            { k: 'general'  as const, l: 'General',  wip: true  },
-          ]).map((t) => {
-            const isActive = useContext === t.k
-            return (
-              <button
-                key={t.k}
-                onClick={() => !t.wip && setUseContext(t.k)}
-                disabled={t.wip}
-                title={t.wip ? 'Use-context tagging not modeled yet' : undefined}
-                className={`px-3 py-1.5 rounded-[10px] text-[12px] font-medium transition-colors ${
-                  isActive ? 'bg-ink text-white'
-                    : t.wip ? 'text-grey-50 cursor-not-allowed'
-                    : 'text-grey-35 hover:text-ink hover:bg-surface-light'
-                }`}
-              >
-                {t.l}
-                {t.wip && <span className="ml-1.5"><WipBadge label="WIP" /></span>}
-              </button>
-            )
-          })}
         </div>
       </div>
 
@@ -711,9 +579,7 @@ export default function ContentPage() {
           <h3 className="text-sm font-semibold text-grey-20 mb-3">Your Templates</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* Email templates */}
-            {(filter === 'all' || filter === 'email') && emailTemplates
-              .filter(t => !search.trim() || t.name.toLowerCase().includes(search.trim().toLowerCase()) || t.subject.toLowerCase().includes(search.trim().toLowerCase()))
-              .map(t => (
+            {(filter === 'all' || filter === 'email') && emailTemplates.map(t => (
               <div key={t.id} className="bg-white rounded-lg border border-surface-border p-5 hover:shadow-md transition-shadow">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium">Email</span>
@@ -725,15 +591,12 @@ export default function ContentPage() {
                 <div className="flex items-center gap-3">
                   <button onClick={() => setPreviewEmail(t)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">Preview</button>
                   <button onClick={() => openEditEmail(t)} className="text-xs text-grey-35 hover:text-grey-15">Edit</button>
-                  <button onClick={() => duplicateEmail(t)} className="text-xs text-grey-35 hover:text-grey-15">Duplicate</button>
                   <button onClick={() => deleteEmail(t.id)} className="text-xs text-grey-35 hover:text-grey-15">Delete</button>
                 </div>
               </div>
             ))}
             {/* SMS templates */}
-            {(filter === 'all' || filter === 'sms') && smsTemplates
-              .filter(t => !search.trim() || t.name.toLowerCase().includes(search.trim().toLowerCase()) || t.body.toLowerCase().includes(search.trim().toLowerCase()))
-              .map(t => {
+            {(filter === 'all' || filter === 'sms') && smsTemplates.map(t => {
               const len = t.body.length
               const seg = Math.max(1, Math.ceil(len / 160))
               return (
@@ -749,7 +612,6 @@ export default function ContentPage() {
                   <div className="flex items-center gap-3">
                     <button onClick={() => setPreviewSms(t)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">Preview</button>
                     <button onClick={() => openEditSms(t)} className="text-xs text-grey-35 hover:text-grey-15">Edit</button>
-                    <button onClick={() => duplicateSms(t)} className="text-xs text-grey-35 hover:text-grey-15">Duplicate</button>
                     <button onClick={() => deleteSms(t.id)} className="text-xs text-grey-35 hover:text-grey-15">Delete</button>
                   </div>
                 </div>
@@ -768,7 +630,6 @@ export default function ContentPage() {
                   <button onClick={() => setPreviewAd(t)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">Preview</button>
                   <button onClick={() => copyAdText(t)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">{copiedId === t.id ? 'Copied!' : 'Copy'}</button>
                   <button onClick={() => openEditAd(t)} className="text-xs text-grey-35 hover:text-grey-15">Edit</button>
-                  <button onClick={() => duplicateAd(t)} className="text-xs text-grey-35 hover:text-grey-15">Duplicate</button>
                   <button onClick={() => deleteAd(t.id)} className="text-xs text-grey-35 hover:text-grey-15">Delete</button>
                 </div>
               </div>
@@ -848,13 +709,7 @@ export default function ContentPage() {
               </div>
               <div className="bg-surface rounded-[8px] p-3"><label className="text-xs font-medium text-grey-40 uppercase mb-2 block">Variables — click to copy</label><div className="flex flex-wrap gap-2">{SMS_VARIABLES.map(v => <button key={v} onClick={() => navigator.clipboard.writeText(v)} className="text-xs px-2.5 py-1 bg-white border border-surface-border rounded-[8px] text-grey-15 font-mono hover:bg-brand-50">{v}</button>)}</div></div>
             </div>
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => setShowSmsModal(false)} className="btn-secondary flex-1">Cancel</button>
-              {editingSms && (
-                <button onClick={saveSmsAsNew} disabled={smsSaving || !smsName.trim() || !smsBody.trim()} className="btn-secondary flex-1 disabled:opacity-50">{smsSaving ? 'Saving...' : 'Save as new'}</button>
-              )}
-              <button onClick={saveSms} disabled={smsSaving || !smsName.trim() || !smsBody.trim()} className="btn-primary flex-1 disabled:opacity-50">{smsSaving ? 'Saving...' : editingSms ? 'Save' : 'Create'}</button>
-            </div>
+            <div className="flex gap-3 mt-6"><button onClick={() => setShowSmsModal(false)} className="btn-secondary flex-1">Cancel</button><button onClick={saveSms} disabled={smsSaving || !smsName.trim() || !smsBody.trim()} className="btn-primary flex-1 disabled:opacity-50">{smsSaving ? 'Saving...' : editingSms ? 'Save' : 'Create'}</button></div>
           </div>
         </div>
       )}
@@ -882,13 +737,7 @@ export default function ContentPage() {
               </div>
               <div className="bg-surface rounded-[8px] p-3"><label className="text-xs font-medium text-grey-40 uppercase mb-2 block">Variables — click to copy</label><div className="flex flex-wrap gap-2">{EMAIL_VARIABLES.map(v => <button key={v} onClick={() => navigator.clipboard.writeText(v)} className="text-xs px-2.5 py-1 bg-white border border-surface-border rounded-[8px] text-grey-15 font-mono hover:bg-brand-50">{v}</button>)}</div></div>
             </div>
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => setShowEmailModal(false)} className="btn-secondary flex-1">Cancel</button>
-              {editingEmail && (
-                <button onClick={saveEmailAsNew} disabled={emailSaving || !emailName.trim() || !emailSubject.trim() || !emailBody.trim()} className="btn-secondary flex-1 disabled:opacity-50">{emailSaving ? 'Saving...' : 'Save as new'}</button>
-              )}
-              <button onClick={saveEmail} disabled={emailSaving || !emailName.trim() || !emailSubject.trim() || !emailBody.trim()} className="btn-primary flex-1 disabled:opacity-50">{emailSaving ? 'Saving...' : editingEmail ? 'Save' : 'Create'}</button>
-            </div>
+            <div className="flex gap-3 mt-6"><button onClick={() => setShowEmailModal(false)} className="btn-secondary flex-1">Cancel</button><button onClick={saveEmail} disabled={emailSaving || !emailName.trim() || !emailSubject.trim() || !emailBody.trim()} className="btn-primary flex-1 disabled:opacity-50">{emailSaving ? 'Saving...' : editingEmail ? 'Save' : 'Create'}</button></div>
           </div>
         </div>
       )}
@@ -911,13 +760,7 @@ export default function ContentPage() {
               </div>
               <div><label className="block text-sm font-medium text-grey-20 mb-1.5">Call to Action</label><input type="text" value={adCta} onChange={e => setAdCta(e.target.value)} className="w-full px-4 py-3 border border-surface-border rounded-[8px] text-grey-15 focus:outline-none focus:ring-2 focus:ring-brand-500" /></div>
             </div>
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => setShowAdModal(false)} className="btn-secondary flex-1">Cancel</button>
-              {editingAd && (
-                <button onClick={saveAdAsNew} disabled={adSaving || !adName.trim() || !adHeadline.trim() || !adBody.trim()} className="btn-secondary flex-1 disabled:opacity-50">{adSaving ? 'Saving...' : 'Save as new'}</button>
-              )}
-              <button onClick={saveAd} disabled={adSaving || !adName.trim() || !adHeadline.trim() || !adBody.trim()} className="btn-primary flex-1 disabled:opacity-50">{adSaving ? 'Saving...' : editingAd ? 'Save' : 'Create'}</button>
-            </div>
+            <div className="flex gap-3 mt-6"><button onClick={() => setShowAdModal(false)} className="btn-secondary flex-1">Cancel</button><button onClick={saveAd} disabled={adSaving || !adName.trim() || !adHeadline.trim() || !adBody.trim()} className="btn-primary flex-1 disabled:opacity-50">{adSaving ? 'Saving...' : editingAd ? 'Save' : 'Create'}</button></div>
           </div>
         </div>
       )}
