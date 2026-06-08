@@ -298,6 +298,20 @@ export default function CandidatesPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // When kanban is mounted and a stage filter is active, scroll the matching
+  // column into view. Without this, switching from list-with-stage-filter back
+  // to kanban can leave the filtered stage far off-screen on the right and
+  // the recruiter sees an empty board until they pan over manually.
+  useEffect(() => {
+    if (view !== 'kanban' || !stageFilter) return
+    const scroll = () => {
+      const el = kanbanRef.current?.querySelector(`[data-stage-column="${CSS.escape(stageFilter)}"]`) as HTMLElement | null
+      if (el) el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+    }
+    const raf = requestAnimationFrame(scroll)
+    return () => cancelAnimationFrame(raf)
+  }, [view, stageFilter, stages])
+
   // Auto-scroll the board horizontally while a card is being dragged near
   // (or past) either edge. Native HTML5 drag won't pan the container on its
   // own, so we track the cursor via `drag` + `dragover` and bump scrollLeft
@@ -1048,6 +1062,7 @@ export default function CandidatesPage() {
               return (
                 <div
                   key={stage.id}
+                  data-stage-column={stage.id}
                   onDragOver={(e) => { e.preventDefault(); setHoverCol(stage.id) }}
                   onDragLeave={() => setHoverCol((cur) => (cur === stage.id ? null : cur))}
                   onDrop={(e) => {
