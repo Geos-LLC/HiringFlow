@@ -678,18 +678,8 @@ function CampaignsPageInner() {
                         {g.adsCount} ad{g.adsCount === 1 ? '' : 's'} · {g.activeCount} active
                       </div>
                     </div>
-                    {g.key === UNASSIGNED_POSITION_SLUG ? (
+                    {g.key === UNASSIGNED_POSITION_SLUG && (
                       <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-surface-light text-grey-50">No position</span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => renamePositionInline(g.label)}
-                        disabled={renamingPosition === g.label}
-                        className="text-[11px] font-medium text-brand-500 hover:text-brand-600 disabled:opacity-50"
-                        title="Rename this position (bulk-updates every ad in it)"
-                      >
-                        {renamingPosition === g.label ? 'Renaming…' : 'Rename'}
-                      </button>
                     )}
                   </div>
 
@@ -717,31 +707,44 @@ function CampaignsPageInner() {
                     </div>
                   </div>
 
-                  <div className="mt-auto pt-3 border-t border-surface-divider grid grid-cols-2 gap-2 text-[12px]">
-                    <Link
-                      href={`/dashboard/campaigns/${encodeURIComponent(g.key)}`}
-                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
-                    >
-                      View ads
-                    </Link>
-                    <Link
-                      href={`/dashboard/candidates?targetPosition=${encodeURIComponent(g.key)}`}
-                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
-                    >
-                      Candidates
-                    </Link>
-                    <Link
-                      href={`/dashboard/candidates?view=kanban&targetPosition=${encodeURIComponent(g.key)}`}
-                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
-                    >
-                      Pipeline
-                    </Link>
-                    <Link
-                      href={`/dashboard/analytics?targetPosition=${encodeURIComponent(g.key)}`}
-                      className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
-                    >
-                      Analytics
-                    </Link>
+                  <div className="mt-auto pt-3 border-t border-surface-divider space-y-2 text-[12px]">
+                    {g.key !== UNASSIGNED_POSITION_SLUG && (
+                      <button
+                        type="button"
+                        onClick={() => renamePositionInline(g.label)}
+                        disabled={renamingPosition === g.label}
+                        className="w-full inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] bg-ink text-white hover:bg-grey-15 disabled:opacity-50 font-medium"
+                        title="Rename this position (bulk-updates every ad in it)"
+                      >
+                        {renamingPosition === g.label ? 'Renaming…' : 'Edit position'}
+                      </button>
+                    )}
+                    <div className="grid grid-cols-2 gap-2">
+                      <Link
+                        href={`/dashboard/campaigns/${encodeURIComponent(g.key)}`}
+                        className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                      >
+                        View ads
+                      </Link>
+                      <Link
+                        href={`/dashboard/candidates?targetPosition=${encodeURIComponent(g.key)}`}
+                        className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                      >
+                        Candidates
+                      </Link>
+                      <Link
+                        href={`/dashboard/candidates?view=kanban&targetPosition=${encodeURIComponent(g.key)}`}
+                        className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                      >
+                        Pipeline
+                      </Link>
+                      <Link
+                        href={`/dashboard/analytics?targetPosition=${encodeURIComponent(g.key)}`}
+                        className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light font-medium"
+                      >
+                        Analytics
+                      </Link>
+                    </div>
                   </div>
                 </div>
               ))}
