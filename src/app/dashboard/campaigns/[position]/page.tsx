@@ -29,6 +29,11 @@ export default function CampaignPositionPage() {
   const [ads, setAds] = useState<Ad[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'ads' | 'overview'>('ads')
+  // "Add existing ads" modal state — picks ads currently in other positions
+  // (or Unassigned) and bulk-PATCHes their targetPosition to this one.
+  const [addModalOpen, setAddModalOpen] = useState(false)
+  const [addSelectedIds, setAddSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkSaving, setBulkSaving] = useState(false)
 
   useEffect(() => {
     fetch('/api/ads')
@@ -97,6 +102,121 @@ export default function CampaignPositionPage() {
     else alert('Delete failed')
   }
 
+  // Catalogue of existing position names (excluding the current one) so the
+  // Move / Rename prompts can suggest valid values. Plus a sentinel "—" entry
+  // for moving an ad back to Unassigned.
+  const otherPositions = useMemo(() => {
+    const set = new Set<string>()
+    for (const a of ads) {
+      if (a.targetPosition && a.targetPosition !== positionLabel) set.add(a.targetPosition)
+    }
+    return Array.from(set).sort()
+  }, [ads, positionLabel])
+
+  // Bulk-PATCH every ad in this position to the new name. Done client-side via
+  // sequential PATCHes because the per-ad route already validates auth and
+  // workspace ownership; a dedicated bulk endpoint would just duplicate that.
+  // For Unassigned we no-op because there's nothing meaningful to rename to.
+  const renamePosition = async () => {
+    if (isUnassigned) return
+    const next = window.prompt(`Rename "${positionLabel}" to:`, positionLabel)
+    if (next === null) return
+    const trimmed = next.trim()
+    if (!trimmed) {
+      alert('Position name cannot be empty. Use "Move" on each ad to unassign instead.')
+      return
+    }
+    if (trimmed === positionLabel) return
+    setBulkSaving(true)
+    try {
+      await Promise.all(positionAds.map((ad) =>
+        fetch(`/api/ads/${ad.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetPosition: trimmed }),
+        })
+      ))
+      router.replace(`/dashboard/campaigns/${encodeURIComponent(trimmed)}`)
+    } finally {
+      setBulkSaving(false)
+    }
+  }
+
+  // Move a single ad to a different position (or Unassigned). Empty input
+  // resolves to null on the API side, which puts the ad in the Unassigned
+  // bucket on the Campaigns overview.
+  const moveAd = async (ad: Ad) => {
+    const suggestion = otherPositions[0] ?? ''
+    const next = window.prompt(
+      `Move "${ad.name}" to which position?\n\nCurrent: ${ad.targetPosition ?? 'Unassigned'}\nExisting positions: ${otherPositions.join(', ') || '(none)'}\nLeave blank for Unassigned.`,
+      suggestion
+    )
+    if (next === null) return
+    const trimmed = next.trim()
+    if (trimmed === (ad.targetPosition ?? '')) return
+    await fetch(`/api/ads/${ad.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPosition: trimmed || null }),
+    })
+    refresh()
+  }
+
+  const openAddModal = () => {
+    setAddSelectedIds(new Set())
+    setAddModalOpen(true)
+  }
+
+  const toggleAddSelected = (id: string) => {
+    setAddSelectedIds((cur) => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  // Reassign every selected ad to this position (or to null for Unassigned).
+  // Skips ads that are already here so a stale-cache double-tap is harmless.
+  const attachSelected = async () => {
+    if (addSelectedIds.size === 0) return
+    setBulkSaving(true)
+    try {
+      const targetValue = isUnassigned ? null : positionLabel
+      await Promise.all(
+        Array.from(addSelectedIds).map((id) =>
+          fetch(`/api/ads/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetPosition: targetValue }),
+          })
+        )
+      )
+      setAddModalOpen(false)
+      refresh()
+    } finally {
+      setBulkSaving(false)
+    }
+  }
+
+  // Pool for the Add modal: every ad NOT currently in this position. Sorted
+  // by current position (Unassigned first) so the recruiter can scan groups.
+  const attachableAds = useMemo(() => {
+    return ads
+      .filter((a) => {
+        if (isUnassigned) return !!a.targetPosition
+        return (a.targetPosition ?? '').toLowerCase() !== positionSlug.toLowerCase()
+      })
+      .sort((a, b) => {
+        const aLabel = a.targetPosition ?? ''
+        const bLabel = b.targetPosition ?? ''
+        if (aLabel === bLabel) return a.name.localeCompare(b.name)
+        if (!aLabel) return -1
+        if (!bLabel) return 1
+        return aLabel.localeCompare(bLabel)
+      })
+  }, [ads, isUnassigned, positionSlug])
+
   if (loading) {
     return (
       <div className="py-14 text-center font-mono text-[11px] uppercase text-grey-35" style={{ letterSpacing: '0.1em' }}>
@@ -118,7 +238,15 @@ export default function CampaignPositionPage() {
         title={positionLabel}
         description={`${positionAds.length} ad${positionAds.length === 1 ? '' : 's'} for this position`}
         actions={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={openAddModal} disabled={bulkSaving}>
+              Add existing ads
+            </Button>
+            {!isUnassigned && (
+              <Button variant="secondary" size="sm" onClick={renamePosition} disabled={bulkSaving}>
+                Rename position
+              </Button>
+            )}
             <Link href={`/dashboard/candidates?${filterParam}`}>
               <Button variant="secondary" size="sm">Candidates</Button>
             </Link>
@@ -230,6 +358,9 @@ export default function CampaignPositionPage() {
                             >
                               Edit
                             </button>
+                            <button onClick={() => moveAd(ad)} className="text-grey-35 hover:text-grey-15">
+                              Move
+                            </button>
                             <button onClick={() => duplicate(ad)} className="text-grey-35 hover:text-grey-15">
                               Duplicate
                             </button>
@@ -250,6 +381,90 @@ export default function CampaignPositionPage() {
           </>
         )}
       </div>
+
+      {addModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setAddModalOpen(false) }}
+        >
+          <div className="w-full max-w-2xl rounded-[14px] bg-white shadow-xl border border-surface-border flex flex-col max-h-[85vh]">
+            <div className="px-5 py-4 border-b border-surface-divider flex items-center justify-between">
+              <div>
+                <h2 className="text-[15px] font-semibold text-ink">Add ads to &ldquo;{positionLabel}&rdquo;</h2>
+                <p className="mt-0.5 text-[12px] text-grey-35">
+                  Pick existing ads from other positions to reassign them here. Their other metadata (source, flow, copy) is unchanged.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAddModalOpen(false)}
+                className="w-7 h-7 flex items-center justify-center rounded-md text-grey-50 hover:text-ink hover:bg-surface-light"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3">
+              {attachableAds.length === 0 ? (
+                <p className="text-[13px] text-grey-40 py-6 text-center">
+                  Every ad in this workspace is already in this position.
+                </p>
+              ) : (
+                <ul className="divide-y divide-surface-divider">
+                  {attachableAds.map((ad) => {
+                    const checked = addSelectedIds.has(ad.id)
+                    const currentLabel = ad.targetPosition ?? 'Unassigned'
+                    return (
+                      <li key={ad.id}>
+                        <label className="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-surface-light/40 rounded-[8px] px-2">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleAddSelected(ad.id)}
+                            className="cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[13px] font-medium text-ink truncate">{ad.name}</div>
+                            <div className="text-[11px] text-grey-40 flex items-center gap-2">
+                              <span className="capitalize">{ad.source}</span>
+                              <span aria-hidden>·</span>
+                              <span>Currently: {currentLabel}</span>
+                              {!ad.isActive && (
+                                <>
+                                  <span aria-hidden>·</span>
+                                  <span className="text-amber-700">Archived</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </label>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-between">
+              <span className="text-[12px] text-grey-40">
+                {addSelectedIds.size} selected
+              </span>
+              <div className="flex gap-2">
+                <Button type="button" variant="secondary" size="sm" onClick={() => setAddModalOpen(false)} disabled={bulkSaving}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={attachSelected}
+                  disabled={bulkSaving || addSelectedIds.size === 0 || attachableAds.length === 0}
+                >
+                  {bulkSaving ? 'Moving…' : `Move ${addSelectedIds.size} here`}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
