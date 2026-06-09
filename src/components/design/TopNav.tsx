@@ -98,7 +98,18 @@ export function TopNav({
   }
 
   const activeGroup = items.find(isGroupActive) || null
-  const subTabs = activeGroup?.children || []
+
+  // Hovered group takes precedence over the active group for the sub-tab
+  // strip — pointing at "Process" while on a Recruiting page should
+  // preview Process's children. Reset is handled by a container-level
+  // onMouseLeave on the whole header so moving the cursor from the group
+  // label down to the sub-tab strip doesn't close it.
+  const [hoveredLabel, setHoveredLabel] = React.useState<string | null>(null)
+  const hoveredGroup = hoveredLabel
+    ? items.find((it) => it.label === hoveredLabel) || null
+    : null
+  const displayedGroup = hoveredGroup || activeGroup
+  const subTabs = displayedGroup?.children || []
 
   const initials = user?.initials || initialsFromName(user?.name)
 
@@ -114,6 +125,8 @@ export function TopNav({
           <Link
             key={it.href}
             href={it.href}
+            onMouseEnter={() => setHoveredLabel(it.label)}
+            onFocus={() => setHoveredLabel(it.label)}
             className={`px-3 py-2 text-[14px] font-medium rounded-[8px] whitespace-nowrap transition-colors ${
               active ? 'text-ink' : 'text-grey-35 hover:text-ink hover:bg-surface-light'
             }`}
@@ -129,6 +142,7 @@ export function TopNav({
   return (
     <header
       className={`bg-white border-b border-surface-border shrink-0 ${className}`.trim()}
+      onMouseLeave={() => setHoveredLabel(null)}
     >
       {/* Row 1: brand (+ inline group tabs on xl+) + right cluster */}
       <div className="h-[60px] flex items-center gap-3 xl:gap-7 px-4 md:px-6">
