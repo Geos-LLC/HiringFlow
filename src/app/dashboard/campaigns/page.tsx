@@ -192,7 +192,7 @@ function CampaignsPageInner() {
     if (!name || assignSelectedIds.size === 0 || assignSaving) return
     setAssignSaving(true)
     try {
-      await Promise.all(
+      const results = await Promise.all(
         Array.from(assignSelectedIds).map((id) =>
           fetch(`/api/ads/${id}`, {
             method: 'PATCH',
@@ -201,6 +201,10 @@ function CampaignsPageInner() {
           })
         )
       )
+      const failed = results.filter((r) => !r.ok)
+      if (failed.length > 0) {
+        alert(`${failed.length} ad update(s) failed.`)
+      }
       await refresh()
       setAssignModalOpen(false)
     } finally {

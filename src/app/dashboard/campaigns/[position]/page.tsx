@@ -21,15 +21,32 @@ const UNASSIGNED_POSITION_SLUG = '__unassigned'
 export default function CampaignPositionPage() {
   const params = useParams<{ position: string }>()
   const router = useRouter()
-  // URL segments are pre-encoded; useParams gives us the decoded form already.
-  const positionSlug = typeof params?.position === 'string' ? params.position : ''
+  // Next.js App Router's useParams returns the RAW URL-encoded value, not
+  // the decoded form (despite earlier assumptions). Without decoding,
+  // every link built with `encodeURIComponent(positionSlug)` would
+  // re-encode the `%`, producing the quadruple-encoded URLs we saw in
+  // prod (`Cleaner%2525252520Jacksonville` for a position literally
+  // named "Cleaner Jacksonville"). Equally bad: the equality check
+  // `ad.targetPosition === positionSlug` would never match because the
+  // DB stores the decoded value. Decode once here, treat positionSlug
+  // as the plain-text identity for the rest of the page.
+  const rawParam = typeof params?.position === 'string' ? params.position : ''
+  let positionSlug = ''
+  try {
+    positionSlug = rawParam ? decodeURIComponent(rawParam) : ''
+  } catch {
+    // Malformed encoding (e.g. stray `%`) — fall back to the raw value
+    // rather than throwing. The recruiter sees the broken name; the
+    // page still renders so they can navigate away.
+    positionSlug = rawParam
+  }
   const isUnassigned = positionSlug === UNASSIGNED_POSITION_SLUG
   const positionLabel = isUnassigned ? 'Unassigned' : positionSlug
 
   const [ads, setAds] = useState<Ad[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'ads' | 'overview'>('ads')
-  // "Add existing ads" modal state — picks ads currently in other positions
+  // "Manage ads" modal state — picks ads currently in other positions
   // (or Unassigned) and bulk-PATCHes their targetPosition to this one.
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [addSelectedIds, setAddSelectedIds] = useState<Set<string>>(new Set())
@@ -162,8 +179,20 @@ export default function CampaignPositionPage() {
     refresh()
   }
 
+  // Returns true iff `ad` is currently in the position being edited.
+  // Treated as case-insensitive to match the rest of the position resolver.
+  const isInThisPosition = (ad: Ad): boolean => {
+    if (isUnassigned) return !ad.targetPosition
+    return (ad.targetPosition ?? '').toLowerCase() === positionSlug.toLowerCase()
+  }
+
+  // Open the attach modal with the checkboxes pre-populated to reflect the
+  // CURRENT state of the world: every ad already in this position starts
+  // checked. Recruiter can uncheck (→ move to Unassigned) or check new ads
+  // (→ move them here). Submit only PATCHes ads whose checkbox state
+  // changed from the snapshot.
   const openAddModal = () => {
-    setAddSelectedIds(new Set())
+    setAddSelectedIds(new Set(ads.filter(isInThisPosition).map((a) => a.id)))
     setAddModalOpen(true)
   }
 
@@ -176,22 +205,49 @@ export default function CampaignPositionPage() {
     })
   }
 
-  // Reassign every selected ad to this position (or to null for Unassigned).
-  // Skips ads that are already here so a stale-cache double-tap is harmless.
+  // Apply the modal's diff against the world. Three cases:
+  //   - in selection AND in position    → no-op
+  //   - in selection AND NOT in position → move into this position
+  //   - NOT in selection AND in position → move OUT (to Unassigned)
+  //   - NOT in selection AND NOT in position → no-op
+  // We deliberately skip the no-ops so the network is quiet and the
+  // "you didn't pick anything" case (no diff) bails out cleanly.
   const attachSelected = async () => {
-    if (addSelectedIds.size === 0) return
+    const targetValue = isUnassigned ? null : positionLabel
+    const toAttach: string[] = []
+    const toRemove: string[] = []
+    for (const ad of ads) {
+      const selected = addSelectedIds.has(ad.id)
+      const here = isInThisPosition(ad)
+      if (selected && !here) toAttach.push(ad.id)
+      else if (!selected && here) toRemove.push(ad.id)
+    }
+    if (toAttach.length === 0 && toRemove.length === 0) {
+      setAddModalOpen(false)
+      return
+    }
     setBulkSaving(true)
     try {
-      const targetValue = isUnassigned ? null : positionLabel
-      await Promise.all(
-        Array.from(addSelectedIds).map((id) =>
+      const results = await Promise.all([
+        ...toAttach.map((id) =>
           fetch(`/api/ads/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ targetPosition: targetValue }),
           })
-        )
-      )
+        ),
+        ...toRemove.map((id) =>
+          fetch(`/api/ads/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetPosition: null }),
+          })
+        ),
+      ])
+      const failed = results.filter((r) => !r.ok)
+      if (failed.length > 0) {
+        alert(`${failed.length} ad update(s) failed.`)
+      }
       setAddModalOpen(false)
       refresh()
     } finally {
@@ -199,22 +255,33 @@ export default function CampaignPositionPage() {
     }
   }
 
-  // Pool for the Add modal: every ad NOT currently in this position. Sorted
-  // by current position (Unassigned first) so the recruiter can scan groups.
+  // Pool for the Add modal: every ad in the workspace. Ads currently in this
+  // position render pre-checked + dimmed so the recruiter can see at a
+  // glance which ones are already here; unchecking them moves them out.
+  //
+  // Dedupe by ad id is defensive — the API shouldn't return the same row
+  // twice but a stale cache during refresh could briefly produce dupes.
+  // Sort: ads currently in this position first (so the recruiter sees the
+  // existing roster up top), then by current position label.
   const attachableAds = useMemo(() => {
-    return ads
-      .filter((a) => {
-        if (isUnassigned) return !!a.targetPosition
-        return (a.targetPosition ?? '').toLowerCase() !== positionSlug.toLowerCase()
-      })
-      .sort((a, b) => {
-        const aLabel = a.targetPosition ?? ''
-        const bLabel = b.targetPosition ?? ''
-        if (aLabel === bLabel) return a.name.localeCompare(b.name)
-        if (!aLabel) return -1
-        if (!bLabel) return 1
-        return aLabel.localeCompare(bLabel)
-      })
+    const seen = new Set<string>()
+    const unique = ads.filter((a) => {
+      if (seen.has(a.id)) return false
+      seen.add(a.id)
+      return true
+    })
+    return unique.sort((a, b) => {
+      const aHere = isInThisPosition(a)
+      const bHere = isInThisPosition(b)
+      if (aHere && !bHere) return -1
+      if (!aHere && bHere) return 1
+      const aLabel = a.targetPosition ?? ''
+      const bLabel = b.targetPosition ?? ''
+      if (aLabel === bLabel) return a.name.localeCompare(b.name)
+      if (!aLabel) return -1
+      if (!bLabel) return 1
+      return aLabel.localeCompare(bLabel)
+    })
   }, [ads, isUnassigned, positionSlug])
 
   if (loading) {
@@ -245,7 +312,7 @@ export default function CampaignPositionPage() {
               </Link>
             )}
             <Button variant="secondary" size="sm" onClick={openAddModal} disabled={bulkSaving}>
-              Add existing ads
+              Manage ads
             </Button>
             {!isUnassigned && (
               <Button variant="secondary" size="sm" onClick={renamePosition} disabled={bulkSaving}>
@@ -321,7 +388,7 @@ export default function CampaignPositionPage() {
                     </Link>
                   )}
                   <Button variant="secondary" size="sm" onClick={openAddModal}>
-                    Add existing ads
+                    Manage ads
                   </Button>
                   <Link href="/dashboard/campaigns">
                     <Button variant="secondary" size="sm">Back to Campaigns</Button>
@@ -403,9 +470,9 @@ export default function CampaignPositionPage() {
           <div className="w-full max-w-2xl rounded-[14px] bg-white shadow-xl border border-surface-border flex flex-col max-h-[85vh]">
             <div className="px-5 py-4 border-b border-surface-divider flex items-center justify-between">
               <div>
-                <h2 className="text-[15px] font-semibold text-ink">Add ads to &ldquo;{positionLabel}&rdquo;</h2>
+                <h2 className="text-[15px] font-semibold text-ink">Manage ads for &ldquo;{positionLabel}&rdquo;</h2>
                 <p className="mt-0.5 text-[12px] text-grey-35">
-                  Pick existing ads from other positions to reassign them here. Their other metadata (source, flow, copy) is unchanged.
+                  Check to attach, uncheck to detach. Ads currently here are pre-checked (and dimmed) so you can see what&apos;s already in place.
                 </p>
               </div>
               <button
@@ -420,16 +487,30 @@ export default function CampaignPositionPage() {
             <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3">
               {attachableAds.length === 0 ? (
                 <p className="text-[13px] text-grey-40 py-6 text-center">
-                  Every ad in this workspace is already in this position.
+                  No ads in this workspace yet.
                 </p>
               ) : (
                 <ul className="divide-y divide-surface-divider">
                   {attachableAds.map((ad) => {
                     const checked = addSelectedIds.has(ad.id)
+                    const here = isInThisPosition(ad)
                     const currentLabel = ad.targetPosition ?? 'Unassigned'
+                    // "Untouched here" is the pre-checked, blurred state:
+                    // the ad is currently in this position AND the recruiter
+                    // hasn't toggled it. As soon as they uncheck, the dim
+                    // lifts so the row reads as "you've decided to remove
+                    // this one" — visible feedback for the change. The
+                    // mirror case (currently elsewhere + checked) is
+                    // "you've decided to bring this one over".
+                    const untouchedHere = here && checked
+                    const moving = (here && !checked) || (!here && checked)
                     return (
                       <li key={ad.id}>
-                        <label className="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-surface-light/40 rounded-[8px] px-2">
+                        <label
+                          className={`flex items-center gap-3 py-2.5 cursor-pointer rounded-[8px] px-2 transition-opacity ${
+                            untouchedHere ? 'opacity-50 hover:opacity-70' : 'hover:bg-surface-light/40'
+                          }`}
+                        >
                           <input
                             type="checkbox"
                             checked={checked}
@@ -437,11 +518,22 @@ export default function CampaignPositionPage() {
                             className="cursor-pointer"
                           />
                           <div className="flex-1 min-w-0">
-                            <div className="text-[13px] font-medium text-ink truncate">{ad.name}</div>
+                            <div className="text-[13px] font-medium text-ink truncate flex items-center gap-2">
+                              {ad.name}
+                              {moving && (
+                                <span className={`text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded-[5px] ${
+                                  here ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-green-50 text-green-700 border border-green-200'
+                                }`}>
+                                  {here ? 'Will remove' : 'Will add'}
+                                </span>
+                              )}
+                            </div>
                             <div className="text-[11px] text-grey-40 flex items-center gap-2">
                               <span className="capitalize">{ad.source}</span>
                               <span aria-hidden>·</span>
-                              <span>Currently: {currentLabel}</span>
+                              <span>
+                                Currently: {here ? <strong className="text-grey-15">In this position</strong> : currentLabel}
+                              </span>
                               {!ad.isActive && (
                                 <>
                                   <span aria-hidden>·</span>
@@ -457,24 +549,43 @@ export default function CampaignPositionPage() {
                 </ul>
               )}
             </div>
-            <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-between">
-              <span className="text-[12px] text-grey-40">
-                {addSelectedIds.size} selected
-              </span>
-              <div className="flex gap-2">
-                <Button type="button" variant="secondary" size="sm" onClick={() => setAddModalOpen(false)} disabled={bulkSaving}>
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={attachSelected}
-                  disabled={bulkSaving || addSelectedIds.size === 0 || attachableAds.length === 0}
-                >
-                  {bulkSaving ? 'Moving…' : `Move ${addSelectedIds.size} here`}
-                </Button>
-              </div>
-            </div>
+            {(() => {
+              // Compute the same diff the submit handler will commit. We
+              // use it for the footer counters AND to gate the Save button
+              // — a no-diff state should not be saveable, otherwise the
+              // recruiter clicks Save expecting something to happen.
+              let willAdd = 0
+              let willRemove = 0
+              for (const ad of attachableAds) {
+                const selected = addSelectedIds.has(ad.id)
+                const here = isInThisPosition(ad)
+                if (selected && !here) willAdd++
+                else if (!selected && here) willRemove++
+              }
+              const hasDiff = willAdd > 0 || willRemove > 0
+              return (
+                <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-between">
+                  <span className="text-[12px] text-grey-40">
+                    {hasDiff
+                      ? `${willAdd > 0 ? `+${willAdd} adding` : ''}${willAdd > 0 && willRemove > 0 ? ' · ' : ''}${willRemove > 0 ? `-${willRemove} removing` : ''}`
+                      : 'No changes'}
+                  </span>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="secondary" size="sm" onClick={() => setAddModalOpen(false)} disabled={bulkSaving}>
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={attachSelected}
+                      disabled={bulkSaving || !hasDiff}
+                    >
+                      {bulkSaving ? 'Saving…' : 'Save changes'}
+                    </Button>
+                  </div>
+                </div>
+              )
+            })()}
           </div>
         </div>
       )}
