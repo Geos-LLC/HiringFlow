@@ -97,43 +97,58 @@ export function TopNav({
     return pathMatchesItem(pathname, it)
   }
 
-  const activeGroup = items.find(isGroupActive) || null
-
-  // Hovered group takes precedence over the active group for the sub-tab
-  // strip — pointing at "Process" while on a Recruiting page should
-  // preview Process's children. Reset is handled by a container-level
-  // onMouseLeave on the whole header so moving the cursor from the group
-  // label down to the sub-tab strip doesn't close it.
+  // hoveredLabel drives the popover anchored directly under each group
+  // label. Reset is handled by a container-level onMouseLeave on the whole
+  // header so moving the cursor from the group label down into the popover
+  // doesn't close it (they're vertically adjacent).
   const [hoveredLabel, setHoveredLabel] = React.useState<string | null>(null)
-  const hoveredGroup = hoveredLabel
-    ? items.find((it) => it.label === hoveredLabel) || null
-    : null
-  const displayedGroup = hoveredGroup || activeGroup
-  const subTabs = displayedGroup?.children || []
 
   const initials = user?.initials || initialsFromName(user?.name)
 
-  // Row 1 — group tabs (primary). Reused inline (xl+) and on the dedicated
-  // strip (md→xl). Renders both items with children (groups) and items
-  // without (flat back-compat tabs) — both look identical so the recruiter
-  // doesn't see seams.
+  // Group tabs (primary). Reused inline (xl+) and on the dedicated strip
+  // (md→xl). Each item is wrapped in a relative container so its children
+  // popover can absolutely position itself directly below the label.
   const groupRow = (
     <nav className="flex gap-0.5 items-center">
       {items.map((it) => {
         const active = isGroupActive(it)
+        const hovered = hoveredLabel === it.label
+        const children = it.children || []
         return (
-          <Link
+          <div
             key={it.href}
-            href={it.href}
+            className="relative"
             onMouseEnter={() => setHoveredLabel(it.label)}
             onFocus={() => setHoveredLabel(it.label)}
-            className={`px-3 py-2 text-[14px] font-medium rounded-[8px] whitespace-nowrap transition-colors ${
-              active ? 'text-ink' : 'text-grey-35 hover:text-ink hover:bg-surface-light'
-            }`}
-            style={active ? { background: 'var(--brand-dim)' } : undefined}
           >
-            {it.label}
-          </Link>
+            <Link
+              href={it.href}
+              className={`block px-3 py-2 text-[14px] font-medium rounded-[8px] whitespace-nowrap transition-colors ${
+                active ? 'text-ink' : 'text-grey-35 hover:text-ink hover:bg-surface-light'
+              }`}
+              style={active ? { background: 'var(--brand-dim)' } : undefined}
+            >
+              {it.label}
+            </Link>
+            {hovered && children.length > 0 && (
+              <div className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded-[10px] border border-surface-border bg-white py-1 shadow-lg">
+                {children.map((sub) => {
+                  const subActive = isSubActive(sub)
+                  return (
+                    <Link
+                      key={sub.href}
+                      href={sub.href}
+                      className={`block px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
+                        subActive ? 'text-ink bg-surface-light' : 'text-grey-35 hover:text-ink hover:bg-surface-light'
+                      }`}
+                    >
+                      {sub.label}
+                    </Link>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         )
       })}
     </nav>
@@ -168,8 +183,10 @@ export function TopNav({
           )}
         </div>
 
-        {/* Inline group tabs — xl+ only. Below xl, groups live on row 2. */}
-        <div className="hidden xl:flex flex-1 items-center overflow-x-auto">
+        {/* Inline group tabs — xl+ only. Below xl, groups live on row 2.
+            overflow is left visible so the group popover can extend below
+            the header instead of being clipped. */}
+        <div className="hidden xl:flex flex-1 items-center">
           {groupRow}
         </div>
 
@@ -219,42 +236,17 @@ export function TopNav({
         </div>
       </div>
 
-      {/* Row 2 — group strip on md→xl (where row 1 doesn't have inline groups). */}
+      {/* Row 2 — group strip on md→xl (where row 1 doesn't have inline groups).
+          overflow is left visible so the per-group popover below each
+          label can extend out of this strip. */}
       <div
         className="hidden md:block xl:hidden border-t border-surface-border"
         style={{ background: 'var(--surface-light, #FCFAF6)' }}
       >
-        <div className="h-12 px-4 md:px-6 flex items-center overflow-x-auto">
+        <div className="h-12 px-4 md:px-6 flex items-center">
           {groupRow}
         </div>
       </div>
-
-      {/* Sub-tab strip — children of the active group. Only renders on md+
-          when the active group actually has children. Mobile uses the
-          drawer instead, where groups + children are always co-visible. */}
-      {subTabs.length > 0 && (
-        <div
-          className="hidden md:block border-t border-surface-border"
-          style={{ background: 'var(--surface-light, #FCFAF6)' }}
-        >
-          <div className="h-10 px-4 md:px-6 flex items-center gap-0.5 overflow-x-auto">
-            {subTabs.map((sub) => {
-              const active = isSubActive(sub)
-              return (
-                <Link
-                  key={sub.href}
-                  href={sub.href}
-                  className={`px-3 py-1.5 text-[13px] font-medium rounded-[8px] whitespace-nowrap transition-colors ${
-                    active ? 'text-ink bg-white border border-surface-border' : 'text-grey-35 hover:text-ink'
-                  }`}
-                >
-                  {sub.label}
-                </Link>
-              )
-            })}
-          </div>
-        </div>
-      )}
     </header>
   )
 }
