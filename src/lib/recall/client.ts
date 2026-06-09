@@ -107,6 +107,13 @@ export interface RecordingSummary {
     audio_mixed?: { data?: { download_url?: string } }
     transcript?: { data?: { download_url?: string } }
   }
+  participant_events?: {
+    data?: {
+      participants_download_url?: string
+      participant_events_download_url?: string
+      speaker_timeline_download_url?: string
+    }
+  }
 }
 
 /**
@@ -169,28 +176,35 @@ export interface RecallParticipant {
   name?: string
   is_host?: boolean
   platform?: string
-  extra_data?: { email?: string; user_id?: string }
+  email?: string | null
+  extra_data?: { email?: string; user_id?: string; google_meet?: { static_participant_id?: string } }
   events?: Array<{ code: string; created_at: string }>
 }
 
 /**
- * Pulls every participant Recall saw in the meeting, paginated. Returns
- * each row with the latest known display name, host flag, and event log
- * (join / leave timestamps). The handler maps this into our
- * InterviewMeeting.participants[] shape and decides actualStart/End.
+ * Pulls every participant Recall saw in the meeting. The legacy
+ * `/api/v1/bot/{id}/participants/` endpoint now 404s for all bots; Recall
+ * exposes the list via a signed download URL embedded in the bot's
+ * recordings[].participant_events.data.participants_download_url. The URL
+ * returns a flat array of participants — no `events` array per participant,
+ * which means callers that need join/leave times have to fall back to the
+ * Workspace Events Meet API sync.
  */
-interface ParticipantsPage {
-  results: RecallParticipant[]
-  next: string | null
-}
-
 export async function listBotParticipants(botId: string): Promise<RecallParticipant[]> {
-  const all: RecallParticipant[] = []
-  let cursor: string | null = `/api/v1/bot/${encodeURIComponent(botId)}/participants/`
-  while (cursor) {
-    const body: ParticipantsPage = await recallFetch<ParticipantsPage>(cursor)
-    if (body.results) all.push(...body.results)
-    cursor = body.next ? body.next.replace(baseUrl(), '') : null
+  let bot: ScheduledBot
+  try {
+    bot = await getBot(botId)
+  } catch (err) {
+    console.error('[recall] listBotParticipants getBot failed for', botId, ':', (err as Error).message)
+    return []
   }
-  return all
+  const url = bot.recordings?.[0]?.participant_events?.data?.participants_download_url
+  if (!url) return []
+  const res = await fetch(url)
+  if (!res.ok) {
+    console.error('[recall] participants download failed', botId, res.status)
+    return []
+  }
+  const body = await res.json() as unknown
+  return Array.isArray(body) ? body as RecallParticipant[] : []
 }

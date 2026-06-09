@@ -106,7 +106,10 @@ function participantToRow(p: RecallParticipant): StoredParticipantRow {
   joins.sort()
   leaves.sort()
   return {
-    email: p.extra_data?.email ?? p.extra_data?.user_id ?? null,
+    // The participants_download_url endpoint exposes email at the top level;
+    // the legacy in-call streaming endpoint nested it under extra_data. Read
+    // both so this works regardless of which Recall API returned the row.
+    email: p.email ?? p.extra_data?.email ?? p.extra_data?.user_id ?? null,
     displayName: p.name ?? null,
     isHost: !!p.is_host,
     joinTime: joins[0],
@@ -194,7 +197,12 @@ export async function handleBotCallEnded(
   // "anyone besides host present?" check is honest.
   const realParticipants = participants.filter((p) => !/^Interview Notes$|^Meeting Notetaker$/i.test(p.name || ''))
   const rows = realParticipants.map(participantToRow)
-  const nonHostPresentFromRecall = rows.some((r) => !r.isHost && (r.joinTime || r.leaveTime))
+  // Presence in the participants list = they joined. Don't require a
+  // join/leave timestamp — the participants_download_url Recall now exposes
+  // doesn't include the events array, so requiring joinTime here would
+  // never match a non-host even when one was clearly present.
+  const nonHostPresentFromRecall = rows.some((r) => !r.isHost)
+  const recallReturnedData = rows.length > 0
 
   // Merge Recall's snapshot into the stored participants[] WITHOUT clobbering
   // a richer snapshot that the Workspace Events Meet API sync may have already
@@ -233,18 +241,24 @@ export async function handleBotCallEnded(
   }
 
   // Premature gate: Recall's bot.call_ended can fire BEFORE scheduledEnd if
-  // the host leaves first or wraps up the bot early. Drop the verdict
-  // silently — the cron stalled-detector will still catch true no-shows
-  // after the scheduledEnd + grace window. We deliberately run this BEFORE
-  // the recording-duration fallback below: a bot that recorded for 14 min
-  // and then left 43s before scheduledEnd is the host-alone-waiting case
-  // (Jarmall Chester, 2026-06-05) — long recording does NOT imply candidate
-  // attendance, only that the recruiter sat there. Letting it run to
-  // scheduledEnd before applying the fallback eliminates that false positive.
-  if (meeting.scheduledEnd && occurredAt < meeting.scheduledEnd) {
+  // the host leaves first or wraps up the bot early. The original incident
+  // (Shedrack 2026-05-27) had Recall's participants endpoint return an
+  // empty/mislabeled list — there was no way to know if the candidate had
+  // joined. We protect that case by waiting for the cron stalled-detector.
+  //
+  // BUT when Recall returned definitive data showing host-only (Ekaterine
+  // 2026-06-08, call_ended_by_host 5s before scheduledEnd), we KNOW it's a
+  // no-show. Trust the data and fire — don't silently drop and force a
+  // 7-day stalled wait. We deliberately run this BEFORE the
+  // recording-duration fallback: a bot that recorded for 14 min and then
+  // left 43s before scheduledEnd is the host-alone-waiting case (Jarmall
+  // Chester, 2026-06-05) — long recording does NOT imply candidate
+  // attendance, only that the recruiter sat there.
+  if (meeting.scheduledEnd && occurredAt < meeting.scheduledEnd && !recallReturnedData) {
     console.warn(
       `[recall] suppressed premature meeting_no_show for ${meeting.id}: ` +
-      `occurredAt=${occurredAt.toISOString()} < scheduledEnd=${meeting.scheduledEnd.toISOString()}`,
+      `occurredAt=${occurredAt.toISOString()} < scheduledEnd=${meeting.scheduledEnd.toISOString()} ` +
+      `(no Recall participant data — waiting for cron)`,
     )
     return
   }
@@ -255,22 +269,29 @@ export async function handleBotCallEnded(
   // duration is our best remaining signal that a candidate was present —
   // BUT only safe to apply once we know the meeting played out to its
   // scheduled end. Premature ends are filtered above for that reason.
-  try {
-    const bot = await getBot(botId)
-    const rec = bot?.recordings?.[0]
-    if (rec?.started_at && rec?.completed_at) {
-      const durMs = new Date(rec.completed_at).getTime() - new Date(rec.started_at).getTime()
-      if (durMs >= 2 * 60 * 1000) {
-        const fired = await emitLifecycleOnce(
-          meeting.id, meeting.sessionId, 'meeting_ended', occurredAt,
-          { event: 'bot.call_ended', attendedSource: `recording_duration_${Math.round(durMs / 1000)}s` },
-        )
-        if (fired) await bumpSessionProgress(meeting.sessionId).catch(() => {})
-        return
+  //
+  // Skip when Recall returned actual data showing host-only: a long
+  // recording with only the host in the room is just the recruiter waiting,
+  // not the candidate attending — fire meeting_no_show instead of falsely
+  // marking meeting_ended.
+  if (!recallReturnedData) {
+    try {
+      const bot = await getBot(botId)
+      const rec = bot?.recordings?.[0]
+      if (rec?.started_at && rec?.completed_at) {
+        const durMs = new Date(rec.completed_at).getTime() - new Date(rec.started_at).getTime()
+        if (durMs >= 2 * 60 * 1000) {
+          const fired = await emitLifecycleOnce(
+            meeting.id, meeting.sessionId, 'meeting_ended', occurredAt,
+            { event: 'bot.call_ended', attendedSource: `recording_duration_${Math.round(durMs / 1000)}s` },
+          )
+          if (fired) await bumpSessionProgress(meeting.sessionId).catch(() => {})
+          return
+        }
       }
+    } catch (err) {
+      console.error('[recall] recording-duration fallback getBot failed for', botId, ':', (err as Error).message)
     }
-  } catch (err) {
-    console.error('[recall] recording-duration fallback getBot failed for', botId, ':', (err as Error).message)
   }
 
   await emitLifecycleOnce(
