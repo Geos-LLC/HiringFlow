@@ -346,6 +346,17 @@ function CandidatesPageInner() {
     setTargetPositionFilter(v)
   }, [searchParams])
 
+  // Same idea for ?adId=. Without this, navigating from Campaigns into
+  // /candidates?adId=X when the page is ALREADY open (Next.js client-side
+  // nav, no re-mount) leaves the adIdFilter at whatever useState
+  // initialized to — usually empty — and the list shows every workspace
+  // candidate instead of the 9 from that one ad. Reads the same way
+  // targetPositionFilter does so the two filter sources stay in sync.
+  useEffect(() => {
+    const v = searchParams?.get('adId') ?? ''
+    setAdIdFilter(v)
+  }, [searchParams])
+
   // When kanban is mounted and a stage filter is active, scroll the matching
   // column into view. Without this, switching from list-with-stage-filter back
   // to kanban can leave the filtered stage far off-screen on the right and
