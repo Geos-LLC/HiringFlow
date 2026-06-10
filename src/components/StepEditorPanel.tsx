@@ -425,11 +425,11 @@ export default function StepEditorPanel({
       </div>
 
       {/* Desktop: side-by-side | Mobile: stacked */}
-      <div className="flex flex-col lg:flex-row gap-6">
+      <div className="flex flex-col lg:flex-row gap-6 min-w-0">
         {/* Left: Video only */}
-        <div className="lg:w-1/2">
+        <div className="lg:w-1/2 min-w-0">
           <label className="block text-sm font-medium text-gray-700 mb-1">Video</label>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <select
               value={step.videoId || ''}
               onChange={(e) => {
@@ -442,7 +442,7 @@ export default function StepEditorPanel({
                 }
                 onUpdateStep(step.id, updates)
               }}
-              className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
+              className="flex-1 min-w-[140px] px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
             >
               <option value="">No video selected</option>
               {videos.map((video) => (
@@ -508,7 +508,7 @@ export default function StepEditorPanel({
         </div>
 
         {/* Right: Title, Transcription/Captions, Question/Form */}
-        <div className="lg:w-1/2 space-y-4">
+        <div className="lg:w-1/2 min-w-0 space-y-4">
           {/* Title with AI generate */}
           <div>
             <div className="flex items-center justify-between mb-1">
