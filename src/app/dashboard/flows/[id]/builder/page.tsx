@@ -1774,7 +1774,12 @@ export default function FlowBuilderPage() {
                           : 'hover:bg-gray-50 border border-transparent'
                       }`}
                     >
-                      <div className="font-medium truncate">{step.title}</div>
+                      <div className="font-medium truncate flex items-center gap-2">
+                        <span className="inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-brand-500 text-white text-[11px] font-semibold leading-none flex-shrink-0">
+                          {stepNumberById.get(step.id)}
+                        </span>
+                        <span className="truncate">{step.title}</span>
+                      </div>
                       <div className="text-xs text-gray-500">
                         {step.stepType === 'submission' ? (
                           <span className="text-purple-600">Submission</span>
