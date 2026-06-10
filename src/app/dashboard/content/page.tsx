@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { SubNav } from '../_components/SubNav'
 import { DEFAULT_EMAIL_TEMPLATES, type DefaultEmailTemplate } from '@/lib/email-templates-seed'
 import { DEFAULT_SMS_TEMPLATES, type DefaultSmsTemplate } from '@/lib/sms-templates-seed'
@@ -982,6 +982,28 @@ function EmailPreviewModal({ template, onClose }: {
 
   const canSend = /.+@.+\..+/.test(testTo.trim()) && !sending
 
+  // Strip hrefs so clicking a link in the preview doesn't take the
+  // recruiter to a relative path like `/dashboard/.../{{training_link:…}}`
+  // (browsers resolve the literal sub-token as a path and 404). Tokens
+  // aren't substituted here either — the only render path that does
+  // substitution is the Send test endpoint. The notice below sets that
+  // expectation.
+  const inertHtml = useMemo(() => {
+    if (typeof window === 'undefined') return template.bodyHtml
+    try {
+      const doc = new DOMParser().parseFromString(template.bodyHtml, 'text/html')
+      doc.querySelectorAll('a').forEach((a) => {
+        a.removeAttribute('href')
+        a.setAttribute('aria-disabled', 'true')
+        a.style.cursor = 'default'
+        a.style.pointerEvents = 'none'
+      })
+      return doc.body.innerHTML
+    } catch {
+      return template.bodyHtml
+    }
+  }, [template.bodyHtml])
+
   const sendTest = async () => {
     const to = testTo.trim()
     if (!to || !to.includes('@')) { setResult({ kind: 'err', message: 'Enter a valid email address' }); return }
@@ -1018,7 +1040,10 @@ function EmailPreviewModal({ template, onClose }: {
           <button onClick={onClose} className="text-grey-40 hover:text-grey-15 text-xl">&times;</button>
         </div>
         <div className="p-6 overflow-y-auto flex-1 min-h-0">
-          <div className="bg-surface rounded-[8px] p-6 border border-surface-border" dangerouslySetInnerHTML={{ __html: template.bodyHtml }} />
+          <div className="mb-3 px-3 py-2 rounded-[6px] bg-amber-50 border border-amber-200 text-[12px] text-amber-800">
+            Links are inactive in this preview and tokens like <code>{'{{candidate_name}}'}</code> aren&apos;t substituted. Use <span className="font-medium">Send test</span> below to verify what the candidate actually sees.
+          </div>
+          <div className="bg-surface rounded-[8px] p-6 border border-surface-border" dangerouslySetInnerHTML={{ __html: inertHtml }} />
         </div>
         <div className="p-4 border-t border-surface-border bg-surface-light/40 shrink-0">
           <div className="flex items-center gap-2">
@@ -1046,7 +1071,7 @@ function EmailPreviewModal({ template, onClose }: {
             </div>
           )}
           <p className="mt-2 text-[11px] text-grey-40">
-            Tokens render with sample values ({'{{candidate_name}}'} → &ldquo;Alex Sample&rdquo;, meeting tokens use tomorrow at 2:00 PM). Sub-tokens like {'{{schedule_link:…}}'} resolve to the real workspace URL.
+            In the test email, tokens render with sample values ({'{{candidate_name}}'} → &ldquo;Alex Sample&rdquo;, meeting tokens use tomorrow at 2:00 PM). Sub-tokens like {'{{schedule_link:…}}'} resolve to the real workspace URL.
           </p>
         </div>
       </div>
