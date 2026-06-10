@@ -522,13 +522,19 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 // explicitly so the delete doesn't fail and we don't leave orphan rows.
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
-  if (!ws) return unauthorized()
+  if (!ws) {
+    console.log('[candidate DELETE] 401 no session', { id: params.id })
+    return unauthorized()
+  }
 
   const session = await prisma.session.findFirst({
     where: { id: params.id, workspaceId: ws.workspaceId },
-    select: { id: true, candidateEmail: true },
+    select: { id: true, candidateEmail: true, candidateName: true },
   })
-  if (!session) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!session) {
+    console.log('[candidate DELETE] 404 not in workspace', { id: params.id, workspaceId: ws.workspaceId })
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
 
   const email = session.candidateEmail?.trim() || null
   const sessionIds: string[] = email
@@ -540,14 +546,32 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
         select: { id: true },
       })).map((s) => s.id)
     : [session.id]
+  console.log('[candidate DELETE] in', { id: params.id, name: session.candidateName, email, sessionIds })
 
-  await prisma.$transaction([
-    prisma.aICall.updateMany({ where: { sessionId: { in: sessionIds } }, data: { sessionId: null } }),
-    prisma.trainingEnrollment.deleteMany({ where: { sessionId: { in: sessionIds } } }),
-    prisma.trainingAccessToken.deleteMany({ where: { candidateId: { in: sessionIds } } }),
-    prisma.automationExecution.deleteMany({ where: { sessionId: { in: sessionIds } } }),
-    prisma.session.deleteMany({ where: { id: { in: sessionIds } } }),
-  ])
-
-  return NextResponse.json({ success: true, deletedCount: sessionIds.length })
+  try {
+    await prisma.$transaction([
+      prisma.aICall.updateMany({ where: { sessionId: { in: sessionIds } }, data: { sessionId: null } }),
+      prisma.trainingEnrollment.deleteMany({ where: { sessionId: { in: sessionIds } } }),
+      prisma.trainingAccessToken.deleteMany({ where: { candidateId: { in: sessionIds } } }),
+      prisma.automationExecution.deleteMany({ where: { sessionId: { in: sessionIds } } }),
+      prisma.session.deleteMany({ where: { id: { in: sessionIds } } }),
+    ])
+    console.log('[candidate DELETE] done', { deletedCount: sessionIds.length })
+    return NextResponse.json({ success: true, deletedCount: sessionIds.length })
+  } catch (err: any) {
+    // Surface the real error to the client + server log so a missed FK
+    // cleanup or constraint hit doesn't disappear into a silent 500 the
+    // recruiter has no way to diagnose.
+    console.error('[candidate DELETE] failed', {
+      id: params.id,
+      sessionIds,
+      error: err?.message,
+      code: err?.code,
+      meta: err?.meta,
+    })
+    return NextResponse.json(
+      { error: err?.message || 'Delete failed', code: err?.code },
+      { status: 500 },
+    )
+  }
 }

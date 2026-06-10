@@ -734,10 +734,19 @@ function CandidatesPageInner() {
     if (!confirm(`Delete ${name}? This permanently removes their answers, video submissions, training progress, and scheduled interviews. This cannot be undone.`)) return
     const prev = candidates
     setCandidates((cur) => cur.filter((x) => x.id !== c.id))
-    const res = await fetch(`/api/candidates/${c.id}`, { method: 'DELETE' })
-    if (!res.ok) {
+    try {
+      const res = await fetch(`/api/candidates/${c.id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        // Pull the server error message into the alert so the recruiter
+        // can see what actually went wrong (FK constraint, missing
+        // permissions, etc.) instead of a useless "Failed".
+        const detail = await res.json().catch(() => ({}))
+        setCandidates(prev)
+        alert(`Failed to delete candidate (${res.status}): ${detail?.error || 'no detail'}`)
+      }
+    } catch (err) {
       setCandidates(prev)
-      alert('Failed to delete candidate')
+      alert(`Network error deleting candidate: ${err instanceof Error ? err.message : 'unknown'}`)
     }
   }
 
