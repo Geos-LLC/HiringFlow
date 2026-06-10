@@ -355,6 +355,49 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   const data: Record<string, unknown> = {}
   if (pipelineStatus !== undefined) data.pipelineStatus = pipelineStatus
   if (outcome !== undefined) data.outcome = outcome
+  // Auto-sync the two state axes when one moves.
+  //
+  // Without this, dragging a card to the Rejected column only changes
+  // pipelineStatus — status stays whatever it was (active/stalled), so
+  // the candidate appears in Stalled tab AND on the Rejected column,
+  // which is the bug we kept hitting with Annabel / Elena / Nataliia.
+  // Same in reverse: marking a candidate hired updates status but
+  // leaves the kanban column where it was.
+  //
+  // Rule: terminal-stage pipelineStatus implies the matching status,
+  // and terminal status implies the matching pipelineStatus. We only
+  // override when the existing value is in conflict (otherwise we'd
+  // clobber meaningful intermediate state). Reactivating from a
+  // terminal status (lost/hired -> active) does NOT auto-rewind the
+  // stage — the recruiter needs to pick where the candidate is.
+  const STAGE_TO_TERMINAL_STATUS: Record<string, 'hired' | 'lost'> = {
+    hired: 'hired',
+    rejected: 'lost',
+    failed: 'lost',
+  }
+  const STATUS_TO_TERMINAL_STAGE: Record<string, string> = {
+    hired: 'hired',
+    lost: 'rejected',
+  }
+  if (pipelineStatus !== undefined && typeof pipelineStatus === 'string') {
+    const wantStatus = STAGE_TO_TERMINAL_STATUS[pipelineStatus]
+    // Only auto-set status if the recruiter didn't explicitly send one
+    // in this PATCH (we don't want to override a deliberate change).
+    if (wantStatus && status === undefined && session.status !== wantStatus) {
+      Object.assign(data, statusTransitionPatch(wantStatus, { dispositionReason: undefined }))
+    }
+  }
+  // status -> stage applied AFTER the status branch below resolves
+  // `data.status`. Tracked here so we know the desired stage; we apply
+  // it at the end of the handler so it doesn't get overwritten by
+  // statusTransitionPatch.
+  let autoStageFromStatus: string | null = null
+  if (status !== undefined && typeof status === 'string') {
+    const wantStage = STATUS_TO_TERMINAL_STAGE[status]
+    if (wantStage && pipelineStatus === undefined && session.pipelineStatus !== wantStage) {
+      autoStageFromStatus = wantStage
+    }
+  }
   if (rejectionReason !== undefined) {
     // Empty string clears the reason; non-empty stamps the timestamp
     const trimmed = typeof rejectionReason === 'string' ? rejectionReason.trim() : null
@@ -462,6 +505,14 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
         { status: 400 },
       )
     }
+  }
+
+  // Apply the status-to-stage auto-sync now that data.status is final.
+  // We only override pipelineStatus when the recruiter didn't explicitly
+  // pass one and the status-derived stage actually differs from the
+  // current row.
+  if (autoStageFromStatus !== null && data.pipelineStatus === undefined) {
+    data.pipelineStatus = autoStageFromStatus
   }
 
   const updated = await prisma.session.update({

@@ -169,6 +169,46 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    // Close out older sessions of the same candidate so the kanban only
+    // ever shows the latest attempt. Without this, the May session sits
+    // forever in "Interview scheduled" while the June session lives
+    // in Rejected — recruiters end up seeing the same person in two
+    // contradictory stages across status tabs (the Katezack pattern).
+    //
+    // We mark old active/waiting/stalled sessions as `lost` with
+    // dispositionReason='reapplied' so the candidate-status engine
+    // treats them as a recognized terminal state. Don't touch
+    // already-terminal sessions (lost/hired) so we don't rewrite
+    // history. We also skip test sessions for the same reason — the
+    // user's own self-tests shouldn't auto-close each other.
+    if (normalizedEmail && effectiveSource !== 'test') {
+      try {
+        const updated = await prisma.session.updateMany({
+          where: {
+            workspaceId: flow.workspaceId,
+            candidateEmail: { equals: normalizedEmail, mode: 'insensitive' },
+            id: { not: session.id },
+            status: { in: ['active', 'waiting', 'stalled', 'nurture'] },
+          },
+          data: {
+            status: 'lost',
+            dispositionReason: 'reapplied',
+            lostAt: new Date(),
+          },
+        })
+        if (updated.count > 0) {
+          logger.info('Superseded older sessions on re-apply', {
+            email: normalizedEmail,
+            count: updated.count,
+            newSessionId: session.id,
+          })
+        }
+      } catch (err) {
+        // Don't block the new session on cleanup failure.
+        logger.warn('Failed to supersede older sessions', { email: normalizedEmail, err: err instanceof Error ? err.message : err })
+      }
+    }
+
     logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource, processId })
 
     return NextResponse.json({

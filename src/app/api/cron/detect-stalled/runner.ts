@@ -199,6 +199,7 @@ function emptyReasonCounts(): Record<CandidateDispositionReason, number> {
     not_qualified: 0,
     not_selected: 0,
     hired_elsewhere: 0,
+    reapplied: 0,
     manual_other: 0,
   }
 }

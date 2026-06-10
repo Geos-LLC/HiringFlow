@@ -45,6 +45,7 @@ export type CandidateDispositionReason =
   | 'not_qualified'
   | 'not_selected'
   | 'hired_elsewhere'
+  | 'reapplied'
   | 'manual_other'
 
 export const CANDIDATE_DISPOSITION_REASONS: readonly CandidateDispositionReason[] = [
@@ -63,6 +64,10 @@ export const CANDIDATE_DISPOSITION_REASONS: readonly CandidateDispositionReason[
   'not_qualified',
   'not_selected',
   'hired_elsewhere',
+  // Auto-applied to a candidate's older session when they submit a fresh
+  // application through /a/:slug or /f/:slug — so the kanban stops
+  // showing the same person on two stages.
+  'reapplied',
   'manual_other',
 ] as const
 
@@ -164,6 +169,7 @@ export const DISPOSITION_DISPLAY: Record<CandidateDispositionReason, string> = {
   not_qualified:                  'Not qualified',
   not_selected:                   'Not selected',
   hired_elsewhere:                'Hired elsewhere',
+  reapplied:                      'Superseded by re-apply',
   manual_other:                   'Other',
 }
 
