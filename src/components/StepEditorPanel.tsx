@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { triggerVideoAnalysis } from '@/lib/upload-client'
 import { useUploads } from '@/app/dashboard/_components/UploadProvider'
 import CaptionedVideo, { type CaptionStyle, DEFAULT_CAPTION_STYLE } from './CaptionedVideo'
+import VideoRecorderModal from './VideoRecorderModal'
 
 // Debounced input that keeps cursor position stable
 function DebouncedInput({
@@ -202,14 +203,7 @@ export default function StepEditorPanel({
     onUpdateStep(step.id, { captionStyle: style } as Partial<Step>)
   }
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (!file.type.startsWith('video/')) {
-      alert('Please select a video file')
-      return
-    }
-
+  const processVideoFile = async (file: File) => {
     setUploading(true)
     setUploadProgress(5)
 
@@ -256,8 +250,27 @@ export default function StepEditorPanel({
       // Upload failed silently
     } finally {
       setUploading(false)
+    }
+  }
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('video/')) {
+      alert('Please select a video file')
+      return
+    }
+    try {
+      await processVideoFile(file)
+    } finally {
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  const [recorderOpen, setRecorderOpen] = useState(false)
+  const handleRecorded = async (file: File) => {
+    setRecorderOpen(false)
+    await processVideoFile(file)
   }
 
   const handleTranscribe = async () => {
@@ -371,7 +384,20 @@ export default function StepEditorPanel({
     <div className="space-y-4">
       {/* Header with Save/Cancel */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-900">Edit Step</h2>
+        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+          {(() => {
+            // Match the sidebar's step-number pill — same orange chip, same
+            // index calc (allSteps comes pre-sorted by stepOrder asc).
+            const idx = allSteps.findIndex((s) => s.id === step.id)
+            if (idx < 0) return null
+            return (
+              <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-500 text-white text-[12px] font-semibold leading-none flex-shrink-0">
+                {idx + 1}
+              </span>
+            )
+          })()}
+          <span>Edit Step</span>
+        </h2>
         <div className="flex items-center gap-2">
           <button
             onClick={() => onDeleteStep(step.id)}
@@ -440,6 +466,19 @@ export default function StepEditorPanel({
                 className="hidden"
               />
             </label>
+            <button
+              type="button"
+              onClick={() => setRecorderOpen(true)}
+              disabled={uploading}
+              className={`px-3 py-2 rounded-md text-sm font-medium whitespace-nowrap inline-flex items-center gap-1.5 transition-colors ${
+                uploading
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-brand-50 text-brand-500 hover:bg-brand-100 border border-brand-200'
+              }`}
+            >
+              <span className="w-2 h-2 rounded-full bg-red-500" />
+              Record
+            </button>
           </div>
 
           {uploading && (
@@ -1108,6 +1147,13 @@ export default function StepEditorPanel({
           )}
         </div>
       </div>
+
+      <VideoRecorderModal
+        open={recorderOpen}
+        onClose={() => setRecorderOpen(false)}
+        onAccept={handleRecorded}
+        filenameStem={`step-${step.stepOrder + 1}-recording`}
+      />
     </div>
   )
 }
