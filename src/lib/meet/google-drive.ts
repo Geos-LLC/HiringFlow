@@ -224,11 +224,17 @@ export function inferAttendanceFromFilename(
  * Stream a Drive file's bytes, forwarding the inbound Range header so the
  * browser can scrub. The returned Response is intended to be returned
  * directly from a Next.js route handler.
+ *
+ * `disposition` controls how the browser treats the response when the URL
+ * is navigated to as a link (anchor click). 'inline' plays the file in the
+ * browser's video viewer; 'attachment' forces a download with the given
+ * filename. <video src=...> ignores Content-Disposition either way.
  */
 export async function streamFile(
   client: OAuth2Client,
   fileId: string,
   rangeHeader?: string | null,
+  disposition: { kind: 'inline' | 'attachment'; filename?: string } = { kind: 'inline' },
 ): Promise<Response> {
   const tok = await client.getAccessToken()
   if (!tok?.token) throw new Error('No Drive access token')
@@ -239,11 +245,11 @@ export async function streamFile(
     const text = await res.text().catch(() => '')
     return new Response(text || 'Drive fetch failed', { status: res.status })
   }
-  // Forward content-type, content-length, content-range, accept-ranges so the
-  // browser handles Range/seek correctly.
   const passThrough: Record<string, string> = { 'Accept-Ranges': 'bytes' }
   const ct = res.headers.get('content-type'); if (ct) passThrough['Content-Type'] = ct
   const cl = res.headers.get('content-length'); if (cl) passThrough['Content-Length'] = cl
   const cr = res.headers.get('content-range'); if (cr) passThrough['Content-Range'] = cr
+  const safeName = (disposition.filename || 'recording.mp4').replace(/[\r\n"]/g, '')
+  passThrough['Content-Disposition'] = `${disposition.kind}; filename="${safeName}"`
   return new Response(res.body, { status: res.status, headers: passThrough })
 }

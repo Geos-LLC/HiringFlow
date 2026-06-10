@@ -78,8 +78,15 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   if (!authed) return new Response('Google account not connected', { status: 409 })
 
   const range = request.headers.get('range')
+  // Default to inline playback so anchor clicks (e.g. drawer "Open" links)
+  // play the video in-browser. `?download=1` opts into a forced download for
+  // the detail page's explicit "Download recording" button.
+  const wantsDownload = request.nextUrl.searchParams.get('download') === '1'
   try {
-    return await streamFile(authed.client, meeting.driveRecordingFileId!, range)
+    return await streamFile(authed.client, meeting.driveRecordingFileId!, range, {
+      kind: wantsDownload ? 'attachment' : 'inline',
+      filename: 'meeting-recording.mp4',
+    })
   } catch (err) {
     console.error('[Artifact] recording stream failed:', err)
     return new Response('Recording fetch failed', { status: 502 })

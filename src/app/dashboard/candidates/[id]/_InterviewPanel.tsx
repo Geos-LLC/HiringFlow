@@ -311,7 +311,7 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                       src={`/api/interview-meetings/${m.id}/recording`}
                     />
                     <div className="flex items-center gap-3 mt-1">
-                      <a href={`/api/interview-meetings/${m.id}/recording`} className="text-xs text-primary hover:underline">
+                      <a href={`/api/interview-meetings/${m.id}/recording?download=1`} className="text-xs text-primary hover:underline">
                         Download recording
                       </a>
                       {m.driveRecordingFileId && (
