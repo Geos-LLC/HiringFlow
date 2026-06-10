@@ -218,13 +218,13 @@ export function CandidateDrawer({
     let aborted = false
     setEvalLoading(true)
     Promise.all([
-      fetch(`/api/candidates/${candidate.id}/interview-meetings`).then((r) => r.ok ? r.json() : []).catch(() => []),
+      fetch(`/api/candidates/${candidate.id}/interview-meetings`).then((r) => r.ok ? r.json() : { meetings: [] }).catch(() => ({ meetings: [] })),
       fetch(`/api/captures/session/${candidate.id}`).then((r) => r.ok ? r.json() : { captures: [] }).catch(() => ({ captures: [] })),
       fetch(`/api/candidates/${candidate.id}`).then((r) => r.ok ? r.json() : null).catch(() => null),
       fetch(`/api/evaluations?sessionIds=${candidate.id}`).then((r) => r.ok ? r.json() : { evaluations: [] }).catch(() => ({ evaluations: [] })),
     ]).then(([meetingsRes, capturesRes, detailRes, evalRes]) => {
       if (aborted) return
-      const meetings: DrawerMeeting[] = Array.isArray(meetingsRes) ? meetingsRes : []
+      const meetings: DrawerMeeting[] = Array.isArray(meetingsRes?.meetings) ? meetingsRes.meetings : []
       const captures: DrawerCapture[] = Array.isArray(capturesRes?.captures) ? capturesRes.captures : []
       const items: DrawerRecording[] = []
       for (const m of meetings) {
