@@ -54,6 +54,46 @@ export async function POST(
       return NextResponse.json({ error: 'Step not found' }, { status: 404 })
     }
 
+    // Branch-aware "advance" helper. Routing precedence:
+    //   1. explicit override (e.g. firstOption.nextStepId)
+    //   2. step.buttonConfig.nextStepId — the drag-to-connect link the
+    //      flow builder writes onto video/info/form/submission steps so a
+    //      branch leaf can specify its own next hop (or '__end__'). Without
+    //      this, leaves fell through to `stepOrder + 1` and yes-branch
+    //      candidates flowed into the no-branch's first step.
+    //   3. next step by stepOrder
+    //   4. finish session
+    const buttonNextRaw = (step as { buttonConfig?: { nextStepId?: string | null } | null }).buttonConfig?.nextStepId
+    const buttonNext = typeof buttonNextRaw === 'string' && buttonNextRaw.length > 0 ? buttonNextRaw : null
+
+    const finishSession = async () => {
+      const now = new Date()
+      await prisma.session.update({
+        where: { id: params.sessionId },
+        data: { finishedAt: now, outcome: 'completed', lastActivityAt: now, lastProgressAt: now },
+      })
+      return NextResponse.json({ finished: true })
+    }
+    const advanceTo = async (nextStepId: string) => {
+      const now = new Date()
+      await prisma.session.update({
+        where: { id: params.sessionId },
+        data: { lastStepId: nextStepId, lastActivityAt: now, lastProgressAt: now },
+      })
+      return NextResponse.json({ nextStepId })
+    }
+    const advance = async (override?: string | null): Promise<NextResponse> => {
+      const target = (override && override.length > 0) ? override : buttonNext
+      if (target === '__end__') return finishSession()
+      if (target) return advanceTo(target)
+      const nextStep = await prisma.flowStep.findFirst({
+        where: { flowId: session.flowId, stepOrder: { gt: step.stepOrder } },
+        orderBy: { stepOrder: 'asc' },
+      })
+      if (nextStep) return advanceTo(nextStep.id)
+      return finishSession()
+    }
+
     // Save form data to session if provided
     if (formData) {
       const now = new Date()
@@ -64,22 +104,11 @@ export async function POST(
       await prisma.session.update({ where: { id: params.sessionId }, data: updateData })
     }
 
-    // For form/info steps, just advance to next step (no options needed)
+    // For form/info steps, just advance to next step (no options needed).
+    // advance() honors buttonConfig.nextStepId so branch leaves don't fall
+    // through into the sibling branch.
     if (step.stepType === 'form' || step.stepType === 'info') {
-      // Find next step by stepOrder
-      const nextStep = await prisma.flowStep.findFirst({
-        where: { flowId: session.flowId, stepOrder: { gt: step.stepOrder } },
-        orderBy: { stepOrder: 'asc' },
-      })
-      if (nextStep) {
-        const now = new Date()
-        await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStep.id, lastActivityAt: now, lastProgressAt: now } })
-        return NextResponse.json({ nextStepId: nextStep.id })
-      } else {
-        const now = new Date()
-        await prisma.session.update({ where: { id: params.sessionId }, data: { finishedAt: now, outcome: 'completed', lastActivityAt: now, lastProgressAt: now } })
-        return NextResponse.json({ finished: true })
-      }
+      return advance()
     }
 
     // For text answer questions, save as submission
@@ -115,35 +144,16 @@ export async function POST(
         })),
       })
 
-      // Determine next step
+      // Determine next step: the chosen option's nextStepId wins (the fork);
+      // otherwise fall back to buttonConfig and then stepOrder.
       const firstOption = options[0]
-      const nextStepId = firstOption?.nextStepId
-
-      if (nextStepId) {
-        const now = new Date()
-        await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStepId, lastActivityAt: now, lastProgressAt: now } })
-        return NextResponse.json({ nextStepId })
-      }
+      return advance(firstOption?.nextStepId ?? null)
     }
 
-    // End of flow — find next step by order or finish
-    const nextStep = await prisma.flowStep.findFirst({
-      where: { flowId: session.flowId, stepOrder: { gt: step.stepOrder } },
-      orderBy: { stepOrder: 'asc' },
-    })
-    if (nextStep) {
-      const now = new Date()
-      await prisma.session.update({ where: { id: params.sessionId }, data: { lastStepId: nextStep.id, lastActivityAt: now, lastProgressAt: now } })
-      return NextResponse.json({ nextStepId: nextStep.id })
-    }
-
-    // Truly end of flow
-    const now = new Date()
-    await prisma.session.update({
-      where: { id: params.sessionId },
-      data: { finishedAt: now, outcome: 'completed', lastActivityAt: now, lastProgressAt: now },
-    })
-    return NextResponse.json({ finished: true })
+    // Video/submission steps and any other non-question advance: route via
+    // buttonConfig.nextStepId (the schema-view drag-to-connect link) first,
+    // then stepOrder + 1, then finish.
+    return advance()
   } catch (error) {
     console.error('Submit answer error:', error)
     return NextResponse.json({ error: 'Failed to submit answer' }, { status: 500 })
