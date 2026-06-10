@@ -89,6 +89,10 @@ interface DrawerRecording {
   label: string
   subtitle: string | null
   url: string
+  // Set on the primary InterviewMeeting recording row; drives the inline
+  // Share button. Extra Drive artifacts and flow captures are not shareable
+  // from the drawer (captures have their own share flow on the detail page).
+  shareableMeetingId?: string
 }
 
 // Subset of the candidate-detail API response — enough to render Current
@@ -208,6 +212,9 @@ export function CandidateDrawer({
     initial: CandidateDispositionReason | null
   }>(null)
   const [activeModal, setActiveModal] = React.useState<null | 'send-message' | 'run-automation' | 'schedule'>(null)
+  // Per-meeting share state — keyed by InterviewMeeting id. Tracks busy +
+  // last-copied state so the inline button can show "Copied!" feedback.
+  const [shareState, setShareState] = React.useState<Record<string, { busy: boolean; copied?: boolean; error?: string }>>({})
   const [recordings, setRecordings] = React.useState<DrawerRecording[] | null>(null)
   const [detail, setDetail] = React.useState<CandidateDetailLite | null>(null)
   const [evaluation, setEvaluation] = React.useState<DrawerEvaluation | null>(null)
@@ -242,6 +249,7 @@ export function CandidateDrawer({
             label: 'Interview recording',
             subtitle: fmtDate(m.scheduledStart),
             url,
+            shareableMeetingId: m.id,
           })
         }
         // Extra artifacts — surfaces reschedule-orphans (prior Meet link
@@ -333,6 +341,30 @@ export function CandidateDrawer({
 
   const updateStage = async (pipelineStatus: string) => {
     await patchCandidate({ pipelineStatus })
+  }
+
+  const copyShareLink = async (meetingId: string) => {
+    if (shareState[meetingId]?.busy) return
+    setShareState((s) => ({ ...s, [meetingId]: { busy: true } }))
+    try {
+      const res = await fetch(`/api/interview-meetings/${meetingId}/share`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.shareUrl) {
+        setShareState((s) => ({ ...s, [meetingId]: { busy: false, error: data?.error || 'Could not create share link' } }))
+        return
+      }
+      try {
+        await navigator.clipboard.writeText(data.shareUrl)
+        setShareState((s) => ({ ...s, [meetingId]: { busy: false, copied: true } }))
+        setTimeout(() => setShareState((s) => ({ ...s, [meetingId]: { busy: false, copied: false } })), 1800)
+      } catch {
+        // Clipboard blocked — still surface the URL so the recruiter can copy manually.
+        window.prompt('Share link — copy with Ctrl+C:', data.shareUrl)
+        setShareState((s) => ({ ...s, [meetingId]: { busy: false } }))
+      }
+    } catch (err) {
+      setShareState((s) => ({ ...s, [meetingId]: { busy: false, error: err instanceof Error ? err.message : 'Failed' } }))
+    }
   }
 
   const submitReasonModal = async (chosen: CandidateDispositionReason | null) => {
@@ -611,36 +643,49 @@ export function CandidateDrawer({
                     Recordings ({recordings.length})
                   </div>
                   <ul className="space-y-2">
-                    {recordings.map((rec) => (
-                      <li key={rec.id} className="flex items-start gap-2.5">
-                        <span aria-hidden className="shrink-0 mt-0.5 w-7 h-7 rounded-[8px] bg-surface-light border border-surface-border flex items-center justify-center text-grey-15">
-                          {rec.isVideo ? (
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="2" y="6" width="14" height="12" rx="2" />
-                              <path d="m22 8-6 4 6 4V8Z" />
-                            </svg>
-                          ) : (
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="9" y="3" width="6" height="12" rx="3" />
-                              <path d="M19 11a7 7 0 1 1-14 0" />
-                              <path d="M12 18v3" />
-                            </svg>
+                    {recordings.map((rec) => {
+                      const sh = rec.shareableMeetingId ? shareState[rec.shareableMeetingId] : undefined
+                      return (
+                        <li key={rec.id} className="flex items-start gap-2.5">
+                          <span aria-hidden className="shrink-0 mt-0.5 w-7 h-7 rounded-[8px] bg-surface-light border border-surface-border flex items-center justify-center text-grey-15">
+                            {rec.isVideo ? (
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="2" y="6" width="14" height="12" rx="2" />
+                                <path d="m22 8-6 4 6 4V8Z" />
+                              </svg>
+                            ) : (
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="9" y="3" width="6" height="12" rx="3" />
+                                <path d="M19 11a7 7 0 1 1-14 0" />
+                                <path d="M12 18v3" />
+                              </svg>
+                            )}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[12px] font-medium text-ink truncate">{rec.label}</div>
+                            {rec.subtitle && <div className="text-[11px] text-grey-35 truncate">{rec.subtitle}</div>}
+                            {sh?.error && <div className="text-[11px] text-red-600 mt-0.5">{sh.error}</div>}
+                          </div>
+                          {rec.shareableMeetingId && (
+                            <button
+                              onClick={() => copyShareLink(rec.shareableMeetingId!)}
+                              disabled={!!sh?.busy}
+                              className="shrink-0 text-[11px] px-2.5 py-1 rounded-[6px] border border-surface-border text-ink hover:bg-surface-light font-medium disabled:opacity-50"
+                            >
+                              {sh?.busy ? 'Sharing…' : sh?.copied ? 'Copied!' : 'Share'}
+                            </button>
                           )}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[12px] font-medium text-ink truncate">{rec.label}</div>
-                          {rec.subtitle && <div className="text-[11px] text-grey-35 truncate">{rec.subtitle}</div>}
-                        </div>
-                        <a
-                          href={rec.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="shrink-0 text-[11px] px-2.5 py-1 rounded-[6px] border border-surface-border text-ink hover:bg-surface-light font-medium"
-                        >
-                          Open ↗
-                        </a>
-                      </li>
-                    ))}
+                          <a
+                            href={rec.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 text-[11px] px-2.5 py-1 rounded-[6px] border border-surface-border text-ink hover:bg-surface-light font-medium"
+                          >
+                            Open ↗
+                          </a>
+                        </li>
+                      )
+                    })}
                   </ul>
                 </section>
               )}

@@ -502,6 +502,12 @@ model InterviewMeeting {
   // of hard delete so SchedulingEvent rows referencing this meeting
   // remain auditable.
   cancelledAt                 DateTime?                  @map("cancelled_at")
+  // Public share token. When set, anyone with the URL can play the meeting
+  // recording via /share/interview/[token] (proxied through our recording
+  // route so no Drive ACLs are needed). Per-row toggle — leaked link can be
+  // killed without touching other meetings.
+  shareToken                  String?                    @unique @map("share_token")
+  shareCreatedAt              DateTime?                  @map("share_created_at")
   createdAt                   DateTime                   @default(now()) @map("created_at")
   updatedAt                   DateTime                   @updatedAt @map("updated_at")
 
