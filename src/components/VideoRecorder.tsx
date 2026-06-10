@@ -27,6 +27,17 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     }
   }, [stream, previewUrl])
 
+  // Attach the live stream to the <video> element after it mounts. Setting
+  // srcObject synchronously inside startRecording() doesn't work because the
+  // video element only renders once `stream` is non-null, so videoRef.current
+  // is still null at that point.
+  useEffect(() => {
+    if (stream && videoRef.current) {
+      videoRef.current.srcObject = stream
+      videoRef.current.play().catch(() => {})
+    }
+  }, [stream])
+
   // Update preview URL when recordedVideo changes externally
   useEffect(() => {
     if (recordedVideo && !previewUrl) {
@@ -43,10 +54,6 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         audio: true
       })
       setStream(mediaStream)
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream
-      }
 
       // Pick the best mimeType the platform supports. Safari/iOS rejects webm
       // and only records mp4 (h264/aac); Chrome/Firefox prefer webm/vp9.
