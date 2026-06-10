@@ -103,6 +103,12 @@ export function TopNav({
   // doesn't close it (they're vertically adjacent).
   const [hoveredLabel, setHoveredLabel] = React.useState<string | null>(null)
 
+  // Persistent sub-tab strip for the active group — gives users on a
+  // sub-page (e.g. /dashboard/automations) a constant view of siblings to
+  // jump to, independent of the hover popover above.
+  const activeGroup = items.find(isGroupActive) || null
+  const activeSubTabs = activeGroup?.children || []
+
   const initials = user?.initials || initialsFromName(user?.name)
 
   // Group tabs (primary). Reused inline (xl+) and on the dedicated strip
@@ -247,6 +253,35 @@ export function TopNav({
           {groupRow}
         </div>
       </div>
+
+      {/* Persistent sub-tab strip — children of the active group. Renders
+          regardless of hover so users on a sub-page always see siblings to
+          jump to. The hover popover above is the discovery affordance;
+          this strip is the wayfinding affordance. Mobile (< md) uses the
+          drawer instead, where groups + children are always co-visible. */}
+      {activeSubTabs.length > 0 && (
+        <div
+          className="hidden md:block border-t border-surface-border"
+          style={{ background: 'var(--surface-light, #FCFAF6)' }}
+        >
+          <div className="h-10 px-4 md:px-6 flex items-center gap-0.5 overflow-x-auto">
+            {activeSubTabs.map((sub) => {
+              const active = isSubActive(sub)
+              return (
+                <Link
+                  key={sub.href}
+                  href={sub.href}
+                  className={`px-3 py-1.5 text-[13px] font-medium rounded-[8px] whitespace-nowrap transition-colors ${
+                    active ? 'text-ink bg-white border border-surface-border' : 'text-grey-35 hover:text-ink'
+                  }`}
+                >
+                  {sub.label}
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </header>
   )
 }
