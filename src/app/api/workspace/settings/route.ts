@@ -51,6 +51,30 @@ export async function PATCH(request: NextRequest) {
 
   const body = await request.json()
 
+  // Settings is a JSON column that holds independent feature flags
+  // (captureStepsEnabled, elevenlabs_agent_id, customStatuses, customSources,
+  // customRejectionReasons, ...). A naive replace silently wiped sibling keys
+  // whenever a caller PATCHed only its own slice — e.g. the AI Calls page
+  // sending { settings: { elevenlabs_agent_id } } turned off candidate audio
+  // recording workspace-wide. Always shallow-merge over the existing row.
+  let mergedSettings: unknown = undefined
+  if (body.settings !== undefined) {
+    if (body.settings === null) {
+      mergedSettings = null
+    } else if (typeof body.settings === 'object' && !Array.isArray(body.settings)) {
+      const existing = await prisma.workspace.findUnique({
+        where: { id: ws.workspaceId },
+        select: { settings: true },
+      })
+      const cur = (existing?.settings && typeof existing.settings === 'object' && !Array.isArray(existing.settings))
+        ? (existing.settings as Record<string, unknown>)
+        : {}
+      mergedSettings = { ...cur, ...(body.settings as Record<string, unknown>) }
+    } else {
+      return NextResponse.json({ error: 'settings must be an object or null' }, { status: 400 })
+    }
+  }
+
   const updated = await prisma.workspace.update({
     where: { id: ws.workspaceId },
     data: {
@@ -61,7 +85,7 @@ export async function PATCH(request: NextRequest) {
       ...(body.logoUrl !== undefined && { logoUrl: body.logoUrl || null }),
       ...(body.senderName !== undefined && { senderName: body.senderName || null }),
       ...(body.senderEmail !== undefined && { senderEmail: body.senderEmail || null }),
-      ...(body.settings !== undefined && { settings: body.settings }),
+      ...(mergedSettings !== undefined && { settings: mergedSettings as any }),
       ...(body.defaultStalledDays !== undefined && {
         defaultStalledDays: normalizeStalledDaysInput(body.defaultStalledDays),
       }),

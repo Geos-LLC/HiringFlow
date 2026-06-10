@@ -114,7 +114,16 @@ export default function AICallsPage() {
 
   const selectAgent = async (id: string) => {
     setAgentId(id); setSelectedCandidate(null); setSelectedConv(null)
-    await fetch('/api/workspace/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { elevenlabs_agent_id: id } }) })
+    // Read-then-merge: a raw { settings: { elevenlabs_agent_id } } PATCH used
+    // to wipe every other key (e.g. captureStepsEnabled), silently disabling
+    // candidate-side audio recording across the whole workspace.
+    const cur = await fetch('/api/workspace/settings').then(r => r.ok ? r.json() : null).catch(() => null)
+    const currentSettings = (cur?.settings && typeof cur.settings === 'object') ? cur.settings : {}
+    await fetch('/api/workspace/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { ...currentSettings, elevenlabs_agent_id: id } }),
+    })
     if (id) fetchConversations()
   }
 
