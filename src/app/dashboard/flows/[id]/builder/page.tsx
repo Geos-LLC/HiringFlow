@@ -1755,62 +1755,98 @@ export default function FlowBuilderPage() {
                   // is missing or enabled is unset — the Continue button is implicit
                   // on those step types — so existing flows without an explicit
                   // buttonConfig still surface a jump-to slot.
-                  const rows: { key: string; letter: string; target: string }[] = []
+                  // Each row carries the actual `targetId` (or null when unset) so
+                  // clicking the row can shift the editor selection to that step.
+                  const rows: {
+                    key: string
+                    letter: string
+                    targetLabel: string
+                    targetId: string | null
+                  }[] = []
                   if (step.stepType === 'question') {
                     step.options.forEach((opt, i) => {
-                      rows.push({ key: opt.id, letter: letterFor(i), target: targetLabel(opt.nextStepId) })
+                      rows.push({
+                        key: opt.id,
+                        letter: letterFor(i),
+                        targetLabel: targetLabel(opt.nextStepId),
+                        targetId: opt.nextStepId ?? null,
+                      })
                     })
                   } else if (step.stepType !== 'capture') {
-                    rows.push({ key: 'btn', letter: '→', target: targetLabel(step.buttonConfig?.nextStepId) })
+                    rows.push({
+                      key: 'btn',
+                      letter: '→',
+                      targetLabel: targetLabel(step.buttonConfig?.nextStepId),
+                      targetId: step.buttonConfig?.nextStepId ?? null,
+                    })
                   }
 
+                  const stepNum = stepNumberById.get(step.id)
                   return (
-                    <button
-                      key={step.id}
-                      onClick={() => setSelectedStepId(step.id)}
-                      className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                        selectedStepId === step.id
-                          ? 'bg-brand-50 text-brand-700 border border-brand-200'
-                          : 'hover:bg-gray-50 border border-transparent'
-                      }`}
-                    >
-                      <div className="font-medium truncate flex items-center gap-2">
-                        <span className="inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-brand-500 text-white text-[11px] font-semibold leading-none flex-shrink-0">
-                          {stepNumberById.get(step.id)}
-                        </span>
-                        <span className="truncate">{step.title}</span>
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {step.stepType === 'submission' ? (
-                          <span className="text-purple-600">Submission</span>
-                        ) : step.stepType === 'capture' ? (
-                          <span className="text-brand-600">Audio answer</span>
-                        ) : (
-                          <>
-                            {step.options.length} option{step.options.length !== 1 && 's'}
-                            {step.questionType === 'multiselect' && ' (multi)'}
-                          </>
-                        )}
-                      </div>
+                    <div key={step.id} className="space-y-1">
+                      <button
+                        onClick={() => setSelectedStepId(step.id)}
+                        className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                          selectedStepId === step.id
+                            ? 'bg-brand-50 text-brand-700 border border-brand-200'
+                            : 'hover:bg-gray-50 border border-transparent'
+                        }`}
+                      >
+                        <div className="font-medium flex items-center gap-2">
+                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[11px] font-semibold leading-none flex-shrink-0">
+                            {stepNum}
+                          </span>
+                          <span className="truncate">{step.title}</span>
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5 pl-7">
+                          {step.stepType === 'submission' ? (
+                            <span className="text-purple-600">Submission</span>
+                          ) : step.stepType === 'capture' ? (
+                            <span className="text-brand-600">Audio answer</span>
+                          ) : (
+                            <>
+                              {step.options.length} option{step.options.length !== 1 && 's'}
+                              {step.questionType === 'multiselect' && ' (multi)'}
+                            </>
+                          )}
+                        </div>
+                      </button>
                       {rows.length > 0 && (
-                        <div className="mt-1.5 space-y-1">
-                          {rows.map((r) => (
-                            <div
-                              key={r.key}
-                              className="flex items-center gap-1.5 text-[11px] text-gray-600"
-                            >
-                              <span className="inline-flex items-center justify-center w-4 h-4 rounded-sm bg-brand-500 text-white text-[10px] font-semibold leading-none">
-                                {r.letter}
-                              </span>
-                              <span className="text-gray-400">jump to</span>
-                              <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-brand-500 text-white text-[10px] font-semibold leading-none">
-                                {r.target}
-                              </span>
-                            </div>
-                          ))}
+                        <div className="pl-7 space-y-1">
+                          {rows.map((r) => {
+                            // Clicking a jump-to chip should shift the editor's
+                            // selection to that target step. `__end__` selects the
+                            // End screen; unset (`—`) is non-interactive.
+                            const clickable = !!r.targetId
+                            const onJump = () => {
+                              if (!r.targetId) return
+                              setSelectedStepId(r.targetId)
+                            }
+                            return (
+                              <button
+                                key={r.key}
+                                type="button"
+                                onClick={onJump}
+                                disabled={!clickable}
+                                className={`flex items-center gap-1.5 text-[11px] text-gray-600 px-1 py-0.5 rounded ${
+                                  clickable
+                                    ? 'hover:bg-brand-50 cursor-pointer'
+                                    : 'cursor-default opacity-70'
+                                }`}
+                              >
+                                <span className="inline-flex items-center justify-center w-4 h-4 rounded-sm bg-brand-500 text-white text-[10px] font-semibold leading-none">
+                                  {r.letter}
+                                </span>
+                                <span className="text-gray-400">jump to</span>
+                                <span className="inline-flex items-center justify-center w-4 h-4 px-1 rounded-full bg-brand-500 text-white text-[10px] font-semibold leading-none">
+                                  {r.targetLabel}
+                                </span>
+                              </button>
+                            )
+                          })}
                         </div>
                       )}
-                    </button>
+                    </div>
                   )
                 })
               })()}
