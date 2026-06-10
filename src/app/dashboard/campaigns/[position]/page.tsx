@@ -471,7 +471,19 @@ export default function CampaignPositionPage() {
                             </Link>
                           ) : '—'}
                         </td>
-                        <td className="px-4 py-3 text-grey-15">{ad._count.sessions}</td>
+                        <td className="px-4 py-3 text-grey-15">
+                          {ad._count.sessions > 0 ? (
+                            <Link
+                              href={`/dashboard/candidates?adId=${ad.id}`}
+                              className="text-brand-500 hover:text-brand-600 font-medium"
+                              title="See the candidates this ad brought in"
+                            >
+                              {ad._count.sessions}
+                            </Link>
+                          ) : (
+                            <span className="text-grey-40">{ad._count.sessions}</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${ad.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-grey-40'}`}>
                             {ad.isActive ? 'Active' : 'Archived'}
@@ -481,6 +493,16 @@ export default function CampaignPositionPage() {
                         <td className="px-4 py-3 text-grey-40">{new Date(ad.updatedAt).toLocaleDateString()}</td>
                         <td className="px-4 py-3 text-right">
                           <div className="inline-flex items-center gap-3">
+                            {ad._count.sessions > 0 && (
+                              <>
+                                <Link href={`/dashboard/candidates?adId=${ad.id}`} className="text-brand-500 hover:text-brand-600">
+                                  Candidates
+                                </Link>
+                                <Link href={`/dashboard/candidates?view=kanban&adId=${ad.id}`} className="text-brand-500 hover:text-brand-600">
+                                  Pipeline
+                                </Link>
+                              </>
+                            )}
                             <button
                               onClick={() => router.push(`/dashboard/campaigns?edit=${ad.id}`)}
                               className="text-grey-35 hover:text-grey-15"

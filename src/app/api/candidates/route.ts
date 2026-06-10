@@ -41,6 +41,11 @@ export async function GET(request: NextRequest) {
   // (direct/manual entries) so the "Unassigned" group on Campaigns lines up
   // with what the candidates list shows.
   const targetPositionParam = request.nextUrl.searchParams.get('targetPosition')
+  // Ad/Campaign id — strict match against Session.adId so the recruiter can
+  // see exactly the candidates a specific ad brought in. The position
+  // filter operates one level up (ad.targetPosition); this one drills
+  // down into a single ad. Both compose with the rest of the filters.
+  const adIdParam = request.nextUrl.searchParams.get('adId')
   // Date range — bounded on `Session.startedAt`. Both params are ISO strings.
   // Parsing failures are ignored so a malformed param can't 500 the kanban.
   const startedAfterParam = request.nextUrl.searchParams.get('startedAfter')
@@ -167,6 +172,12 @@ export async function GET(request: NextRequest) {
     } else {
       andClauses.push({ ad: { targetPosition: targetPositionParam } })
     }
+  }
+  if (adIdParam) {
+    // Strict equality; no fallback. If the recruiter is drilling into a
+    // specific ad we want exactly that ad's candidates, even if the ad has
+    // since been re-assigned to a different position.
+    andClauses.push({ adId: adIdParam })
   }
   if (andClauses.length > 0) {
     where.AND = andClauses

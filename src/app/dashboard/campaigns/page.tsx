@@ -1039,13 +1039,35 @@ function CampaignsPageInner() {
                         </div>
                       </td>
                       <td className="px-5 py-4 text-sm text-grey-40">{ad.campaign || '—'}</td>
-                      <td className="px-5 py-4 text-sm font-semibold text-grey-15 text-right">{ad._count.sessions}</td>
+                      <td className="px-5 py-4 text-sm font-semibold text-grey-15 text-right">
+                        {ad._count.sessions > 0 ? (
+                          <Link
+                            href={`/dashboard/candidates?adId=${ad.id}`}
+                            className="hover:underline text-brand-600"
+                            title="See the candidates this ad brought in"
+                          >
+                            {ad._count.sessions}
+                          </Link>
+                        ) : (
+                          <span className="text-grey-40">{ad._count.sessions}</span>
+                        )}
+                      </td>
                       <td className="px-5 py-4">
                         <button onClick={() => toggleActive(ad)} className={`text-xs px-2.5 py-1 rounded-full font-medium ${ad.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-grey-40'}`}>
                           {ad.isActive ? 'Active' : 'Paused'}
                         </button>
                       </td>
                       <td className="px-5 py-4 text-right space-x-3">
+                        {ad._count.sessions > 0 && (
+                          <>
+                            <Link href={`/dashboard/candidates?adId=${ad.id}`} className="text-xs text-brand-500 hover:text-brand-600 font-medium">
+                              Candidates
+                            </Link>
+                            <Link href={`/dashboard/candidates?view=kanban&adId=${ad.id}`} className="text-xs text-brand-500 hover:text-brand-600 font-medium">
+                              Pipeline
+                            </Link>
+                          </>
+                        )}
                         <Link href={`/dashboard/campaigns/preview/${ad.id}`} className="text-xs text-purple-500 hover:text-purple-600 font-medium">Preview</Link>
                         <button onClick={() => copyLink(ad.slug, ad.id)} className="text-xs text-brand-500 hover:text-brand-600 font-medium">
                           {copiedId === ad.id ? 'Copied!' : 'Copy Link'}

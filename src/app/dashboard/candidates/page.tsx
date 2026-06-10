@@ -178,7 +178,17 @@ function CandidatesPageInner() {
     const v = new URLSearchParams(window.location.search).get('targetPosition')
     return v ?? ''
   })()
+  const initialAdId = (() => {
+    if (typeof window === 'undefined') return ''
+    const v = new URLSearchParams(window.location.search).get('adId')
+    return v ?? ''
+  })()
   const [targetPositionFilter, setTargetPositionFilter] = useState<string>(initialTargetPosition)
+  // Ad/Campaign filter — drives `?adId=X` on /api/candidates so the recruiter
+  // can see exactly which candidates a single ad/campaign brought in. Picker
+  // is populated from /api/ads on mount.
+  const [adIdFilter, setAdIdFilter] = useState<string>(initialAdId)
+  const [adOptions, setAdOptions] = useState<Array<{ id: string; name: string; targetPosition: string | null; source: string }>>([])
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [flows, setFlows] = useState<Flow[]>([])
   const [stages, setStages] = useState<FunnelStage[]>(DEFAULT_FUNNEL_STAGES)
@@ -409,6 +419,14 @@ function CandidatesPageInner() {
 
   useEffect(() => {
     fetch('/api/flows').then((r) => r.json()).then(setFlows).catch(() => {})
+    // Ad options for the Campaign filter dropdown. We only need name + the
+    // position label for the optgroup; full payload would be wasteful here.
+    fetch('/api/ads')
+      .then((r) => r.ok ? r.json() : [])
+      .then((all: Array<{ id: string; name: string; targetPosition: string | null; source: string }>) => {
+        setAdOptions(Array.isArray(all) ? all : [])
+      })
+      .catch(() => {})
     // Pull workspace settings for status / source customizations only. Stages
     // come from the selected pipeline now (see the pipelines fetch below).
     fetch('/api/workspace/settings')
@@ -483,7 +501,7 @@ function CandidatesPageInner() {
   // to rows that may no longer be in the visible list.
   useEffect(() => {
     setSelectedIds(new Set())
-  }, [view, statusTab, flowFilter, sourceFilter, stageFilter, search, interestingOnly, selectedPipelineId, dateRange, targetPositionFilter])
+  }, [view, statusTab, flowFilter, sourceFilter, stageFilter, search, interestingOnly, selectedPipelineId, dateRange, targetPositionFilter, adIdFilter])
 
   // Stage ids are scoped to a pipeline; switching pipelines invalidates
   // whatever stage was selected.
@@ -583,6 +601,7 @@ function CandidatesPageInner() {
     if (dateRangeParams?.startedAfter) params.set('startedAfter', dateRangeParams.startedAfter)
     if (dateRangeParams?.startedBefore) params.set('startedBefore', dateRangeParams.startedBefore)
     if (targetPositionFilter) params.set('targetPosition', targetPositionFilter)
+    if (adIdFilter) params.set('adId', adIdFilter)
     const tab = statusTabs.find((t) => t.key === statusTab)
     if (tab && tab.statuses) params.set('candidateStatus', tab.statuses.join(','))
     fetch(`/api/candidates?${params}`)
@@ -601,6 +620,7 @@ function CandidatesPageInner() {
     if (dateRangeParams?.startedAfter) countParams.set('startedAfter', dateRangeParams.startedAfter)
     if (dateRangeParams?.startedBefore) countParams.set('startedBefore', dateRangeParams.startedBefore)
     if (targetPositionFilter) countParams.set('targetPosition', targetPositionFilter)
+    if (adIdFilter) countParams.set('adId', adIdFilter)
     fetch(`/api/candidates?${countParams}`)
       .then((r) => r.json())
       .then((all: Candidate[]) => {
@@ -615,7 +635,7 @@ function CandidatesPageInner() {
         setStatusCounts(buckets)
       })
       .catch(() => {})
-  }, [flowFilter, sourceFilter, stageFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId, dateRangeParams, targetPositionFilter])
+  }, [flowFilter, sourceFilter, stageFilter, search, statusTab, statusTabs, customStatuses, interestingOnly, selectedPipelineId, dateRangeParams, targetPositionFilter, adIdFilter])
 
   useEffect(() => {
     // Don't fire the first candidates fetch until the pipeline picker is
@@ -980,6 +1000,37 @@ function CandidatesPageInner() {
           </div>
         )}
 
+        {/* Ad/Campaign chip — appears when filtered to a specific ad,
+            usually from clicking an ad row on the Campaigns page. Shows the
+            ad name (resolved from adOptions) so the recruiter sees what
+            they're scoped to rather than a UUID. */}
+        {adIdFilter && (() => {
+          const ad = adOptions.find((a) => a.id === adIdFilter)
+          return (
+            <div className="shrink-0 mb-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-brand-50 border border-brand-200 text-[12px] text-brand-700 w-fit">
+              <span className="font-mono uppercase tracking-[0.06em] text-[10px] text-brand-600">Campaign</span>
+              <span className="font-semibold">{ad?.name || 'Selected ad'}</span>
+              {ad?.targetPosition && (
+                <span className="font-mono text-[10px] text-brand-500">in {ad.targetPosition}</span>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setAdIdFilter('')
+                  const next = new URLSearchParams(searchParams?.toString() ?? '')
+                  next.delete('adId')
+                  const qs = next.toString()
+                  router.replace(qs ? `/dashboard/candidates?${qs}` : '/dashboard/candidates')
+                }}
+                className="ml-1 text-brand-600 hover:text-brand-800"
+                aria-label="Clear campaign filter"
+              >
+                ×
+              </button>
+            </div>
+          )
+        })()}
+
         {/* Filters */}
         <div className="shrink-0 flex gap-2.5 mb-5">
           <div className="relative flex-1 max-w-xs">
@@ -1035,6 +1086,40 @@ function CandidatesPageInner() {
               </optgroup>
             )}
           </select>
+          {adOptions.length > 0 && (
+            <select
+              value={adIdFilter}
+              onChange={(e) => setAdIdFilter(e.target.value)}
+              className="px-3 py-2 border border-surface-border rounded-[10px] text-[13px] text-ink bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40 max-w-[260px]"
+              title="Filter by specific ad / campaign"
+            >
+              <option value="">All campaigns</option>
+              {/* Group ads by position so the recruiter can find the one
+                  they want quickly. Unassigned ads (targetPosition=null)
+                  go last under a generic "Unassigned" group. */}
+              {(() => {
+                const byPosition = new Map<string, typeof adOptions>()
+                for (const a of adOptions) {
+                  const key = a.targetPosition || 'Unassigned'
+                  const arr = byPosition.get(key)
+                  if (arr) arr.push(a)
+                  else byPosition.set(key, [a])
+                }
+                const sorted = Array.from(byPosition.entries()).sort((a, b) => {
+                  if (a[0] === 'Unassigned') return 1
+                  if (b[0] === 'Unassigned') return -1
+                  return a[0].localeCompare(b[0])
+                })
+                return sorted.map(([positionLabel, ads]) => (
+                  <optgroup key={positionLabel} label={positionLabel}>
+                    {ads.slice().sort((x, y) => x.name.localeCompare(y.name)).map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </optgroup>
+                ))
+              })()}
+            </select>
+          )}
           <select
             value={dateRange}
             onChange={(e) => setDateRange(e.target.value as typeof dateRange)}
