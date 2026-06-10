@@ -230,12 +230,18 @@ export function CandidateDrawer({
       for (const m of meetings) {
         const hasPrimary = m.recordingState === 'ready' && (m.driveRecordingFileId || m.recallRecordingId)
         if (hasPrimary) {
+          // Prefer the Drive deep-link for Meet recordings so the recruiter
+          // lands in Drive's native player. Recall recordings don't live in
+          // Drive — fall back to the streaming route for those.
+          const url = m.driveRecordingFileId
+            ? `https://drive.google.com/file/d/${m.driveRecordingFileId}/view`
+            : `/api/interview-meetings/${m.id}/recording`
           items.push({
             id: `meeting:${m.id}`,
             isVideo: true,
             label: 'Interview recording',
             subtitle: fmtDate(m.scheduledStart),
-            url: `/api/interview-meetings/${m.id}/recording`,
+            url,
           })
         }
         // Extra artifacts — surfaces reschedule-orphans (prior Meet link
