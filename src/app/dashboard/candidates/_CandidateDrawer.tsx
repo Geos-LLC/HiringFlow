@@ -36,6 +36,7 @@ export interface CandidateDrawerCandidate {
   id: string
   candidateName: string | null
   candidateEmail: string | null
+  candidatePhone: string | null
   pipelineStatus: string | null
   status: string | null
   dispositionReason: CandidateDispositionReason | null
@@ -727,6 +728,7 @@ export function CandidateDrawer({
         <SendMessageModal
           candidateId={candidate.id}
           candidateEmail={candidate.candidateEmail}
+          candidatePhone={candidate.candidatePhone}
           onClose={() => setActiveModal(null)}
         />
       )}

@@ -358,7 +358,7 @@ export async function GET(request: NextRequest) {
     meeting_confirmed: 'Candidate confirmed',
     meeting_no_show: 'Candidate no-show',
     nudge_sent: 'Manual nudge sent',
-    rejection_email_sent: 'Rejection email sent',
+    message_sent: 'Message sent',
   }
   const computeLatestStep = (s: typeof sessions[number]): { label: string; at: string } | null => {
     const items: { label: string; at: Date }[] = []

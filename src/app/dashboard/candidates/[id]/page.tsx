@@ -27,6 +27,7 @@ import { CapturesPanel } from './_CapturesPanel'
 import CapturePlayback from '@/components/CapturePlayback'
 import { AICallsPanel } from './_AICallsPanel'
 import { DispositionReasonPicker } from '../_DispositionReasonPicker'
+import { SendMessageModal } from '../_SendMessageModal'
 
 interface CaptureSummary {
   id: string
@@ -580,123 +581,11 @@ export default function CandidateDetailPage() {
     setShowReasonEditor(true)
   }
 
-  // Manual rejection email — AI-drafts a subject + body from the candidate's
-  // stage + reason; recruiter can edit, save as a reusable EmailTemplate,
-  // and send. Distinct from automation-driven rejection emails (those go
-  // through AutomationStep). This is the "I'm rejecting them right now and
-  // want to tell them why" flow surfaced as a button next to the Reason pill.
-  const [showRejectEmail, setShowRejectEmail] = useState(false)
-  const [rejectEmailSubject, setRejectEmailSubject] = useState('')
-  const [rejectEmailBody, setRejectEmailBody] = useState('')
-  const [rejectEmailLoading, setRejectEmailLoading] = useState<null | 'generate' | 'send' | 'save'>(null)
-  const [rejectEmailToast, setRejectEmailToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
-  const [rejectEmailTemplateName, setRejectEmailTemplateName] = useState('')
-  const [rejectEmailSavedTemplateId, setRejectEmailSavedTemplateId] = useState<string | null>(null)
-
-  const openRejectEmail = async () => {
-    setShowRejectEmail(true)
-    setRejectEmailToast(null)
-    setRejectEmailSavedTemplateId(null)
-    setRejectEmailTemplateName(`Rejection — ${candidate?.rejectionReason || 'general'}`.slice(0, 80))
-    // Auto-generate on open if we have a reason and no draft yet.
-    if (!rejectEmailSubject && !rejectEmailBody && candidate?.rejectionReason) {
-      await generateRejectEmail()
-    }
-  }
-
-  const generateRejectEmail = async () => {
-    if (rejectEmailLoading) return
-    setRejectEmailLoading('generate')
-    setRejectEmailToast(null)
-    try {
-      const res = await fetch(`/api/candidates/${id}/generate-rejection-email`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: candidate?.rejectionReason || '' }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setRejectEmailToast({ kind: 'err', text: data?.error || 'AI generation failed' })
-        return
-      }
-      setRejectEmailSubject(data.subject || '')
-      setRejectEmailBody(data.bodyHtml || '')
-      setRejectEmailSavedTemplateId(null)
-    } catch (err) {
-      setRejectEmailToast({ kind: 'err', text: err instanceof Error ? err.message : 'AI generation failed' })
-    } finally {
-      setRejectEmailLoading(null)
-    }
-  }
-
-  const sendRejectEmail = async () => {
-    if (rejectEmailLoading) return
-    const subject = rejectEmailSubject.trim()
-    const bodyHtml = rejectEmailBody.trim()
-    if (!subject || !bodyHtml) {
-      setRejectEmailToast({ kind: 'err', text: 'Subject and body are required' })
-      return
-    }
-    if (!candidate?.candidateEmail) {
-      setRejectEmailToast({ kind: 'err', text: 'Candidate has no email on file' })
-      return
-    }
-    setRejectEmailLoading('send')
-    setRejectEmailToast(null)
-    try {
-      const res = await fetch(`/api/candidates/${id}/send-rejection-email`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject, bodyHtml }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setRejectEmailToast({ kind: 'err', text: data?.error || 'Send failed' })
-        return
-      }
-      setRejectEmailToast({ kind: 'ok', text: 'Email sent.' })
-      // Close on success after a brief delay so the toast is visible.
-      setTimeout(() => {
-        setShowRejectEmail(false)
-        setRejectEmailToast(null)
-      }, 900)
-    } catch (err) {
-      setRejectEmailToast({ kind: 'err', text: err instanceof Error ? err.message : 'Send failed' })
-    } finally {
-      setRejectEmailLoading(null)
-    }
-  }
-
-  const saveRejectEmailAsTemplate = async () => {
-    if (rejectEmailLoading) return
-    const name = rejectEmailTemplateName.trim()
-    const subject = rejectEmailSubject.trim()
-    const bodyHtml = rejectEmailBody.trim()
-    if (!name || !subject || !bodyHtml) {
-      setRejectEmailToast({ kind: 'err', text: 'Name, subject, and body are required to save' })
-      return
-    }
-    setRejectEmailLoading('save')
-    setRejectEmailToast(null)
-    try {
-      const res = await fetch('/api/email-templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, subject, bodyHtml }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setRejectEmailToast({ kind: 'err', text: data?.error || 'Save failed' })
-        return
-      }
-      setRejectEmailSavedTemplateId(data?.id || 'saved')
-      setRejectEmailToast({ kind: 'ok', text: `Saved as "${name}".` })
-    } catch (err) {
-      setRejectEmailToast({ kind: 'err', text: err instanceof Error ? err.message : 'Save failed' })
-    } finally {
-      setRejectEmailLoading(null)
-    }
-  }
+  // Manual rejection email — opens the shared SendMessageModal with AI
+  // auto-generation primed off the candidate's rejection reason. The modal
+  // handles compose / template-load / save-as-new / send for both email
+  // and SMS, so this page only owns the toggle.
+  const [showSendMessage, setShowSendMessage] = useState<{ autoGenerate: boolean } | null>(null)
   const persistCustomReasons = async (next: string[]) => {
     setCustomReasons(next)
     try {
@@ -976,9 +865,9 @@ export default function CandidateDetailPage() {
       meeting_confirmed: 'Candidate confirmed via SMS',
       meeting_no_show: 'Candidate no-show',
       nudge_sent: 'Manual "join now" nudge sent',
-      rejection_email_sent: 'Rejection email sent',
+      message_sent: 'Message sent',
     }
-    const successTypes = new Set(['marked_scheduled', 'meeting_scheduled', 'meeting_rescheduled', 'meeting_confirmed', 'nudge_sent', 'rejection_email_sent'])
+    const successTypes = new Set(['marked_scheduled', 'meeting_scheduled', 'meeting_rescheduled', 'meeting_confirmed', 'nudge_sent', 'message_sent'])
     const errorTypes = new Set(['meeting_cancelled', 'meeting_no_show'])
     const type = errorTypes.has(e.eventType) ? 'error' : successTypes.has(e.eventType) ? 'success' : 'info'
     const meta = e.metadata || {}
@@ -1182,16 +1071,16 @@ export default function CandidateDetailPage() {
                   <span className="opacity-70">Reason:</span> {candidate.rejectionReason}
                 </button>
                 <button
-                  onClick={openRejectEmail}
-                  disabled={!candidate.candidateEmail}
-                  title={candidate.candidateEmail ? 'Draft and send a rejection email with AI' : 'Candidate has no email on file'}
+                  onClick={() => setShowSendMessage({ autoGenerate: true })}
+                  disabled={!candidate.candidateEmail && !candidate.candidatePhone}
+                  title={candidate.candidateEmail || candidate.candidatePhone ? 'Draft and send a rejection message with AI' : 'Candidate has no email or phone on file'}
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-grey-15 text-white text-xs font-medium hover:bg-black disabled:opacity-40 disabled:hover:bg-grey-15"
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
                     <polyline points="22,6 12,13 2,6" />
                   </svg>
-                  Send email
+                  Send message
                 </button>
               </>
             ) : (candidate.pipelineStatus === 'rejected' || candidate.pipelineStatus === 'failed' || candidate.outcome === 'failed') && (
@@ -1299,113 +1188,15 @@ export default function CandidateDetailPage() {
         </div>
       )}
 
-      {/* Manual rejection email — AI-drafts a subject + body from the
-          candidate's stage + reason. Recruiter can regenerate, edit, save
-          as a reusable EmailTemplate, and send. */}
-      {showRejectEmail && (
-        <div
-          className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 p-4"
-          onClick={() => rejectEmailLoading === null && setShowRejectEmail(false)}
-        >
-          <div
-            className="bg-white rounded-[12px] shadow-2xl w-full max-w-[640px] max-h-[90vh] overflow-y-auto p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between mb-1">
-              <h3 className="text-base font-semibold text-grey-15">Send rejection email</h3>
-              <button
-                onClick={() => rejectEmailLoading === null && setShowRejectEmail(false)}
-                disabled={rejectEmailLoading !== null}
-                className="text-grey-40 hover:text-grey-15 text-lg leading-none disabled:opacity-40"
-                aria-label="Close"
-              >
-                ×
-              </button>
-            </div>
-            <p className="text-xs text-grey-40 mb-4">
-              To <strong>{candidate.candidateEmail || '—'}</strong>
-              {candidate.rejectionReason && (
-                <> · Reason: <span className="text-red-700">{candidate.rejectionReason}</span></>
-              )}
-            </p>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-grey-35 mb-1">Subject</label>
-                <input
-                  type="text"
-                  value={rejectEmailSubject}
-                  onChange={(e) => setRejectEmailSubject(e.target.value)}
-                  placeholder="Subject line"
-                  className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-sm text-grey-15 focus:outline-none focus:ring-2 focus:ring-orange-500/40"
-                />
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-medium text-grey-35">Body (HTML)</label>
-                  <button
-                    onClick={generateRejectEmail}
-                    disabled={rejectEmailLoading !== null}
-                    className="text-[11px] px-2 py-1 rounded-[6px] border border-surface-border text-grey-35 hover:border-grey-35 disabled:opacity-40 inline-flex items-center gap-1"
-                  >
-                    {rejectEmailLoading === 'generate' ? 'Generating…' : (rejectEmailSubject || rejectEmailBody ? 'Regenerate with AI' : 'Generate with AI')}
-                  </button>
-                </div>
-                <textarea
-                  value={rejectEmailBody}
-                  onChange={(e) => setRejectEmailBody(e.target.value)}
-                  rows={10}
-                  placeholder="<p>Hi {{candidate_name}}, …</p>"
-                  className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-xs font-mono text-grey-15 focus:outline-none focus:ring-2 focus:ring-orange-500/40"
-                />
-                <p className="mt-1 text-[11px] text-grey-40">Merge tokens: <code>{'{{candidate_name}}'}</code>, <code>{'{{flow_name}}'}</code>.</p>
-              </div>
-
-              <details className="border border-surface-border rounded-[8px] px-3 py-2">
-                <summary className="text-xs font-medium text-grey-35 cursor-pointer select-none">Save as reusable template</summary>
-                <div className="mt-2 flex gap-2">
-                  <input
-                    type="text"
-                    value={rejectEmailTemplateName}
-                    onChange={(e) => setRejectEmailTemplateName(e.target.value)}
-                    placeholder="Template name"
-                    className="flex-1 px-3 py-2 border border-surface-border rounded-[8px] text-sm text-grey-15 focus:outline-none focus:ring-2 focus:ring-orange-500/40"
-                  />
-                  <button
-                    onClick={saveRejectEmailAsTemplate}
-                    disabled={rejectEmailLoading !== null || !rejectEmailTemplateName.trim() || !rejectEmailSubject.trim() || !rejectEmailBody.trim()}
-                    className="text-sm px-4 rounded-[8px] border border-surface-border text-grey-35 hover:border-grey-35 disabled:opacity-40"
-                  >
-                    {rejectEmailLoading === 'save' ? 'Saving…' : (rejectEmailSavedTemplateId ? 'Saved' : 'Save')}
-                  </button>
-                </div>
-              </details>
-
-              {rejectEmailToast && (
-                <div className={`text-xs px-3 py-2 rounded-[6px] ${rejectEmailToast.kind === 'ok' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                  {rejectEmailToast.text}
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2 mt-5">
-              <button
-                onClick={() => setShowRejectEmail(false)}
-                disabled={rejectEmailLoading !== null}
-                className="text-sm px-4 py-2 rounded-[8px] text-grey-40 hover:text-grey-15 disabled:opacity-40"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={sendRejectEmail}
-                disabled={rejectEmailLoading !== null || !rejectEmailSubject.trim() || !rejectEmailBody.trim() || !candidate.candidateEmail}
-                className="text-sm px-4 py-2 rounded-[8px] bg-grey-15 text-white hover:bg-black font-medium disabled:opacity-50"
-              >
-                {rejectEmailLoading === 'send' ? 'Sending…' : 'Send email'}
-              </button>
-            </div>
-          </div>
-        </div>
+      {showSendMessage && (
+        <SendMessageModal
+          candidateId={candidate.id}
+          candidateEmail={candidate.candidateEmail}
+          candidatePhone={candidate.candidatePhone}
+          candidateRejectionReason={candidate.rejectionReason}
+          autoGenerateRejectionEmail={showSendMessage.autoGenerate}
+          onClose={() => setShowSendMessage(null)}
+        />
       )}
 
       {/* Profile editor — name / email / phone / flow. Flow change clears

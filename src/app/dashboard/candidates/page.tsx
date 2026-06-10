@@ -1426,6 +1426,7 @@ function CandidatesPageInner() {
                                     id: c.id,
                                     candidateName: c.candidateName,
                                     candidateEmail: c.candidateEmail,
+                                    candidatePhone: c.candidatePhone,
                                     pipelineStatus: c.pipelineStatus,
                                     status: c.status,
                                     dispositionReason: c.dispositionReason,
