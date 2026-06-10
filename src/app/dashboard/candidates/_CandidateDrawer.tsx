@@ -60,6 +60,30 @@ export interface CandidateDrawerProps {
   onScheduleInterview?: () => void
 }
 
+interface DrawerMeeting {
+  id: string
+  scheduledStart: string
+  recordingState: string
+  driveRecordingFileId: string | null
+  recallRecordingId: string | null
+}
+
+interface DrawerCapture {
+  id: string
+  mode: string
+  prompt: string | null
+  playbackUrl: string | null
+  captureOrdinal: number | null
+}
+
+interface DrawerRecording {
+  id: string
+  isVideo: boolean
+  label: string
+  subtitle: string | null
+  url: string
+}
+
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -92,6 +116,50 @@ export function CandidateDrawer({
     targetStatus?: CandidateStatus
     initial: CandidateDispositionReason | null
   }>(null)
+  // Recordings — meeting recordings + flow captures, fetched lazily when
+  // the drawer opens. null = not loaded yet, [] = loaded with nothing.
+  const [recordings, setRecordings] = React.useState<DrawerRecording[] | null>(null)
+  const [recordingsLoading, setRecordingsLoading] = React.useState(false)
+
+  React.useEffect(() => {
+    if (!candidate) { setRecordings(null); return }
+    let aborted = false
+    setRecordingsLoading(true)
+    Promise.all([
+      fetch(`/api/candidates/${candidate.id}/interview-meetings`).then((r) => r.ok ? r.json() : []).catch(() => []),
+      fetch(`/api/captures/session/${candidate.id}`).then((r) => r.ok ? r.json() : { captures: [] }).catch(() => ({ captures: [] })),
+    ]).then(([meetingsRes, capturesRes]) => {
+      if (aborted) return
+      const meetings: DrawerMeeting[] = Array.isArray(meetingsRes) ? meetingsRes : []
+      const captures: DrawerCapture[] = Array.isArray(capturesRes?.captures) ? capturesRes.captures : []
+      const items: DrawerRecording[] = []
+      for (const m of meetings) {
+        const hasPrimary = m.recordingState === 'ready' && (m.driveRecordingFileId || m.recallRecordingId)
+        if (hasPrimary) {
+          items.push({
+            id: `meeting:${m.id}`,
+            isVideo: true,
+            label: 'Interview recording',
+            subtitle: fmtDate(m.scheduledStart),
+            url: `/api/interview-meetings/${m.id}/recording`,
+          })
+        }
+      }
+      for (const c of captures) {
+        if (!c.playbackUrl) continue
+        const isV = c.mode === 'video' || c.mode === 'audio_video'
+        items.push({
+          id: `capture:${c.id}`,
+          isVideo: isV,
+          label: isV ? 'Video answer' : 'Voice answer',
+          subtitle: c.prompt || (c.captureOrdinal ? `Step ${c.captureOrdinal}` : null),
+          url: c.playbackUrl,
+        })
+      }
+      setRecordings(items)
+    }).finally(() => { if (!aborted) setRecordingsLoading(false) })
+    return () => { aborted = true }
+  }, [candidate?.id])
 
   const status = (candidate?.status as CandidateStatus | string | null) || 'active'
   const dispositionReason = candidate?.dispositionReason ?? null
@@ -334,6 +402,55 @@ export function CandidateDrawer({
                   ))}
                 </select>
               </section>
+
+              {/* Recordings — meeting recordings (Drive / Recall) and flow
+                  captures (audio / video answers). Section hides itself
+                  when there's nothing to show; loading state stays quiet
+                  so the drawer doesn't flash an empty card. */}
+              {recordings && recordings.length > 0 && (
+                <section className="rounded-[12px] border border-surface-border p-3">
+                  <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35 mb-2">
+                    Recordings ({recordings.length})
+                  </div>
+                  <ul className="space-y-2">
+                    {recordings.map((rec) => (
+                      <li key={rec.id} className="flex items-start gap-2.5">
+                        <span aria-hidden className="shrink-0 mt-0.5 w-7 h-7 rounded-[8px] bg-surface-light border border-surface-border flex items-center justify-center text-grey-15">
+                          {rec.isVideo ? (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="2" y="6" width="14" height="12" rx="2" />
+                              <path d="m22 8-6 4 6 4V8Z" />
+                            </svg>
+                          ) : (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="9" y="3" width="6" height="12" rx="3" />
+                              <path d="M19 11a7 7 0 1 1-14 0" />
+                              <path d="M12 18v3" />
+                            </svg>
+                          )}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] font-medium text-ink truncate">{rec.label}</div>
+                          {rec.subtitle && (
+                            <div className="text-[11px] text-grey-35 truncate">{rec.subtitle}</div>
+                          )}
+                        </div>
+                        <a
+                          href={rec.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="shrink-0 text-[11px] px-2.5 py-1 rounded-[6px] border border-surface-border text-ink hover:bg-surface-light font-medium"
+                        >
+                          Open ↗
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+              {recordingsLoading && recordings === null && (
+                <div className="text-[11px] text-grey-35 px-1">Loading recordings…</div>
+              )}
 
               {/* Placeholders for sections per spec — backend exists at
                   /dashboard/candidates/[id] but the drawer-side render is
