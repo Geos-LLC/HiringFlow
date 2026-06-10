@@ -46,6 +46,20 @@ export default function CampaignPositionPage() {
   const [ads, setAds] = useState<Ad[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'ads' | 'overview'>('ads')
+  // Sort for the per-position ad list. Same vocabulary as the All Campaigns
+  // table on /dashboard/campaigns so the recruiter's mental model carries
+  // over. Default newest first; persisted across reloads.
+  const [adsSort, setAdsSort] = useState<'date_new' | 'date_old' | 'applicants' | 'source' | 'name'>(() => {
+    if (typeof window === 'undefined') return 'date_new'
+    try {
+      const v = window.localStorage.getItem('hiringflow:ads-sort')
+      if (v === 'date_old' || v === 'applicants' || v === 'source' || v === 'name') return v
+    } catch {}
+    return 'date_new'
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem('hiringflow:ads-sort', adsSort) } catch {}
+  }, [adsSort])
   // "Manage ads" modal state — picks ads currently in other positions
   // (or Unassigned) and bulk-PATCHes their targetPosition to this one.
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -63,11 +77,30 @@ export default function CampaignPositionPage() {
   }, [])
 
   const positionAds = useMemo(() => {
-    return ads.filter((a) => {
+    const filtered = ads.filter((a) => {
       if (isUnassigned) return !a.targetPosition
       return (a.targetPosition ?? '').toLowerCase() === positionSlug.toLowerCase()
     })
-  }, [ads, positionSlug, isUnassigned])
+    const out = filtered.slice()
+    switch (adsSort) {
+      case 'applicants':
+        out.sort((a, b) => b._count.sessions - a._count.sessions)
+        break
+      case 'date_new':
+        out.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        break
+      case 'date_old':
+        out.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        break
+      case 'source':
+        out.sort((a, b) => (a.source || '').localeCompare(b.source || '') || a.name.localeCompare(b.name))
+        break
+      case 'name':
+        out.sort((a, b) => a.name.localeCompare(b.name))
+        break
+    }
+    return out
+  }, [ads, positionSlug, isUnassigned, adsSort])
 
   const totalSessions = positionAds.reduce((sum, a) => sum + a._count.sessions, 0)
   const activeCount = positionAds.filter((a) => a.isActive).length
@@ -333,21 +366,37 @@ export default function CampaignPositionPage() {
       />
 
       <div className="px-8 py-4">
-        <div className="flex gap-1 mb-4 border-b border-surface-border">
-          {[
-            { key: 'ads' as const, label: `Ads (${positionAds.length})` },
-            { key: 'overview' as const, label: 'Overview' },
-          ].map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                tab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-grey-40 hover:text-grey-20'
-              }`}
+        <div className="flex items-center justify-between gap-3 mb-4 border-b border-surface-border">
+          <div className="flex gap-1">
+            {[
+              { key: 'ads' as const, label: `Ads (${positionAds.length})` },
+              { key: 'overview' as const, label: 'Overview' },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                  tab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-grey-40 hover:text-grey-20'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {tab === 'ads' && positionAds.length > 1 && (
+            <select
+              value={adsSort}
+              onChange={(e) => setAdsSort(e.target.value as typeof adsSort)}
+              className="mb-2 px-3 py-1.5 border border-surface-border rounded-[8px] text-[12px] text-grey-15 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+              title="Sort the ad list"
             >
-              {t.label}
-            </button>
-          ))}
+              <option value="date_new">Sort: Newest first</option>
+              <option value="date_old">Sort: Oldest first</option>
+              <option value="applicants">Sort: Most applicants</option>
+              <option value="source">Sort: Source A→Z</option>
+              <option value="name">Sort: Name A→Z</option>
+            </select>
+          )}
         </div>
 
         {tab === 'overview' && (

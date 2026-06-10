@@ -82,6 +82,23 @@ function CampaignsPageInner() {
   // Time window — filters the Ads table by Ad.createdAt so recruiters can
   // narrow to "campaigns launched this week" / etc. 'all' is the default.
   const [adsDateFilter, setAdsDateFilter] = useState<'all' | 'today' | '7d' | '30d' | '90d' | 'thisMonth' | 'lastMonth'>('all')
+  // Sort key for the Ads table. 'applicants' = session count desc (top
+  // performers up top), 'date_new' = newest createdAt first (default;
+  // matches the kanban's mental model), 'date_old' = oldest first
+  // (useful for finding stale campaigns), 'source' = alphabetical by
+  // source label. Persisted to localStorage so the recruiter's last sort
+  // sticks across reloads.
+  const [adsSort, setAdsSort] = useState<'date_new' | 'date_old' | 'applicants' | 'source' | 'name'>(() => {
+    if (typeof window === 'undefined') return 'date_new'
+    try {
+      const v = window.localStorage.getItem('hiringflow:ads-sort')
+      if (v === 'date_old' || v === 'applicants' || v === 'source' || v === 'name') return v
+    } catch {}
+    return 'date_new'
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem('hiringflow:ads-sort', adsSort) } catch {}
+  }, [adsSort])
   // Ad copy fields in modal
   const [adHeadline, setAdHeadline] = useState('')
   const [adBody, setAdBody] = useState('')
@@ -662,10 +679,11 @@ function CampaignsPageInner() {
     return { from: null, to: null }
   }, [adsDateFilter])
 
-  // Filtered ad list — drives the Ads tab table. Filters intersect; empty
-  // filter means "no constraint on that axis".
+  // Filtered + sorted ad list — drives the Ads tab table. Filters intersect;
+  // empty filter means "no constraint on that axis". Sort is applied AFTER
+  // filtering so the counter ("Showing N of M") matches the visible rows.
   const filteredAds = useMemo(() => {
-    return ads.filter((a) => {
+    const filtered = ads.filter((a) => {
       if (adsSourceFilter && a.source !== adsSourceFilter) return false
       if (adsFlowFilter && a.flowId !== adsFlowFilter) return false
       if (adsDateBounds.from || adsDateBounds.to) {
@@ -675,7 +693,28 @@ function CampaignsPageInner() {
       }
       return true
     })
-  }, [ads, adsSourceFilter, adsFlowFilter, adsDateBounds])
+    // Copy before sort — never mutate `ads` in place since React relies
+    // on referential equality to skip downstream renders.
+    const out = filtered.slice()
+    switch (adsSort) {
+      case 'applicants':
+        out.sort((a, b) => b._count.sessions - a._count.sessions)
+        break
+      case 'date_new':
+        out.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        break
+      case 'date_old':
+        out.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        break
+      case 'source':
+        out.sort((a, b) => (a.source || '').localeCompare(b.source || '') || a.name.localeCompare(b.name))
+        break
+      case 'name':
+        out.sort((a, b) => a.name.localeCompare(b.name))
+        break
+    }
+    return out
+  }, [ads, adsSourceFilter, adsFlowFilter, adsDateBounds, adsSort])
 
   // Sources breakdown — built up from the ads' actual source values so
   // custom workspace sources appear in the table alongside built-ins.
@@ -906,6 +945,18 @@ function CampaignsPageInner() {
                   <option value="90d">Last 90 days</option>
                   <option value="thisMonth">This month</option>
                   <option value="lastMonth">Last month</option>
+                </select>
+                <select
+                  value={adsSort}
+                  onChange={(e) => setAdsSort(e.target.value as typeof adsSort)}
+                  className="px-3 py-2 border border-surface-border rounded-[8px] text-sm text-grey-15 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  title="Sort the ad list"
+                >
+                  <option value="date_new">Sort: Newest first</option>
+                  <option value="date_old">Sort: Oldest first</option>
+                  <option value="applicants">Sort: Most applicants</option>
+                  <option value="source">Sort: Source A→Z</option>
+                  <option value="name">Sort: Name A→Z</option>
                 </select>
                 {(adsSourceFilter || adsFlowFilter || adsDateFilter !== 'all') && (
                   <>
