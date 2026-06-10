@@ -41,6 +41,55 @@ const VARIABLES = [
 
 type Channel = 'email' | 'sms' | 'both'
 
+// Convert an email body to something usable as an SMS body.
+//
+// Prefers the recruiter-authored plain-text alt when present (that's the
+// closest thing to an SMS-friendly version already). Falls back to
+// stripping the HTML — but preserves the URL inside anchor tags so the
+// candidate doesn't lose the link. The sub-tokens like
+// {{training_link:<id>}} that live inside href attributes survive this
+// pass because we inline the href verbatim.
+function emailBodyToSms(html: string, plainText: string): string {
+  const fromText = plainText.trim()
+  if (fromText) return fromText
+  if (!html) return ''
+  let out = html
+  // Anchor: keep visible text + inline the URL so the link travels to SMS.
+  // <a href="X">text</a> → "text: X" (or just "X" when text is generic).
+  out = out.replace(/<a\b[^>]*?href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, inner: string) => {
+    const text = inner.replace(/<[^>]+>/g, '').trim()
+    const generic = /^(click here|here|link|tap here)$/i.test(text)
+    if (!text || generic) return href
+    return `${text}: ${href}`
+  })
+  // Block-level tags → newline.
+  out = out.replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
+            .replace(/<br\s*\/?>/gi, '\n')
+  // Strip everything else.
+  out = out.replace(/<[^>]+>/g, '')
+  // Decode the entities the template editor commonly emits.
+  out = out.replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+  // Collapse runs of blank lines and trim.
+  out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+  return out
+}
+
+// Wrap each non-empty SMS line in <p>…</p> so it's a reasonable email body.
+// Preserves sub-tokens verbatim.
+function smsToEmailBody(sms: string): { html: string; text: string } {
+  const text = sms
+  const lines = sms.split(/\n+/).map((l) => l.trim()).filter(Boolean)
+  const html = lines.length
+    ? lines.map((l) => `<p>${l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`).join('\n')
+    : ''
+  return { html, text }
+}
+
 export function SendMessageModal({
   candidateId,
   candidateEmail,
@@ -339,6 +388,37 @@ export function SendMessageModal({
                 placeholder="New email template name"
               />
             </section>
+          )}
+
+          {showEmail && showSms && (
+            <div className="flex items-center justify-center gap-2 -my-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSmsBody(emailBodyToSms(emailBodyHtml, emailBodyText))
+                  setSmsTemplateId('')
+                }}
+                disabled={sending || (!emailBodyHtml.trim() && !emailBodyText.trim())}
+                title="Copy email body into the SMS panel (preserves sub-tokens and link URLs)"
+                className="text-[11px] px-2 py-1 rounded-[6px] border border-surface-border bg-white text-grey-15 hover:bg-purple-50 hover:border-purple-200 disabled:opacity-40"
+              >
+                Copy email → SMS ↓
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const { html, text } = smsToEmailBody(smsBody)
+                  setEmailBodyHtml(html)
+                  setEmailBodyText(text)
+                  setEmailTemplateId('')
+                }}
+                disabled={sending || !smsBody.trim()}
+                title="Copy SMS body into the email panel (wraps each line in a paragraph)"
+                className="text-[11px] px-2 py-1 rounded-[6px] border border-surface-border bg-white text-grey-15 hover:bg-brand-50 hover:border-brand-200 disabled:opacity-40"
+              >
+                ↑ Copy SMS → email
+              </button>
+            </div>
           )}
 
           {showSms && (
