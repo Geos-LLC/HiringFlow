@@ -109,8 +109,12 @@ export async function GET(request: NextRequest) {
   // matches OR flow.pipelineId is null and the requested pipeline is the
   // workspace default". When both flowId and pipelineId are passed, flowId
   // wins (the more specific filter) — the pipeline branch is a no-op so the
-  // explicit flow lookup keeps working.
-  if (pipelineId && !flowId) {
+  // explicit flow lookup keeps working. Same idea for adId: when scoping
+  // to a specific ad, the ad's flow already pins which pipeline the
+  // candidates belong to. Combining the recruiter's stale pipeline pick
+  // with an adId would AND-out every candidate (the ad's flow likely
+  // isn't on the stale pipeline). So adId also wins over pipelineId.
+  if (pipelineId && !flowId && !adIdParam) {
     const pipeline = await prisma.pipeline.findFirst({
       where: { id: pipelineId, workspaceId: ws.workspaceId },
       select: { id: true, isDefault: true },

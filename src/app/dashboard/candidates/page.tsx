@@ -429,14 +429,19 @@ function CandidatesPageInner() {
         // When the recruiter arrived from a Campaigns ad row (or pasted a
         // /candidates?adId=X link), the saved-localStorage pipeline filter
         // is almost certainly wrong — they want the kanban scoped to THIS
-        // ad's flow's pipeline. Override to that pipeline once on first
-        // landing so the kanban columns match the candidates being shown.
-        // Skip if no adId in URL or if the ad's flow has no explicit
-        // pipeline (the workspace default handles that case).
+        // ad's flow's pipeline. Override on first landing so the kanban
+        // columns match the candidates being shown.
+        //
+        // The ad's flow may have an explicit pipelineId (use that) OR null
+        // (the flow falls back to the workspace default — in that case we
+        // clear the picker to the default by setting null). Either way we
+        // force a re-pick so the saved Dispatcher selection doesn't bleed
+        // into a Cleaner ad's view.
         if (initialAdId) {
           const ad = list.find((a) => a.id === initialAdId)
-          const wantPipelineId = ad?.flow?.pipelineId
-          if (wantPipelineId) setSelectedPipelineId(wantPipelineId)
+          if (ad?.flow) {
+            setSelectedPipelineId(ad.flow.pipelineId ?? null)
+          }
         }
       })
       .catch(() => {})
@@ -508,6 +513,20 @@ function CandidatesPageInner() {
   useEffect(() => {
     try { localStorage.setItem('hiringflow:candidates-view', view) } catch {}
   }, [view])
+
+  // Also auto-switch pipeline when the recruiter picks a different ad from
+  // the Campaign dropdown. Same rationale as the initial-mount override:
+  // keep the kanban columns and the candidate list in agreement. We do
+  // NOT depend on the user changing pipeline manually first — picking an
+  // ad is an explicit "show me this ad's funnel" intent. Clearing the
+  // dropdown (empty adIdFilter) does not reset the pipeline; the
+  // recruiter can re-pick if they want.
+  useEffect(() => {
+    if (!adIdFilter) return
+    const ad = adOptions.find((a) => a.id === adIdFilter)
+    if (ad?.flow) setSelectedPipelineId(ad.flow.pipelineId ?? null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adIdFilter])
 
   // Drop the selection set whenever the filter inputs change (or the user
   // flips between kanban and table). The selected ids would otherwise refer
