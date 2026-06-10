@@ -48,9 +48,21 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         videoRef.current.srcObject = mediaStream
       }
 
-      const recorder = new MediaRecorder(mediaStream, {
-        mimeType: 'video/webm;codecs=vp9,opus'
-      })
+      // Pick the best mimeType the platform supports. Safari/iOS rejects webm
+      // and only records mp4 (h264/aac); Chrome/Firefox prefer webm/vp9.
+      const candidates = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4;codecs=h264,aac',
+        'video/mp4',
+      ]
+      const mimeType = candidates.find((t) =>
+        typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)
+      )
+      const recorder = mimeType
+        ? new MediaRecorder(mediaStream, { mimeType })
+        : new MediaRecorder(mediaStream)
       const chunks: Blob[] = []
 
       recorder.ondataavailable = (e) => {
@@ -58,7 +70,8 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       }
 
       recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' })
+        const blobType = recorder.mimeType || 'video/webm'
+        const blob = new Blob(chunks, { type: blobType })
         const url = URL.createObjectURL(blob)
         setPreviewUrl(url)
         onRecordComplete(blob)
