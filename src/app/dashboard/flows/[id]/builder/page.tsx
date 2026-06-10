@@ -7,6 +7,7 @@ import FlowSchemaView from '@/components/FlowSchemaView'
 import StepEditorPanel from '@/components/StepEditorPanel'
 import StepPreviewModal from '@/components/StepPreviewModal'
 import BrandingEditor from '@/components/BrandingEditor'
+import VideoRecorderModal from '@/components/VideoRecorderModal'
 import { type BrandingConfig } from '@/lib/branding'
 import { validateCaptureConfig } from '@/lib/capture/capture-config'
 import CaptureStepConfigPanel from './_CaptureStepConfigPanel'
@@ -208,6 +209,10 @@ export default function FlowBuilderPage() {
   >(null)
   const [titleWarning, setTitleWarning] = useState(false)
   const stepVideoInputRef = useRef<HTMLInputElement>(null)
+  // Which surface opened the camera modal — drives where the resulting File
+  // gets uploaded to. `add` = the "Add Step" Phase 2 modal, `edit:<id>` =
+  // the popup editor for an existing step.
+  const [recorderTarget, setRecorderTarget] = useState<null | 'add' | { kind: 'edit'; stepId: string }>(null)
 
   // When the user clicks "+" on a connection, pre-populate the new step's
   // outgoing target with the current connection's destination so the modal
@@ -417,6 +422,31 @@ export default function FlowBuilderPage() {
     } catch {}
     setUploadingStepVideo(false)
     if (stepVideoInputRef.current) stepVideoInputRef.current.value = ''
+  }
+
+  // Called by VideoRecorderModal after the user accepts a recording. Routes
+  // the resulting File through the same upload pipeline as the file picker,
+  // then dispatches the new videoId to whichever surface opened the modal.
+  const handleRecordedVideo = async (file: File) => {
+    const target = recorderTarget
+    setRecorderTarget(null)
+    if (!target) return
+    setUploadingStepVideo(true)
+    setStepVideoProgress(5)
+    try {
+      const result = await startUpload(file, 'interview')
+      setStepVideoProgress(100)
+      if (!result.videoId) return
+      setVideos(prev => [{ id: result.videoId, filename: result.filename, url: '', displayName: null }, ...prev])
+      if (target === 'add') {
+        setAddStepVideoId(result.videoId)
+        if (!autoTitleEnabled && !addStepTitle) setAddStepTitle(file.name.replace(/\.[^.]+$/, ''))
+        if (autoTitleEnabled) generateTitleFromVideo(result.videoId)
+      } else if (target.kind === 'edit') {
+        updateStep(target.stepId, { videoId: result.videoId })
+      }
+    } catch {}
+    setUploadingStepVideo(false)
   }
 
   const generateTitleFromVideo = async (videoId: string) => {
@@ -1217,6 +1247,12 @@ export default function FlowBuilderPage() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)]">
+      <VideoRecorderModal
+        open={recorderTarget !== null}
+        onClose={() => setRecorderTarget(null)}
+        onAccept={handleRecordedVideo}
+        filenameStem="step-recording"
+      />
       {/* Header */}
       <div className="flex items-center justify-between mb-4 pb-4 border-b">
         <div className="flex items-center space-x-4">
@@ -1483,6 +1519,14 @@ export default function FlowBuilderPage() {
                                 }
                               }} />
                             </label>
+                            <button
+                              type="button"
+                              onClick={() => setRecorderTarget({ kind: 'edit', stepId: popupStep.id })}
+                              className="px-4 py-2.5 text-xs font-medium bg-brand-50 text-brand-600 border border-brand-200 rounded-[8px] hover:bg-brand-100 inline-flex items-center gap-1.5"
+                            >
+                              <span className="w-2 h-2 rounded-full bg-red-500" />
+                              Record
+                            </button>
                           </div>
                         </div>
                         {/* Video preview — hide when preview modal is open */}
@@ -2092,7 +2136,15 @@ export default function FlowBuilderPage() {
                       >
                         <svg className="w-10 h-10 mx-auto text-grey-50 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
                         <p className="text-sm text-grey-40 mb-1">Drag & drop video here</p>
-                        <p className="text-xs text-grey-50">or click to browse</p>
+                        <p className="text-xs text-grey-50 mb-3">or click to browse</p>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setRecorderTarget('add') }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white text-brand-600 border border-brand-200 rounded-[8px] hover:bg-brand-50"
+                        >
+                          <span className="w-2 h-2 rounded-full bg-red-500" />
+                          Record from camera
+                        </button>
                         <input ref={stepVideoInputRef} type="file" accept="video/*" onChange={handleStepVideoUpload} className="hidden" />
                       </div>
                     ) : uploadingStepVideo ? (
