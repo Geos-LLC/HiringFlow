@@ -74,7 +74,7 @@ type StatusTab = { key: string; label: string; statuses: string[] | null; color:
 const BUILT_IN_STATUS_TABS: StatusTab[] = [
   { key: 'active',  label: 'Active',  statuses: ['active', 'waiting'], color: 'var(--brand-primary)' },
   { key: 'stalled', label: 'Stalled', statuses: ['stalled'],            color: '#D97706'             },
-  { key: 'nurture', label: 'Nurture', statuses: ['nurture'],            color: 'var(--neutral-fg)'   },
+  { key: 'nurture', label: 'On Hold', statuses: ['nurture'],            color: 'var(--neutral-fg)'   },
   { key: 'hired',   label: 'Hired',   statuses: ['hired'],              color: 'var(--success-fg)'   },
   { key: 'lost',    label: 'Lost',    statuses: ['lost'],               color: 'var(--danger-fg)'    },
   { key: 'all',     label: 'All',     statuses: null,                   color: 'var(--neutral-fg)'   },

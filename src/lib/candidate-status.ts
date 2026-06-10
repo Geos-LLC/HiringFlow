@@ -146,7 +146,7 @@ export const STATUS_DISPLAY: Record<CandidateStatus, { label: string; tone: Cand
   active:  { label: 'Active',   tone: 'brand'   },
   waiting: { label: 'Waiting',  tone: 'info'    },
   stalled: { label: 'Stalled',  tone: 'warn'    },
-  nurture: { label: 'Nurture',  tone: 'neutral' },
+  nurture: { label: 'On Hold', tone: 'neutral' },
   lost:    { label: 'Lost',     tone: 'danger'  },
   hired:   { label: 'Hired',    tone: 'success' },
 }

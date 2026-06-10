@@ -1669,7 +1669,7 @@ export default function CandidateDetailPage() {
                     disabled={statusBusy}
                     className="text-xs px-3 py-1.5 rounded-[6px] bg-surface-light text-grey-15 hover:bg-surface-divider font-medium border border-surface-border disabled:opacity-50"
                   >
-                    Move to Nurture
+                    Move to On Hold
                   </button>
                 )}
                 {status !== 'hired' && (
@@ -2209,7 +2209,7 @@ function DispositionReasonPicker(props: {
   const title = mode === 'change-reason'
     ? 'Change reason'
     : targetStatus === 'lost' ? 'Move to Lost'
-    : targetStatus === 'nurture' ? 'Move to Nurture'
+    : targetStatus === 'nurture' ? 'Move to On Hold'
     : 'Pick reason'
   const subtitle = mode === 'change-reason'
     ? 'Update the structured reason. This does not change the candidate status.'

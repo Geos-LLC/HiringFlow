@@ -32,7 +32,7 @@ const STATUS_DESCRIPTIONS: Record<CandidateStatus, string> = {
   active:  'Default — candidate is moving through the funnel.',
   waiting: 'Waiting on something external (e.g. a training to be scheduled). Treated like active on the board.',
   stalled: 'Auto-flagged by the daily cron when the candidate has no forward progress for the threshold below.',
-  nurture: 'Manual — keeping warm for a future cycle. Not in the active pool.',
+  nurture: 'Manual — paused. Kept warm for a future cycle, not in the active pool.',
   lost:    'Manual — true terminal negative outcome (rejected, declined, etc.). Hidden from the default board.',
   hired:   'Manual — confirmed hire.',
 }
@@ -150,7 +150,7 @@ export function StatusSettingsDrawer({ open, onClose, initialCustomStatuses, onS
           <div className="rounded-[10px] bg-amber-50 border border-amber-100 px-3 py-2.5 text-[12px] leading-snug text-amber-900">
             <div className="font-medium">Status rules don&apos;t move candidates between stages.</div>
             <div className="text-amber-800 mt-0.5">
-              They only mark the candidate&apos;s lifecycle state — Active, Stalled, Nurture, Hired, or Lost —
+              They only mark the candidate&apos;s lifecycle state — Active, Stalled, On Hold, Hired, or Lost —
               based on inactivity or a recruiter action. For stage movement (kanban columns) use the
               <strong> Stages</strong> drawer.
             </div>
