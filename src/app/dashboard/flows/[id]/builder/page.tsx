@@ -1794,11 +1794,11 @@ export default function FlowBuilderPage() {
                               key={r.key}
                               className="flex items-center gap-1.5 text-[11px] text-gray-600"
                             >
-                              <span className="inline-flex items-center justify-center w-4 h-4 rounded-sm bg-purple-600 text-white text-[10px] font-semibold leading-none">
+                              <span className="inline-flex items-center justify-center w-4 h-4 rounded-sm bg-brand-500 text-white text-[10px] font-semibold leading-none">
                                 {r.letter}
                               </span>
                               <span className="text-gray-400">jump to</span>
-                              <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-purple-600 text-white text-[10px] font-semibold leading-none">
+                              <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-brand-500 text-white text-[10px] font-semibold leading-none">
                                 {r.target}
                               </span>
                             </div>
