@@ -1428,6 +1428,10 @@ function CandidatesPageInner() {
                                     candidateEmail: c.candidateEmail,
                                     pipelineStatus: c.pipelineStatus,
                                     status: c.status,
+                                    dispositionReason: c.dispositionReason,
+                                    stalledAt: c.stalledAt,
+                                    lostAt: c.lostAt,
+                                    hiredAt: c.hiredAt,
                                     flow: c.flow,
                                     startedAt: c.startedAt,
                                     nextMeetingAt: c.nextMeetingAt,
@@ -1849,10 +1853,27 @@ function CandidatesPageInner() {
       <CandidateDrawer
         candidate={previewCandidate}
         onClose={() => setPreviewCandidate(null)}
-        // Quick actions intentionally undefined for now — render disabled
-        // with WIP markers. When the implementations land they get wired
-        // here (move stage will call the existing pipelineStatus PATCH,
-        // send-message will open the email modal, etc.).
+        customStatuses={customStatuses}
+        stages={stages}
+        onCandidateChanged={(patch) => {
+          if (!previewCandidate) return
+          // Optimistic merge into both the drawer's source row and the
+          // kanban's candidate list so the card visibly reflects the new
+          // state without re-fetching the whole page.
+          setPreviewCandidate((prev) => prev ? { ...prev, ...patch } : prev)
+          setCandidates((prev) => prev.map((row) => row.id === previewCandidate.id
+            ? {
+              ...row,
+              ...(patch.status !== undefined ? { status: patch.status as Candidate['status'] } : {}),
+              ...(patch.pipelineStatus !== undefined ? { pipelineStatus: patch.pipelineStatus } : {}),
+              ...(patch.dispositionReason !== undefined ? { dispositionReason: patch.dispositionReason } : {}),
+              ...(patch.stalledAt !== undefined ? { stalledAt: patch.stalledAt } : {}),
+              ...(patch.lostAt !== undefined ? { lostAt: patch.lostAt } : {}),
+              ...(patch.hiredAt !== undefined ? { hiredAt: patch.hiredAt } : {}),
+            }
+            : row,
+          ))
+        }}
       />
     </div>
   )

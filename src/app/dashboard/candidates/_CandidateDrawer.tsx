@@ -2,14 +2,15 @@
  * CandidateDrawer — slide-in side panel that opens when the recruiter clicks
  * a candidate card on the kanban.
  *
- * Phase 1 (this PR): renders a summary header + quick-action buttons. The
- * deeper sections (Journey/Process, AI Evaluation, Timeline, Next action)
- * are PLACEHOLDERS — the data already exists on /dashboard/candidates/[id]
- * but the drawer-side rendering is queued for a follow-up so the kanban
- * page doesn't have to import the entire detail page tree right now.
+ * Hosts the same status / stage actions as the full detail page so most
+ * common moves don't require leaving the kanban. The detail page is still
+ * one click away for everything else (timeline, journey, AI eval, etc.)
+ * via the footer CTA.
  *
- * The full-detail page link at the bottom guarantees the recruiter can
- * always escape the drawer to the existing surface.
+ * Status changes and stage moves PATCH the same `/api/candidates/[id]`
+ * endpoint the detail page uses; the parent kanban gets the resulting
+ * patch via `onCandidateChanged` and merges it into its candidate list
+ * so the card reflects the new state without a re-fetch.
  */
 
 'use client'
@@ -17,6 +18,15 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { Badge, WipBadge, WipSection } from '@/components/design'
+import {
+  STATUS_DISPLAY,
+  DISPOSITION_DISPLAY,
+  type CandidateStatus,
+  type CandidateDispositionReason,
+  type CustomStatus,
+} from '@/lib/candidate-status'
+import type { FunnelStage } from '@/lib/funnel-stages'
+import { DispositionReasonPicker } from './_DispositionReasonPicker'
 
 export interface CandidateDrawerCandidate {
   id: string
@@ -24,6 +34,10 @@ export interface CandidateDrawerCandidate {
   candidateEmail: string | null
   pipelineStatus: string | null
   status: string | null
+  dispositionReason: CandidateDispositionReason | null
+  stalledAt: string | null
+  lostAt: string | null
+  hiredAt: string | null
   flow: { id: string; name: string } | null
   startedAt: string
   nextMeetingAt?: string | null
@@ -33,22 +47,17 @@ export interface CandidateDrawerCandidate {
 export interface CandidateDrawerProps {
   candidate: CandidateDrawerCandidate | null
   onClose: () => void
+  customStatuses: CustomStatus[]
+  stages: FunnelStage[]
+  // Called with the partial patch after a successful PATCH so the parent
+  // kanban can merge it into its candidate list. The drawer also updates
+  // its own internal copy optimistically.
+  onCandidateChanged: (patch: Partial<CandidateDrawerCandidate>) => void
   // Quick-action callbacks. Each one is optional — when omitted the button
-  // renders disabled with a "Coming soon" badge so the layout reads as
-  // intentional, not broken.
-  onMoveStage?: () => void
+  // renders disabled with a "Coming soon" badge.
   onSendMessage?: () => void
   onRunAutomation?: () => void
   onScheduleInterview?: () => void
-}
-
-const STATUS_TONE: Record<string, 'brand' | 'neutral' | 'success' | 'warn' | 'danger' | 'info'> = {
-  active: 'brand',
-  waiting: 'info',
-  stalled: 'warn',
-  nurture: 'neutral',
-  hired: 'success',
-  lost: 'danger',
 }
 
 function fmtDate(iso: string | null | undefined): string {
@@ -61,13 +70,14 @@ function fmtDate(iso: string | null | undefined): string {
 export function CandidateDrawer({
   candidate,
   onClose,
-  onMoveStage,
+  customStatuses,
+  stages,
+  onCandidateChanged,
   onSendMessage,
   onRunAutomation,
   onScheduleInterview,
 }: CandidateDrawerProps) {
-  // Esc dismisses the drawer — matches the MobileNav contract so the muscle
-  // memory works across both surfaces.
+  // Esc dismisses the drawer.
   React.useEffect(() => {
     if (!candidate) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -76,6 +86,93 @@ export function CandidateDrawer({
   }, [candidate, onClose])
 
   const open = !!candidate
+  const [busy, setBusy] = React.useState(false)
+  const [reasonModal, setReasonModal] = React.useState<null | {
+    mode: 'set-status' | 'change-reason'
+    targetStatus?: CandidateStatus
+    initial: CandidateDispositionReason | null
+  }>(null)
+
+  const status = (candidate?.status as CandidateStatus | string | null) || 'active'
+  const dispositionReason = candidate?.dispositionReason ?? null
+
+  const patchCandidate = async (body: Record<string, unknown>) => {
+    if (!candidate || busy) return
+    setBusy(true)
+    try {
+      const res = await fetch(`/api/candidates/${candidate.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        alert(j?.error || 'Failed to update candidate')
+        return
+      }
+      const data = await res.json().catch(() => ({}))
+      // Merge the authoritative response onto our local row + propagate to
+      // the parent. The PATCH response carries status / disposition / *At
+      // stamps after a lifecycle change; for pipelineStatus-only patches
+      // we fall back to what we sent.
+      const patch: Partial<CandidateDrawerCandidate> = {
+        status: (data.status ?? body.status ?? candidate.status) as string | null,
+        pipelineStatus: (data.pipelineStatus ?? body.pipelineStatus ?? candidate.pipelineStatus) as string | null,
+        dispositionReason: (data.dispositionReason ?? null) as CandidateDispositionReason | null,
+        stalledAt: (data.stalledAt ?? null) as string | null,
+        lostAt: (data.lostAt ?? null) as string | null,
+        hiredAt: (data.hiredAt ?? null) as string | null,
+      }
+      // If the caller only sent pipelineStatus, preserve the existing
+      // status/disposition/*At rather than overwriting with nulls from
+      // the response (which might not echo those fields back).
+      if (body.status === undefined && body.dispositionReason === undefined) {
+        patch.status = candidate.status
+        patch.dispositionReason = candidate.dispositionReason
+        patch.stalledAt = candidate.stalledAt
+        patch.lostAt = candidate.lostAt
+        patch.hiredAt = candidate.hiredAt
+      }
+      onCandidateChanged(patch)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const updateLifecycle = async (next: CandidateStatus | string, reason?: CandidateDispositionReason | null) => {
+    const body: Record<string, unknown> = { status: next }
+    if (reason !== undefined) body.dispositionReason = reason
+    await patchCandidate(body)
+  }
+
+  const updateStage = async (pipelineStatus: string) => {
+    await patchCandidate({ pipelineStatus })
+  }
+
+  const submitReasonModal = async (chosen: CandidateDispositionReason | null) => {
+    const m = reasonModal
+    if (!m) { return }
+    if (m.mode === 'set-status' && m.targetStatus) {
+      await updateLifecycle(m.targetStatus, chosen)
+    } else if (m.mode === 'change-reason') {
+      await patchCandidate({ dispositionReason: chosen })
+    }
+    setReasonModal(null)
+  }
+
+  // Status display metadata — fall back to a neutral pill for custom
+  // statuses so the badge always renders.
+  const statusMeta = (() => {
+    const builtin = (STATUS_DISPLAY as Record<string, { label: string; tone: 'neutral' | 'brand' | 'success' | 'warn' | 'info' | 'danger' }>)[status]
+    if (builtin) return builtin
+    const custom = customStatuses.find((c) => c.id === status)
+    if (custom) return { label: custom.label, tone: custom.tone }
+    return { label: status, tone: 'neutral' as const }
+  })()
+
+  const stageLabel = candidate?.pipelineStatus
+    ? (stages.find((s) => s.id === candidate.pipelineStatus)?.label || candidate.pipelineStatus)
+    : null
 
   return (
     <>
@@ -129,13 +226,14 @@ export function CandidateDrawer({
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
               {/* Summary chips */}
               <div className="flex flex-wrap gap-2">
-                {candidate.status && (
-                  <Badge tone={STATUS_TONE[candidate.status] || 'neutral'}>
-                    {candidate.status}
-                  </Badge>
+                <Badge tone={statusMeta.tone}>{statusMeta.label}</Badge>
+                {dispositionReason && (
+                  <span className="inline-flex items-center text-[11px] px-2 py-0.5 rounded-full font-medium border bg-surface-light text-grey-15 border-surface-border">
+                    {DISPOSITION_DISPLAY[dispositionReason]}
+                  </span>
                 )}
-                {candidate.pipelineStatus && (
-                  <Badge tone="neutral">Stage: {candidate.pipelineStatus}</Badge>
+                {stageLabel && (
+                  <Badge tone="neutral">Stage: {stageLabel}</Badge>
                 )}
               </div>
 
@@ -156,6 +254,87 @@ export function CandidateDrawer({
                 </dl>
               </section>
 
+              {/* Lifecycle status — same actions as the detail page so the
+                  drawer covers the most common moves without leaving the
+                  kanban. */}
+              <section className="rounded-[12px] border border-surface-border p-3">
+                <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35 mb-2">
+                  Lifecycle status
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {status !== 'active' && status !== 'waiting' && (
+                    <button
+                      onClick={() => updateLifecycle('active', null)}
+                      disabled={busy}
+                      className="text-[11px] px-2.5 py-1 rounded-[6px] bg-brand-100 text-brand-700 hover:bg-brand-200 font-medium disabled:opacity-50"
+                    >
+                      Reactivate
+                    </button>
+                  )}
+                  {status !== 'lost' && (
+                    <button
+                      onClick={() => setReasonModal({ mode: 'set-status', targetStatus: 'lost', initial: 'manual_other' })}
+                      disabled={busy}
+                      className="text-[11px] px-2.5 py-1 rounded-[6px] bg-red-100 text-red-700 hover:bg-red-200 font-medium disabled:opacity-50"
+                    >
+                      Move to Lost
+                    </button>
+                  )}
+                  {status !== 'nurture' && (
+                    <button
+                      onClick={() => setReasonModal({ mode: 'set-status', targetStatus: 'nurture', initial: dispositionReason })}
+                      disabled={busy}
+                      className="text-[11px] px-2.5 py-1 rounded-[6px] bg-surface-light text-grey-15 hover:bg-surface-divider font-medium border border-surface-border disabled:opacity-50"
+                    >
+                      Move to On Hold
+                    </button>
+                  )}
+                  {status !== 'hired' && (
+                    <button
+                      onClick={() => updateLifecycle('hired')}
+                      disabled={busy}
+                      className="text-[11px] px-2.5 py-1 rounded-[6px] bg-green-100 text-green-700 hover:bg-green-200 font-medium disabled:opacity-50"
+                    >
+                      Mark as Hired
+                    </button>
+                  )}
+                  {customStatuses.filter((c) => c.id !== status).map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => updateLifecycle(c.id)}
+                      disabled={busy}
+                      className="text-[11px] px-2.5 py-1 rounded-[6px] bg-surface-light text-grey-15 hover:bg-surface-divider font-medium border border-surface-border disabled:opacity-50"
+                    >
+                      Move to {c.label}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setReasonModal({ mode: 'change-reason', initial: dispositionReason })}
+                    disabled={busy}
+                    className="text-[11px] px-2.5 py-1 rounded-[6px] text-grey-40 hover:text-grey-15 hover:bg-surface-light font-medium disabled:opacity-50"
+                  >
+                    Change reason
+                  </button>
+                </div>
+              </section>
+
+              {/* Pipeline stage picker — writes Session.pipelineStatus. */}
+              <section className="rounded-[12px] border border-surface-border p-3">
+                <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35 mb-2">
+                  Pipeline stage
+                </div>
+                <select
+                  value={candidate.pipelineStatus ?? ''}
+                  onChange={(e) => updateStage(e.target.value)}
+                  disabled={busy || stages.length === 0}
+                  className="w-full text-[13px] px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink disabled:opacity-50"
+                >
+                  {stages.map((s) => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </select>
+              </section>
+
               {/* Placeholders for sections per spec — backend exists at
                   /dashboard/candidates/[id] but the drawer-side render is
                   queued. */}
@@ -171,22 +350,20 @@ export function CandidateDrawer({
                 title="Recent timeline"
                 description="Last 5 events (answers, training, meetings, automations)."
               />
-              <WipSection
-                title="Suggested next action"
-                description="Heuristic recommendation based on current stage + last activity."
-              />
             </div>
 
-            {/* Footer — quick actions + escape to full detail */}
+            {/* Footer — remaining quick actions + escape to full detail.
+                Send message / Run automation / Schedule interview don't have
+                reusable modals on the kanban surface yet — they stay WIP
+                until those modals are extracted. */}
             <div className="border-t border-surface-border p-4 space-y-3">
               <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35">
                 Quick actions
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <QuickAction label="Move stage" onClick={onMoveStage} />
+              <div className="grid grid-cols-3 gap-2">
                 <QuickAction label="Send message" onClick={onSendMessage} />
                 <QuickAction label="Run automation" onClick={onRunAutomation} />
-                <QuickAction label="Schedule interview" onClick={onScheduleInterview} />
+                <QuickAction label="Schedule" onClick={onScheduleInterview} />
               </div>
               <Link
                 href={`/dashboard/candidates/${candidate.id}`}
@@ -199,6 +376,16 @@ export function CandidateDrawer({
           </>
         )}
       </aside>
+
+      {reasonModal && (
+        <DispositionReasonPicker
+          mode={reasonModal.mode}
+          targetStatus={reasonModal.targetStatus}
+          initial={reasonModal.initial}
+          onClose={() => setReasonModal(null)}
+          onSubmit={submitReasonModal}
+        />
+      )}
     </>
   )
 }
