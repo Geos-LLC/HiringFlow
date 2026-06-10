@@ -3,6 +3,7 @@ import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { sendEmail, renderTemplate } from '@/lib/email'
 import { sendSms, normalizeToE164 } from '@/lib/sms'
+import { resolveDynamicLinks } from '@/lib/template-link-resolver'
 
 // Generic manual candidate message. Replaces the old send-rejection-email
 // endpoint for the recruiter-facing "Send message" composer on the
@@ -103,6 +104,32 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     flow_name: session.flow?.name || '',
     candidate_email: session.candidateEmail || '',
     candidate_phone: session.candidatePhone || '',
+  }
+
+  // Templates can embed parameterized sub-tokens like
+  // {{training_link:<trainingId>}} and {{schedule_link:<configId>}}.
+  // Without resolving these, the renderer leaves them empty and the
+  // candidate ends up with a broken/404 href. Mirror what the automation
+  // engine does in lib/automation.ts so manually-sent templates behave
+  // identically to automation-driven ones.
+  try {
+    const composite = [
+      emailSubjectRaw,
+      emailHtmlRaw,
+      emailTextRaw,
+      smsBodyRaw,
+    ].join('\n')
+    if (/\{\{\s*(schedule_link|training_link):/.test(composite)) {
+      const dynamic = await resolveDynamicLinks({
+        text: composite,
+        sessionId: session.id,
+        workspaceId: session.workspaceId,
+        sourceRefId: `manual_send:${ws.userId}`,
+      })
+      Object.assign(variables, dynamic)
+    }
+  } catch (err) {
+    console.error('[send-message] resolveDynamicLinks failed:', err)
   }
 
   // Persist new templates BEFORE sending so a save failure aborts the
