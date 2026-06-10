@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { PageHeader, Card, Button, WipBadge, WipSection } from '@/components/design'
+import { PageHeader, Card, Button, WipBadge } from '@/components/design'
 import type { FunnelStage } from '@/lib/funnel-stages'
 import { StageSettingsDrawer } from '@/app/dashboard/candidates/_StageSettingsDrawer'
 
@@ -32,6 +32,89 @@ interface FlowRow {
   name: string
   pipelineId: string | null
 }
+
+// Per-stage data surfaced inside the Stage details panel — fetched from the
+// existing transition-rules / automations / workspace-settings endpoints so
+// the four sub-cards (auto-move, entry automations, stale, notifications)
+// reflect live workspace config instead of WIP placeholders.
+interface TransitionRuleLite {
+  id: string
+  fromStageId: string | null
+  toStageId: string
+  eventType: string
+  targetId: string | null
+  priority: number
+  enabled: boolean
+}
+
+interface AutomationStepLite {
+  id: string
+  channel: string
+  emailDestination: string
+  smsDestination: string
+  emailDestinationAddress: string | null
+  smsDestinationNumber: string | null
+}
+
+interface AutomationRuleLite {
+  id: string
+  name: string
+  triggerType: string
+  stageId: string | null
+  channel: string
+  isActive: boolean
+  steps: AutomationStepLite[]
+}
+
+interface WorkspaceSettingsLite {
+  defaultStalledDays: number | null
+  senderEmail: string | null
+  senderName: string | null
+  phone: string | null
+}
+
+interface TargetOption { id: string; label: string }
+interface TargetCatalog { flows: TargetOption[]; trainings: TargetOption[] }
+
+// Resolves a stage trigger's targetId to a human-readable name (flow name or
+// training title) the same way the StageSettingsDrawer renders it. Falls back
+// to a short id snippet so the UI never shows a raw uuid.
+function resolveTargetLabel(
+  event: string,
+  targetId: string | null | undefined,
+  catalog: TargetCatalog | null,
+): string | null {
+  if (!targetId) return null
+  const isFlow = event.startsWith('flow_')
+  const isTraining = event.startsWith('training_')
+  if (!isFlow && !isTraining) return null
+  const list = isFlow ? catalog?.flows : catalog?.trainings
+  const found = list?.find((x) => x.id === targetId)
+  return found?.label ?? targetId.slice(0, 6)
+}
+
+const STAGE_EVENT_LABELS: Record<string, string> = {
+  flow_passed: 'Flow passed',
+  flow_completed: 'Flow completed',
+  training_started: 'Training started',
+  training_completed: 'Training completed',
+  meeting_scheduled: 'Interview scheduled',
+  meeting_rescheduled: 'Interview rescheduled',
+  meeting_confirmed: 'Interview confirmed',
+  meeting_cancelled: 'Interview cancelled',
+  meeting_started: 'Interview started',
+  meeting_ended: 'Interview ended',
+  meeting_no_show: 'Interview no-show',
+  recording_ready: 'Recording ready',
+  transcript_ready: 'Transcript ready',
+  background_check_passed: 'Background check passed',
+  background_check_failed: 'Background check failed',
+  background_check_needs_review: 'Background check — needs review',
+  stage_entered: 'Stage entered',
+  before_meeting: 'Before meeting',
+}
+
+const STALE_FALLBACK_DAYS = 7
 
 export default function PipelinesPage() {
   const [pipelines, setPipelines] = useState<PipelineRow[]>([])
@@ -66,6 +149,21 @@ export default function PipelinesPage() {
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null)
   const [stageCandidates, setStageCandidates] = useState<Array<{ id: string; candidateName: string | null; flow: { name: string } | null }>>([])
   const [stageCandidatesLoading, setStageCandidatesLoading] = useState(false)
+
+  // Stage details data (per-pipeline, re-fetched when the recruiter switches
+  // pipelines). Each panel filters this in-memory by the currently selected
+  // stage id rather than hitting the API on every click.
+  const [transitionRules, setTransitionRules] = useState<TransitionRuleLite[]>([])
+  const [transitionRulesLoading, setTransitionRulesLoading] = useState(false)
+  const [automations, setAutomations] = useState<AutomationRuleLite[]>([])
+  const [automationsLoading, setAutomationsLoading] = useState(false)
+  // Workspace-wide knobs (stalled threshold, recruiter email). Fetched once
+  // per page mount — these don't change when the recruiter switches pipelines.
+  const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettingsLite | null>(null)
+  // Flow + training names so the Auto-move rules list can render
+  // "Flow passed — Application Form" instead of a raw uuid. Same endpoint the
+  // StageSettingsDrawer uses for its trigger picker.
+  const [targetCatalog, setTargetCatalog] = useState<TargetCatalog | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -121,6 +219,138 @@ export default function PipelinesPage() {
       .catch(() => setStageCandidates([]))
       .finally(() => setStageCandidatesLoading(false))
   }, [editorPipelineId, selectedStageId])
+
+  // Fetch transition rules + automations whenever the recruiter switches
+  // pipelines. Both endpoints scope by pipelineId so we get exactly the rows
+  // that could land or fire on stages in this pipeline.
+  useEffect(() => {
+    if (!editorPipelineId) {
+      setTransitionRules([])
+      setAutomations([])
+      return
+    }
+    setTransitionRulesLoading(true)
+    fetch(`/api/pipelines/${editorPipelineId}/transition-rules`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: TransitionRuleLite[]) => setTransitionRules(rows))
+      .catch(() => setTransitionRules([]))
+      .finally(() => setTransitionRulesLoading(false))
+
+    setAutomationsLoading(true)
+    fetch(`/api/automations?pipelineId=${encodeURIComponent(editorPipelineId)}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: AutomationRuleLite[]) => setAutomations(rows))
+      .catch(() => setAutomations([]))
+      .finally(() => setAutomationsLoading(false))
+  }, [editorPipelineId])
+
+  // Flow + training catalog: once per page mount. Lets us resolve
+  // FunnelStage trigger targetIds to flow/training names.
+  useEffect(() => {
+    fetch('/api/funnel-stage-targets')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) setTargetCatalog({ flows: d.flows ?? [], trainings: d.trainings ?? [] })
+      })
+      .catch(() => {})
+  }, [])
+
+  // Workspace settings: once per page mount. Carries defaultStalledDays and
+  // senderEmail which drive the Stale rule + Notifications sub-cards.
+  useEffect(() => {
+    fetch('/api/workspace/settings')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: WorkspaceSettingsLite | null) => {
+        if (data) {
+          setWorkspaceSettings({
+            defaultStalledDays: data.defaultStalledDays ?? null,
+            senderEmail: data.senderEmail ?? null,
+            senderName: data.senderName ?? null,
+            phone: data.phone ?? null,
+          })
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  // Derived per-stage slices. `stageTransitionRules` only includes rules whose
+  // `toStageId` matches the selected stage — that's the "candidates land here
+  // when…" list. `stageEntryAutomations` filters to rules pinned with
+  // stage_entered + selected stageId — the "what happens after they arrive"
+  // list. `stageNotificationSteps` walks those rules' steps and picks the
+  // ones whose destination is the workspace recruiter (company-side) so the
+  // Notifications card surfaces just the recruiter-bound sends.
+  const stageTransitionRules = useMemo(
+    () => (selectedStageId ? transitionRules.filter((r) => r.toStageId === selectedStageId) : []),
+    [transitionRules, selectedStageId],
+  )
+
+  // Combined "how candidates reach this stage" list. Sources:
+  //  - V1: FunnelStage.triggers[] (always present, even when V2 is off — this
+  //        is the only movement model for V1 pipelines).
+  //  - V2: PipelineTransitionRule rows with toStageId = selectedStage.id.
+  // We label each entry with its source so the recruiter knows where to edit
+  // it (the StageSettingsDrawer shows V1 vs V2 in separate sections).
+  type MovementRow = {
+    key: string
+    source: 'v1' | 'v2'
+    eventType: string
+    targetLabel: string | null
+    fromLabel: string | null
+    enabled: boolean
+  }
+  const stageMovementRules = useMemo<MovementRow[]>(() => {
+    if (!selectedStage) return []
+    const v1Rows: MovementRow[] = (selectedStage.triggers ?? []).map((t, i) => ({
+      key: `v1-${i}-${t.event}-${t.targetId ?? ''}`,
+      source: 'v1',
+      eventType: t.event,
+      targetLabel: resolveTargetLabel(t.event, t.targetId, targetCatalog),
+      fromLabel: null,
+      enabled: true,
+    }))
+    const v2Rows: MovementRow[] = stageTransitionRules.map((r) => ({
+      key: `v2-${r.id}`,
+      source: 'v2',
+      eventType: r.eventType,
+      targetLabel: resolveTargetLabel(r.eventType, r.targetId, targetCatalog),
+      fromLabel: r.fromStageId
+        ? (editorPipeline?.stages.find((x) => x.id === r.fromStageId)?.label ?? r.fromStageId)
+        : 'any stage',
+      enabled: r.enabled,
+    }))
+    return [...v1Rows, ...v2Rows]
+  }, [selectedStage, stageTransitionRules, targetCatalog, editorPipeline])
+  const stageEntryAutomations = useMemo(
+    () => (selectedStageId
+      ? automations.filter((a) => a.triggerType === 'stage_entered' && a.stageId === selectedStageId)
+      : []),
+    [automations, selectedStageId],
+  )
+  const stageNotificationSteps = useMemo(() => {
+    const out: Array<{ ruleId: string; ruleName: string; channel: string; address: string }> = []
+    for (const rule of stageEntryAutomations) {
+      for (const step of rule.steps ?? []) {
+        if ((step.channel === 'email' || step.channel === 'both') && step.emailDestination === 'company') {
+          out.push({
+            ruleId: rule.id,
+            ruleName: rule.name,
+            channel: 'email',
+            address: workspaceSettings?.senderEmail || step.emailDestinationAddress || '—',
+          })
+        }
+        if ((step.channel === 'sms' || step.channel === 'both') && step.smsDestination === 'company') {
+          out.push({
+            ruleId: rule.id,
+            ruleName: rule.name,
+            channel: 'sms',
+            address: workspaceSettings?.phone || step.smsDestinationNumber || '—',
+          })
+        }
+      }
+    }
+    return out
+  }, [stageEntryAutomations, workspaceSettings])
 
   const create = async () => {
     const name = newName.trim()
@@ -419,22 +649,234 @@ export default function PipelinesPage() {
                 </dl>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <WipSection
-                    title="Auto-move rules"
-                    description="View & edit PipelineTransitionRule rows for this stage. Available via Edit in drawer →"
-                  />
-                  <WipSection
-                    title="Stage entry automations"
-                    description="AutomationRules with stage_entered trigger on this stage."
-                  />
-                  <WipSection
-                    title="Stale rule"
-                    description="Per-stage stalled threshold override. Workspace default applies today."
-                  />
-                  <WipSection
-                    title="Notifications"
-                    description="Recruiter notification when a candidate enters this stage."
-                  />
+                  {/* Auto-move rules: combined view of V1 FunnelStage.triggers
+                      (the only movement model when transitionsV2Enabled is off)
+                      and V2 PipelineTransitionRule rows. Each row is labeled
+                      with its source so the recruiter knows which editor in
+                      the drawer owns it. */}
+                  <div className="rounded-[12px] border border-surface-border p-4 bg-white">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-semibold text-[13px] text-ink">
+                        Auto-move rules
+                        {stageMovementRules.length > 0 && (
+                          <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-surface-light text-[10px] font-mono text-grey-15 tabular-nums">
+                            {stageMovementRules.length}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[12px] text-grey-35 mb-2">
+                      Movement rules that land candidates in this stage.
+                    </div>
+                    {transitionRulesLoading ? (
+                      <div className="text-[12px] text-grey-40">Loading…</div>
+                    ) : stageMovementRules.length === 0 ? (
+                      <div className="text-[12px] text-grey-40">
+                        No movement rules — candidates only land here manually.
+                      </div>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {stageMovementRules.slice(0, 4).map((row) => (
+                          <li
+                            key={row.key}
+                            className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-[8px] bg-surface-light text-[12px]"
+                          >
+                            <span className="text-ink truncate">
+                              <strong>{STAGE_EVENT_LABELS[row.eventType] ?? row.eventType}</strong>
+                              {row.targetLabel && (
+                                <span className="text-grey-35"> — {row.targetLabel}</span>
+                              )}
+                              {row.fromLabel && (
+                                <span className="text-grey-35"> · from {row.fromLabel}</span>
+                              )}
+                            </span>
+                            <span className="shrink-0 flex items-center gap-1">
+                              {row.source === 'v2' && (
+                                <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] ${
+                                  row.enabled ? 'bg-green-50 text-green-700' : 'bg-grey-50/20 text-grey-35'
+                                }`}>
+                                  {row.enabled ? 'on' : 'off'}
+                                </span>
+                              )}
+                              <span
+                                className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-surface-border text-grey-15 font-mono text-[9px] uppercase tracking-wide"
+                                title={row.source === 'v1' ? 'Legacy stage trigger' : 'Pipeline transition rule (V2)'}
+                              >
+                                {row.source}
+                              </span>
+                            </span>
+                          </li>
+                        ))}
+                        {stageMovementRules.length > 4 && (
+                          <li className="text-[11px] text-grey-35 px-2">
+                            + {stageMovementRules.length - 4} more…
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                    <button
+                      onClick={() => editorPipeline && setSetupTarget(editorPipeline)}
+                      className="mt-2 text-[11px] text-brand-700 hover:text-brand-900 underline-offset-2 hover:underline"
+                    >
+                      Manage in drawer →
+                    </button>
+                  </div>
+
+                  {/* Stage entry automations: AutomationRule rows pinned to
+                      (this pipeline, this stage) with triggerType='stage_entered'.
+                      Fire once a candidate lands here (after movement rules
+                      have done their work). +Add deep-links to the automations
+                      page with prefill params. */}
+                  <div className="rounded-[12px] border border-surface-border p-4 bg-white">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-semibold text-[13px] text-ink">
+                        Stage entry automations
+                        {stageEntryAutomations.length > 0 && (
+                          <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-surface-light text-[10px] font-mono text-grey-15 tabular-nums">
+                            {stageEntryAutomations.length}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[12px] text-grey-35 mb-2">
+                      Fire when a candidate enters this stage.
+                    </div>
+                    {automationsLoading ? (
+                      <div className="text-[12px] text-grey-40">Loading…</div>
+                    ) : stageEntryAutomations.length === 0 ? (
+                      <div className="text-[12px] text-grey-40">
+                        No automations pinned to this stage.
+                      </div>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {stageEntryAutomations.slice(0, 4).map((a) => {
+                          const stepCount = a.steps?.length ?? 0
+                          return (
+                            <li key={a.id}>
+                              <a
+                                href={`/dashboard/automations?ruleId=${a.id}`}
+                                className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-[8px] bg-surface-light hover:bg-surface-border text-[12px]"
+                              >
+                                <span className="text-ink truncate">
+                                  {a.name}
+                                  <span className="text-grey-35"> · {a.channel} · {stepCount} step{stepCount === 1 ? '' : 's'}</span>
+                                </span>
+                                {!a.isActive && (
+                                  <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 text-[10px]">paused</span>
+                                )}
+                              </a>
+                            </li>
+                          )
+                        })}
+                        {stageEntryAutomations.length > 4 && (
+                          <li className="text-[11px] text-grey-35 px-2">
+                            + {stageEntryAutomations.length - 4} more…
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                    {editorPipelineId && selectedStageId && (
+                      <a
+                        href={`/dashboard/automations?triggerType=stage_entered&pipelineId=${encodeURIComponent(editorPipelineId)}&stageId=${encodeURIComponent(selectedStageId)}`}
+                        className="mt-2 inline-block text-[11px] text-brand-700 hover:text-brand-900 underline-offset-2 hover:underline"
+                      >
+                        + Add automation →
+                      </a>
+                    )}
+                  </div>
+
+                  {/* Stale rule: stalled detector is workspace-wide today
+                      (Workspace.defaultStalledDays). Show the current value
+                      so the recruiter knows what threshold governs THIS
+                      stage; per-stage override stays a WipBadge until modeled. */}
+                  <div className="rounded-[12px] border border-surface-border p-4 bg-white">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-semibold text-[13px] text-ink">Stale rule</div>
+                      <WipBadge label="Per-stage override coming" />
+                    </div>
+                    <div className="text-[12px] text-grey-35 mb-2">
+                      Candidates with no progress for this many days flip to <strong>Stalled</strong>.
+                    </div>
+                    {!workspaceSettings ? (
+                      <div className="text-[12px] text-grey-40">Loading…</div>
+                    ) : (
+                      <div className="px-2 py-1.5 rounded-[8px] bg-surface-light text-[12px] text-ink">
+                        <strong className="tabular-nums">
+                          {workspaceSettings.defaultStalledDays ?? STALE_FALLBACK_DAYS}
+                        </strong>{' '}
+                        day{(workspaceSettings.defaultStalledDays ?? STALE_FALLBACK_DAYS) === 1 ? '' : 's'}
+                        {workspaceSettings.defaultStalledDays === null && (
+                          <span className="ml-1 text-grey-35">(workspace default)</span>
+                        )}
+                      </div>
+                    )}
+                    <Link
+                      href="/dashboard/candidates"
+                      className="mt-2 inline-block text-[11px] text-brand-700 hover:text-brand-900 underline-offset-2 hover:underline"
+                      title="Open the Statuses drawer from the kanban to edit the workspace stalled threshold"
+                    >
+                      Edit in Statuses drawer →
+                    </Link>
+                  </div>
+
+                  {/* Notifications: recruiter-bound sends inside the
+                      stage_entered automations above. We surface each step
+                      whose emailDestination or smsDestination is 'company' so
+                      the recruiter sees exactly who'll get pinged when
+                      candidates land here, and at what address
+                      (Workspace.senderEmail / Workspace.phone). */}
+                  <div className="rounded-[12px] border border-surface-border p-4 bg-white">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-semibold text-[13px] text-ink">
+                        Notifications
+                        {stageNotificationSteps.length > 0 && (
+                          <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-surface-light text-[10px] font-mono text-grey-15 tabular-nums">
+                            {stageNotificationSteps.length}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[12px] text-grey-35 mb-2">
+                      Recruiter-side pings when candidates enter this stage.
+                    </div>
+                    {automationsLoading ? (
+                      <div className="text-[12px] text-grey-40">Loading…</div>
+                    ) : stageNotificationSteps.length === 0 ? (
+                      <div className="text-[12px] text-grey-40">
+                        No recruiter notifications wired up.
+                        {!workspaceSettings?.senderEmail && (
+                          <span> Set a sender email in Workspace settings first.</span>
+                        )}
+                      </div>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {stageNotificationSteps.slice(0, 4).map((n, idx) => (
+                          <li
+                            key={`${n.ruleId}-${idx}`}
+                            className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-[8px] bg-surface-light text-[12px]"
+                          >
+                            <span className="text-ink truncate">
+                              {n.ruleName}
+                              <span className="text-grey-35"> · {n.channel} → {n.address}</span>
+                            </span>
+                          </li>
+                        ))}
+                        {stageNotificationSteps.length > 4 && (
+                          <li className="text-[11px] text-grey-35 px-2">
+                            + {stageNotificationSteps.length - 4} more…
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                    {editorPipelineId && selectedStageId && (
+                      <a
+                        href={`/dashboard/automations?triggerType=stage_entered&pipelineId=${encodeURIComponent(editorPipelineId)}&stageId=${encodeURIComponent(selectedStageId)}&emailDestination=company`}
+                        className="mt-2 inline-block text-[11px] text-brand-700 hover:text-brand-900 underline-offset-2 hover:underline"
+                      >
+                        + Add notification →
+                      </a>
+                    )}
+                  </div>
                 </div>
               </Card>
 
