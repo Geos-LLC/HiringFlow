@@ -1733,31 +1733,82 @@ export default function FlowBuilderPage() {
 
               <div className="border-t border-gray-100 my-1" />
 
-              {flow.steps.map((step) => (
-                <button
-                  key={step.id}
-                  onClick={() => setSelectedStepId(step.id)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                    selectedStepId === step.id
-                      ? 'bg-brand-50 text-brand-700 border border-brand-200'
-                      : 'hover:bg-gray-50 border border-transparent'
-                  }`}
-                >
-                  <div className="font-medium truncate">{step.title}</div>
-                  <div className="text-xs text-gray-500">
-                    {step.stepType === 'submission' ? (
-                      <span className="text-purple-600">Submission</span>
-                    ) : step.stepType === 'capture' ? (
-                      <span className="text-brand-600">Audio answer</span>
-                    ) : (
-                      <>
-                        {step.options.length} option{step.options.length !== 1 && 's'}
-                        {step.questionType === 'multiselect' && ' (multi)'}
-                      </>
-                    )}
-                  </div>
-                </button>
-              ))}
+              {(() => {
+                // Map step.id → 1-indexed display number, matching the schema view's
+                // step numbering. Steps come back from /api/flows/[id] sorted by
+                // stepOrder asc, so positional index is the displayed step number.
+                const stepNumberById = new Map<string, number>()
+                flow.steps.forEach((s, i) => stepNumberById.set(s.id, i + 1))
+                const targetLabel = (nextStepId: string | null | undefined): string => {
+                  if (!nextStepId) return '—'
+                  if (nextStepId === '__end__') return 'End'
+                  const n = stepNumberById.get(nextStepId)
+                  return n ? String(n) : '?'
+                }
+                const letterFor = (i: number) =>
+                  i < 26 ? String.fromCharCode(65 + i) : `#${i + 1}`
+
+                return flow.steps.map((step) => {
+                  // Next-card rows: question steps list each option (A/B/C…) with its
+                  // jump target; button-bearing steps (submission/info/form) show one
+                  // "Continue" row. We render the Continue row even if buttonConfig
+                  // is missing or enabled is unset — the Continue button is implicit
+                  // on those step types — so existing flows without an explicit
+                  // buttonConfig still surface a jump-to slot.
+                  const rows: { key: string; letter: string; target: string }[] = []
+                  if (step.stepType === 'question') {
+                    step.options.forEach((opt, i) => {
+                      rows.push({ key: opt.id, letter: letterFor(i), target: targetLabel(opt.nextStepId) })
+                    })
+                  } else if (step.stepType !== 'capture') {
+                    rows.push({ key: 'btn', letter: '→', target: targetLabel(step.buttonConfig?.nextStepId) })
+                  }
+
+                  return (
+                    <button
+                      key={step.id}
+                      onClick={() => setSelectedStepId(step.id)}
+                      className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                        selectedStepId === step.id
+                          ? 'bg-brand-50 text-brand-700 border border-brand-200'
+                          : 'hover:bg-gray-50 border border-transparent'
+                      }`}
+                    >
+                      <div className="font-medium truncate">{step.title}</div>
+                      <div className="text-xs text-gray-500">
+                        {step.stepType === 'submission' ? (
+                          <span className="text-purple-600">Submission</span>
+                        ) : step.stepType === 'capture' ? (
+                          <span className="text-brand-600">Audio answer</span>
+                        ) : (
+                          <>
+                            {step.options.length} option{step.options.length !== 1 && 's'}
+                            {step.questionType === 'multiselect' && ' (multi)'}
+                          </>
+                        )}
+                      </div>
+                      {rows.length > 0 && (
+                        <div className="mt-1.5 space-y-1">
+                          {rows.map((r) => (
+                            <div
+                              key={r.key}
+                              className="flex items-center gap-1.5 text-[11px] text-gray-600"
+                            >
+                              <span className="inline-flex items-center justify-center w-4 h-4 rounded-sm bg-purple-600 text-white text-[10px] font-semibold leading-none">
+                                {r.letter}
+                              </span>
+                              <span className="text-gray-400">jump to</span>
+                              <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-purple-600 text-white text-[10px] font-semibold leading-none">
+                                {r.target}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </button>
+                  )
+                })
+              })()}
 
               <div className="border-t border-gray-100 my-1" />
 
