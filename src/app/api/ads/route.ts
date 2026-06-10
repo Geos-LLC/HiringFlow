@@ -11,7 +11,11 @@ export async function GET() {
     where: { workspaceId: ws.workspaceId },
     orderBy: { createdAt: 'desc' },
     include: {
-      flow: { select: { id: true, name: true, slug: true, isPublished: true } },
+      // pipelineId is needed by the candidates page when arriving via
+      // ?adId=X — it auto-selects the ad's flow's pipeline so the kanban
+      // columns match the candidates actually being shown. Including it
+      // here is cheap (one column on the same row already in the join).
+      flow: { select: { id: true, name: true, slug: true, isPublished: true, pipelineId: true } },
       _count: { select: { sessions: true } },
     },
   })

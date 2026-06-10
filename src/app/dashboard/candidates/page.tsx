@@ -188,7 +188,7 @@ function CandidatesPageInner() {
   // can see exactly which candidates a single ad/campaign brought in. Picker
   // is populated from /api/ads on mount.
   const [adIdFilter, setAdIdFilter] = useState<string>(initialAdId)
-  const [adOptions, setAdOptions] = useState<Array<{ id: string; name: string; targetPosition: string | null; source: string }>>([])
+  const [adOptions, setAdOptions] = useState<Array<{ id: string; name: string; targetPosition: string | null; source: string; flow?: { id: string; pipelineId: string | null } }>>([])
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [flows, setFlows] = useState<Flow[]>([])
   const [stages, setStages] = useState<FunnelStage[]>(DEFAULT_FUNNEL_STAGES)
@@ -423,8 +423,21 @@ function CandidatesPageInner() {
     // position label for the optgroup; full payload would be wasteful here.
     fetch('/api/ads')
       .then((r) => r.ok ? r.json() : [])
-      .then((all: Array<{ id: string; name: string; targetPosition: string | null; source: string }>) => {
-        setAdOptions(Array.isArray(all) ? all : [])
+      .then((all: Array<{ id: string; name: string; targetPosition: string | null; source: string; flow?: { id: string; pipelineId: string | null } }>) => {
+        const list = Array.isArray(all) ? all : []
+        setAdOptions(list)
+        // When the recruiter arrived from a Campaigns ad row (or pasted a
+        // /candidates?adId=X link), the saved-localStorage pipeline filter
+        // is almost certainly wrong — they want the kanban scoped to THIS
+        // ad's flow's pipeline. Override to that pipeline once on first
+        // landing so the kanban columns match the candidates being shown.
+        // Skip if no adId in URL or if the ad's flow has no explicit
+        // pipeline (the workspace default handles that case).
+        if (initialAdId) {
+          const ad = list.find((a) => a.id === initialAdId)
+          const wantPipelineId = ad?.flow?.pipelineId
+          if (wantPipelineId) setSelectedPipelineId(wantPipelineId)
+        }
       })
       .catch(() => {})
     // Pull workspace settings for status / source customizations only. Stages
