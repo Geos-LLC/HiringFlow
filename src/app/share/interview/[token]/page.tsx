@@ -45,7 +45,23 @@ export default function SharedInterviewPage() {
   }, [token])
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-4 py-10">
+    <div className="min-h-screen flex flex-col items-center px-4 py-8" style={{ background: '#FAF8F5' }}>
+      {/* HireFunnel brand header — same mark + wordmark used on the marketing
+          navbar so external viewers see consistent identity. */}
+      <header className="w-full max-w-3xl flex items-center gap-2.5 mb-6">
+        <a href="https://www.hirefunnel.app" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2.5">
+          <div
+            className="w-8 h-8 rounded-[10px] flex items-center justify-center text-white font-bold text-[17px]"
+            style={{ background: 'var(--brand-primary)', boxShadow: 'var(--shadow-brand)' }}
+          >
+            h
+          </div>
+          <span className="text-[16px] font-semibold text-ink" style={{ letterSpacing: '-0.01em' }}>
+            HireFunnel
+          </span>
+        </a>
+      </header>
+
       <div className="bg-white rounded-[12px] border border-surface-border shadow-sm w-full max-w-3xl p-6">
         <h1 className="text-lg font-semibold text-grey-15 mb-1">Shared interview recording</h1>
         <p className="text-xs text-grey-40 mb-5">Sent to you by a HireFunnel recruiter.</p>
