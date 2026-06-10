@@ -58,12 +58,21 @@ export interface CandidateDrawerProps {
   onCandidateChanged: (patch: Partial<CandidateDrawerCandidate>) => void
 }
 
+interface DrawerMeetingArtifact {
+  id: string
+  kind: string
+  driveFileId: string
+  fileName: string | null
+  driveCreatedTime: string
+}
+
 interface DrawerMeeting {
   id: string
   scheduledStart: string
   recordingState: string
   driveRecordingFileId: string | null
   recallRecordingId: string | null
+  artifacts?: DrawerMeetingArtifact[]
 }
 
 interface DrawerCapture {
@@ -227,6 +236,28 @@ export function CandidateDrawer({
             label: 'Interview recording',
             subtitle: fmtDate(m.scheduledStart),
             url: `/api/interview-meetings/${m.id}/recording`,
+          })
+        }
+        // Extra artifacts — surfaces reschedule-orphans (prior Meet link
+        // recordings) and late-arriving Drive deliveries that didn't make
+        // it onto the meeting's primary recording slot. Mirrors the same
+        // filter the detail page's InterviewPanel uses.
+        const primaryRecallTag = m.recallRecordingId ? `recall:${m.recallRecordingId}` : null
+        const extras = (m.artifacts || []).filter((a) =>
+          a.kind === 'recording'
+          && a.driveFileId !== m.driveRecordingFileId
+          && a.driveFileId !== primaryRecallTag,
+        )
+        for (const a of extras) {
+          const isRecall = a.driveFileId.startsWith('recall:')
+          items.push({
+            id: `artifact:${a.id}`,
+            isVideo: true,
+            label: a.fileName || (isRecall ? 'Recall recording' : 'Drive recording'),
+            subtitle: fmtDate(a.driveCreatedTime),
+            url: isRecall
+              ? `/api/interview-meetings/${m.id}/recording`
+              : `https://drive.google.com/file/d/${a.driveFileId}/view`,
           })
         }
       }
