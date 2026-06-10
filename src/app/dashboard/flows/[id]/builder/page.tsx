@@ -840,6 +840,65 @@ export default function FlowBuilderPage() {
   // the server once the user pauses for 400ms so a series of drags doesn't
   // spam the API.
   const savePositionsTimerRef = useRef<NodeJS.Timeout | null>(null)
+  // Refs for each row in the editor-view Steps sidebar (keyed by step.id,
+  // plus '__start__' / '__end__'), so jump-to chips can scroll a hidden
+  // target into view.
+  const stepRowRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map())
+  const scrollStepIntoView = (id: string) => {
+    const el = stepRowRefs.current.get(id)
+    if (!el) return
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+
+  // Editor-view sidebar width — drag the divider between the Steps list and
+  // the Step Editor to resize. Persisted to localStorage so it survives a
+  // page reload. Clamped 180–560 so the editor pane keeps a sane min size.
+  const SIDEBAR_MIN = 180
+  const SIDEBAR_MAX = 560
+  const SIDEBAR_LS_KEY = 'hf:builder:sidebarWidth'
+  const [sidebarWidth, setSidebarWidth] = useState<number>(256)
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_LS_KEY)
+      if (!raw) return
+      const n = parseInt(raw, 10)
+      if (Number.isFinite(n)) {
+        setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, n)))
+      }
+    } catch {}
+  }, [])
+  const sidebarDragRef = useRef<{ startX: number; startW: number } | null>(null)
+  const onSidebarDragStart = (e: React.MouseEvent) => {
+    e.preventDefault()
+    sidebarDragRef.current = { startX: e.clientX, startW: sidebarWidth }
+    const onMove = (ev: MouseEvent) => {
+      if (!sidebarDragRef.current) return
+      const delta = ev.clientX - sidebarDragRef.current.startX
+      const next = Math.min(
+        SIDEBAR_MAX,
+        Math.max(SIDEBAR_MIN, sidebarDragRef.current.startW + delta),
+      )
+      setSidebarWidth(next)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      sidebarDragRef.current = null
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+  // Persist sidebarWidth on every change so the last value sticks across
+  // reloads without us having to re-read sidebarWidth inside the drag handler.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_LS_KEY, String(sidebarWidth))
+    } catch {}
+  }, [sidebarWidth])
   const savePositions = (positions: Record<string, { x: number; y: number }>) => {
     setFlow((f) => (f ? { ...f, canvasLayout: positions } : null))
     if (savePositionsTimerRef.current) clearTimeout(savePositionsTimerRef.current)
@@ -1708,9 +1767,12 @@ export default function FlowBuilderPage() {
           )}
         </div>
       ) : (
-        <div className="flex flex-1 gap-4 min-h-0">
+        <div className="flex flex-1 min-h-0">
           {/* Steps List */}
-          <div className="w-64 bg-white rounded-lg shadow p-4 flex flex-col">
+          <div
+            className="bg-white rounded-lg shadow p-4 flex flex-col flex-shrink-0"
+            style={{ width: sidebarWidth }}
+          >
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-gray-900">Steps</h2>
               <button onClick={addStep} className="text-brand-500 hover:text-brand-800 text-sm">
@@ -1720,6 +1782,7 @@ export default function FlowBuilderPage() {
             <div className="flex-1 overflow-y-auto space-y-2">
               {/* Start Screen */}
               <button
+                ref={(el) => { stepRowRefs.current.set('__start__', el) }}
                 onClick={() => setSelectedStepId('__start__')}
                 className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                   selectedStepId === '__start__'
@@ -1785,6 +1848,7 @@ export default function FlowBuilderPage() {
                   return (
                     <div key={step.id} className="space-y-1">
                       <button
+                        ref={(el) => { stepRowRefs.current.set(step.id, el) }}
                         onClick={() => setSelectedStepId(step.id)}
                         className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                           selectedStepId === step.id
@@ -1821,6 +1885,10 @@ export default function FlowBuilderPage() {
                             const onJump = () => {
                               if (!r.targetId) return
                               setSelectedStepId(r.targetId)
+                              // Defer the scroll until the row's `selected`
+                              // class has applied so the highlight is in view
+                              // along with the row itself.
+                              requestAnimationFrame(() => scrollStepIntoView(r.targetId!))
                             }
                             return (
                               <button
@@ -1855,6 +1923,7 @@ export default function FlowBuilderPage() {
 
               {/* End Screen */}
               <button
+                ref={(el) => { stepRowRefs.current.set('__end__', el) }}
                 onClick={() => setSelectedStepId('__end__')}
                 className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                   selectedStepId === '__end__'
@@ -1868,8 +1937,20 @@ export default function FlowBuilderPage() {
             </div>
           </div>
 
+          {/* Resize handle — drag to resize the Steps sidebar. The handle is
+              a thin 4px hit-area styled to look like a 1px divider; the wider
+              hit-area makes it easier to grab without a visual divider line
+              that competes with the gap. */}
+          <div
+            onMouseDown={onSidebarDragStart}
+            role="separator"
+            aria-orientation="vertical"
+            title="Drag to resize"
+            className="w-1 mx-1.5 cursor-col-resize bg-transparent hover:bg-brand-200 active:bg-brand-300 rounded transition-colors"
+          />
+
           {/* Step Editor */}
-          <div className="flex-1 bg-white rounded-lg shadow p-6 overflow-y-auto">
+          <div className="flex-1 bg-white rounded-lg shadow p-6 overflow-y-auto min-w-0">
             {selectedStepId === '__start__' ? (
               renderStartEditor()
             ) : selectedStepId === '__end__' ? (
