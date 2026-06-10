@@ -187,6 +187,54 @@ export async function GET(request: NextRequest) {
     where.AND = andClauses
   }
 
+  // Representative-session resolution — fixes the "candidate shows up
+  // on a stale older session" bug. Before this step, status/stage
+  // filters could surface an older session because the most recent one
+  // was filtered out (e.g. Katezack applied May 24 [active, Interview
+  // scheduled], no-showed her Jun 5 re-apply [lost, Rejected]: the
+  // Active filter dropped Jun 5 and the old May 24 leaked through).
+  //
+  // We now pick the most-recent session per (lower-cased, trimmed) email
+  // up front and constrain the main query to those ids. Sessions
+  // without an email stay individual since there's no way to merge
+  // them. The dedup pass below becomes a no-op but is kept for
+  // belt-and-suspenders on email casing edge cases.
+  //
+  // The repset query intentionally ignores everything but workspaceId +
+  // test-source exclusion so a recruiter's filter never changes which
+  // session represents the candidate. The status/stage/position
+  // filters apply ONLY to the representative.
+  const repsetWhere: Record<string, unknown> = {
+    workspaceId: ws.workspaceId,
+    AND: [excludeTestSessions()],
+  }
+  const allSessionsForRep = await prisma.session.findMany({
+    where: repsetWhere as any,
+    select: { id: true, candidateEmail: true, startedAt: true },
+    orderBy: { startedAt: 'desc' },
+  })
+  const repIds = new Set<string>()
+  const seenEmailForRep = new Set<string>()
+  for (const s of allSessionsForRep) {
+    if (!s.candidateEmail) {
+      repIds.add(s.id)
+      continue
+    }
+    const key = s.candidateEmail.toLowerCase().trim()
+    if (seenEmailForRep.has(key)) continue
+    seenEmailForRep.add(key)
+    repIds.add(s.id)
+  }
+  // Pin the main filter to representative ids. If the candidate's most
+  // recent session is filtered out by status/stage/etc., the candidate
+  // simply does not appear in the list — consistent across tabs.
+  const repIdsArr = Array.from(repIds)
+  if (where.AND && Array.isArray(where.AND)) {
+    (where.AND as Array<Record<string, unknown>>).push({ id: { in: repIdsArr } })
+  } else {
+    where.AND = [{ id: { in: repIdsArr } }]
+  }
+
   const now = new Date()
   const sessions = await prisma.session.findMany({
     where: where as any,
