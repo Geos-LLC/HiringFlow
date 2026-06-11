@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import fixWebmDuration from 'fix-webm-duration'
 
 interface VideoRecorderProps {
   onRecordComplete: (blob: Blob | null) => void
@@ -12,10 +13,13 @@ interface VideoRecorderProps {
 // — the server transcoder consumes them fine — but a plain `<video src={blobUrl}>`
 // element loads with `duration === Infinity`, can't seek, and shows "0:00".
 //
-// Workaround: load the blob URL directly, then on loadedmetadata if duration is
-// not finite, seek to a huge offset. The browser scans the stream to find the
-// real end, fires durationchange with a usable number, and we seek back to 0.
-// This is the canonical fix and works for both webm and mp4 MediaRecorder output.
+// Workaround for webm: patch the EBML Duration element in the blob bytes with
+// the wall-clock recording duration (fix-webm-duration). Browsers then read a
+// real duration on loadedmetadata and controls work normally.
+//
+// Workaround for mp4 (Safari): no patching needed — Safari's MediaRecorder
+// emits valid mp4 with correct moov duration. Chrome's mp4 output is broken
+// in a way the seek-hack can't recover, so we prefer webm when supported.
 export default function VideoRecorder({ onRecordComplete, recordedVideo }: VideoRecorderProps) {
   const liveVideoRef = useRef<HTMLVideoElement>(null)
   const playbackVideoRef = useRef<HTMLVideoElement>(null)
@@ -80,12 +84,15 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       })
       setStream(mediaStream)
 
+      // Prefer webm — Chrome's mp4 output has broken metadata that nothing
+      // client-side can repair. mp4 fallbacks are kept for Safari which only
+      // supports mp4 but emits a valid container.
       const candidates = [
-        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-        'video/mp4',
         'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,opus',
         'video/webm',
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4',
       ]
       const mimeType = candidates.find(c => MediaRecorder.isTypeSupported(c))
       const recorder = mimeType
@@ -97,21 +104,34 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         if (e.data.size > 0) chunks.push(e.data)
       }
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const blobType = recorder.mimeType || 'video/webm'
-        const blob = new Blob(chunks, { type: blobType })
+        const rawBlob = new Blob(chunks, { type: blobType })
         const durationMs = Date.now() - startedAtRef.current
 
         const snap = liveVideoRef.current ? captureSnapshot(liveVideoRef.current) : null
         setSnapshot(snap)
-        setRecordingMeta({ sizeBytes: blob.size, durationMs })
+
+        // Patch the EBML Duration field so <video> elements get a real number
+        // instead of Infinity. mp4 blobs (Safari) pass through unchanged.
+        let playableBlob = rawBlob
+        if (/webm/i.test(blobType)) {
+          try {
+            playableBlob = await fixWebmDuration(rawBlob, durationMs, { logger: false })
+            console.log('[VideoRecorder] webm duration patched', { durationMs })
+          } catch (err) {
+            console.warn('[VideoRecorder] webm duration patch failed, using raw blob', err)
+          }
+        }
+
+        setRecordingMeta({ sizeBytes: playableBlob.size, durationMs })
 
         durationRepairedRef.current = false
-        const blobUrl = URL.createObjectURL(blob)
-        console.log('[VideoRecorder] playback ready', { type: blobType, size: blob.size })
+        const blobUrl = URL.createObjectURL(playableBlob)
+        console.log('[VideoRecorder] playback ready', { type: blobType, size: playableBlob.size })
         setPlaybackSrc(blobUrl)
 
-        onRecordComplete(blob)
+        onRecordComplete(playableBlob)
 
         mediaStream.getTracks().forEach(track => track.stop())
         setStream(null)
