@@ -43,11 +43,16 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       if (stream) {
         stream.getTracks().forEach(track => track.stop())
       }
+    }
+  }, [stream])
+
+  useEffect(() => {
+    return () => {
       if (playbackSrc) {
         URL.revokeObjectURL(playbackSrc)
       }
     }
-  }, [stream, playbackSrc])
+  }, [playbackSrc])
 
   useEffect(() => {
     if (stream && liveVideoRef.current) {
@@ -73,12 +78,12 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     }
   }
 
-  // Returns a MediaSource objectURL *synchronously*. The URL must be attached
-  // to a <video> element (via the playbackSrc state) for `sourceopen` to fire
-  // — only then does the chunk-feeding loop run. If we awaited sourceopen
-  // before returning, we'd deadlock: the source never opens because no element
-  // is attached, and no element attaches because we haven't returned the URL.
-  const createMsePlaybackUrl = (chunks: Blob[], mime: string, durationSec: number): string | null => {
+  // Buffers all MediaRecorder chunks into a MediaSource via an offscreen
+  // <video> element (needed to trigger `sourceopen`), sets the real duration,
+  // calls endOfStream, and only then returns the URL. By the time the visible
+  // player attaches this URL, the stream is fully buffered and the element
+  // reads correct duration/dimensions on loadedmetadata.
+  const buildBufferedMseUrl = async (chunks: Blob[], mime: string, durationSec: number): Promise<string | null> => {
     if (typeof MediaSource === 'undefined') {
       console.log('[VideoRecorder] MediaSource API not available')
       return null
@@ -90,59 +95,90 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
     const ms = new MediaSource()
     const url = URL.createObjectURL(ms)
+    console.log('[VideoRecorder] MS created', { readyState: ms.readyState })
 
-    ms.addEventListener('sourceopen', async () => {
-      console.log('[VideoRecorder] MSE sourceopen, feeding chunks', { count: chunks.length })
-      try {
-        const sb = ms.addSourceBuffer(mime)
-        sb.mode = 'sequence'
+    // Attach to a detached video element — MediaSource only fires sourceopen
+    // when its objectURL is loaded by a media element. The element doesn't
+    // need to be in the DOM, just have its src set.
+    const trigger = document.createElement('video')
+    trigger.muted = true
+    trigger.preload = 'auto'
+    trigger.src = url
 
-        for (let i = 0; i < chunks.length; i++) {
-          const buf = await chunks[i].arrayBuffer()
-          await new Promise<void>((resolveAppend, rejectAppend) => {
-            const onEnd = () => {
-              sb.removeEventListener('updateend', onEnd)
-              sb.removeEventListener('error', onErr)
-              resolveAppend()
-            }
-            const onErr = () => {
-              sb.removeEventListener('updateend', onEnd)
-              sb.removeEventListener('error', onErr)
-              rejectAppend(new Error('SourceBuffer error'))
-            }
-            sb.addEventListener('updateend', onEnd)
-            sb.addEventListener('error', onErr)
-            try {
-              sb.appendBuffer(buf)
-            } catch (err) {
-              sb.removeEventListener('updateend', onEnd)
-              sb.removeEventListener('error', onErr)
-              rejectAppend(err as Error)
-            }
-          })
-        }
+    const opened = await new Promise<boolean>((resolve) => {
+      const timeout = window.setTimeout(() => {
+        console.warn('[VideoRecorder] sourceopen timed out')
+        resolve(false)
+      }, 8000)
+      ms.addEventListener('sourceopen', () => {
+        clearTimeout(timeout)
+        resolve(true)
+      }, { once: true })
+      ms.addEventListener('error', () => {
+        clearTimeout(timeout)
+        console.error('[VideoRecorder] MediaSource error before open')
+        resolve(false)
+      }, { once: true })
+    })
 
-        if (durationSec > 0 && Number.isFinite(durationSec)) {
-          try { ms.duration = durationSec } catch (err) {
-            console.warn('[VideoRecorder] could not set MS duration', err)
+    if (!opened) {
+      URL.revokeObjectURL(url)
+      return null
+    }
+
+    console.log('[VideoRecorder] MSE sourceopen, feeding chunks', { count: chunks.length })
+
+    try {
+      const sb = ms.addSourceBuffer(mime)
+      sb.mode = 'sequence'
+
+      for (let i = 0; i < chunks.length; i++) {
+        const buf = await chunks[i].arrayBuffer()
+        await new Promise<void>((resolveAppend, rejectAppend) => {
+          const onEnd = () => {
+            sb.removeEventListener('updateend', onEnd)
+            sb.removeEventListener('error', onErr)
+            resolveAppend()
           }
-        }
-
-        if (ms.readyState === 'open') {
-          try { ms.endOfStream() } catch {}
-        }
-
-        console.log('[VideoRecorder] MSE feed complete', { duration: ms.duration })
-      } catch (err) {
-        console.error('[VideoRecorder] MSE feed failed', err)
+          const onErr = () => {
+            sb.removeEventListener('updateend', onEnd)
+            sb.removeEventListener('error', onErr)
+            rejectAppend(new Error('SourceBuffer error during append'))
+          }
+          sb.addEventListener('updateend', onEnd)
+          sb.addEventListener('error', onErr)
+          try {
+            sb.appendBuffer(buf)
+          } catch (err) {
+            sb.removeEventListener('updateend', onEnd)
+            sb.removeEventListener('error', onErr)
+            rejectAppend(err as Error)
+          }
+        })
       }
-    }, { once: true })
 
-    ms.addEventListener('error', () => {
-      console.error('[VideoRecorder] MediaSource error event')
-    }, { once: true })
+      if (durationSec > 0 && Number.isFinite(durationSec)) {
+        try { ms.duration = durationSec } catch (err) {
+          console.warn('[VideoRecorder] could not set MS duration', err)
+        }
+      }
 
-    return url
+      if (ms.readyState === 'open') {
+        try { ms.endOfStream() } catch {}
+      }
+
+      console.log('[VideoRecorder] MSE feed complete', { duration: ms.duration, bufferedRanges: sb.buffered.length })
+      return url
+    } catch (err) {
+      console.error('[VideoRecorder] MSE feed failed', err)
+      URL.revokeObjectURL(url)
+      return null
+    } finally {
+      // Detach the trigger so it can be GC'd. Do NOT revoke the URL — the
+      // real playback element still needs it.
+      trigger.src = ''
+      trigger.load()
+    }
   }
 
   const startRecording = async () => {
@@ -203,9 +239,9 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
         setRecordingMeta({ sizeBytes: fileBlob.size, durationMs })
 
-        const mseUrl = createMsePlaybackUrl(recordedChunks, blobType, durationMs / 1000)
+        const mseUrl = await buildBufferedMseUrl(recordedChunks, blobType, durationMs / 1000)
         if (mseUrl) {
-          console.log('[VideoRecorder] MSE playback URL ready', { type: blobType, chunks: recordedChunks.length, durationMs })
+          console.log('[VideoRecorder] MSE playback URL ready (buffered)', { type: blobType, chunks: recordedChunks.length, durationMs })
           setPlaybackSrc(mseUrl)
         } else {
           console.log('[VideoRecorder] MSE unavailable, falling back to snapshot only')
