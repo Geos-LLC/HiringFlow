@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import fixWebmDuration from 'fix-webm-duration'
 
 interface VideoRecorderProps {
   onRecordComplete: (blob: Blob | null) => void
@@ -55,14 +56,17 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       })
       setStream(mediaStream)
 
-      // Pick the best mimeType the platform supports. Safari/iOS rejects webm
-      // and only records mp4 (h264/aac); Chrome/Firefox prefer webm/vp9.
+      // Pick the best mimeType the platform supports. Prefer mp4 first
+      // because Chrome's MediaRecorder webm output ships with duration:
+      // Infinity which makes the preview unplayable. mp4 has no such bug.
+      // Safari/iOS only does mp4 anyway. Fall back to webm if mp4 isn't
+      // available (older Chrome / Firefox) and patch duration after stop.
       const candidates = [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4',
         'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,opus',
         'video/webm',
-        'video/mp4;codecs=h264,aac',
-        'video/mp4',
       ]
       const mimeType = candidates.find((t) =>
         typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)
@@ -71,14 +75,22 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         ? new MediaRecorder(mediaStream, { mimeType })
         : new MediaRecorder(mediaStream)
       const chunks: Blob[] = []
+      const startedAt = Date.now()
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data)
       }
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const blobType = recorder.mimeType || 'video/webm'
-        const blob = new Blob(chunks, { type: blobType })
+        let blob = new Blob(chunks, { type: blobType })
+        // For webm only: patch the EBML Duration header so the preview can
+        // play/seek. mp4 output is already correct.
+        if (blobType.includes('webm')) {
+          try {
+            blob = await fixWebmDuration(blob, Date.now() - startedAt)
+          } catch {}
+        }
         const url = URL.createObjectURL(blob)
         setPreviewUrl(url)
         onRecordComplete(blob)
@@ -90,8 +102,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
       mediaRecorderRef.current = recorder
       // Emit chunks every second so the resulting blob has usable timing
-      // metadata; without a timeslice, MediaRecorder produces a single chunk
-      // with duration: Infinity and the preview can't play or seek.
+      // metadata.
       recorder.start(1000)
       setIsRecording(true)
     } catch (err) {
@@ -123,7 +134,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
             src={previewUrl}
             controls
             playsInline
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain bg-black"
             onLoadedMetadata={(e) => {
               // Workaround for Chrome's MediaRecorder webm output: when
               // duration comes back as Infinity, seeking to a huge time and
