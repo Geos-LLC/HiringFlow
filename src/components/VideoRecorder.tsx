@@ -8,42 +8,43 @@ interface VideoRecorderProps {
 }
 
 // Chrome's MediaRecorder writes broken container metadata (duration: Infinity,
-// videoWidth/Height: 2) into both webm and mp4 output regardless of codec,
-// timeslice, or seek workarounds. The video bytes themselves are fine — the
-// server transcoder unbreaks them on upload — but the in-browser <video>
-// element refuses to play the unrepaired blob.
+// videoWidth/Height: 2) into the produced blob. The bytes themselves are valid
+// — the server transcoder consumes them fine — but a plain
+// `<video src={blobUrl}>` element refuses to play it.
 //
-// So instead of trying to play the broken blob back to the user, we:
-//   1) Capture a snapshot of the live stream's last visible frame to a canvas
-//      right before stop, and show that as a thumbnail.
-//   2) Show wall-clock duration + file size so the user can confirm a real
-//      recording actually happened.
-//   3) Hand the blob to onRecordComplete unchanged — the transcoder handles
-//      the metadata fix server-side, same as a regular file upload.
+// Workaround: feed the recorded chunks back via MediaSource Extensions. MSE
+// handles fragmented mp4/webm input natively (that's how live video streams
+// work) and gets correct dimensions from the init segment instead of the
+// broken global container metadata. If MSE setup fails (older browser /
+// codec mismatch), we fall back to a snapshot-based review UI.
 export default function VideoRecorder({ onRecordComplete, recordedVideo }: VideoRecorderProps) {
   const liveVideoRef = useRef<HTMLVideoElement>(null)
+  const playbackVideoRef = useRef<HTMLVideoElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  // Guards against the click handler firing twice (double-click / accessibility
-  // re-fire). Without this, two MediaRecorders race on the same MediaStream
-  // and each produces a half-broken recording.
+  // Guards against the click handler firing twice. Two parallel MediaRecorders
+  // on the same MediaStream each produce a broken half-recording.
   const startingRef = useRef(false)
   const startedAtRef = useRef<number>(0)
+  const chunksRef = useRef<Blob[]>([])
+  const mimeTypeRef = useRef<string>('')
   const [isRecording, setIsRecording] = useState(false)
   const [stream, setStream] = useState<MediaStream | null>(null)
+  const [playbackSrc, setPlaybackSrc] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<string | null>(null)
   const [recordingMeta, setRecordingMeta] = useState<{ sizeBytes: number; durationMs: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (stream) {
         stream.getTracks().forEach(track => track.stop())
       }
+      if (playbackSrc) {
+        URL.revokeObjectURL(playbackSrc)
+      }
     }
-  }, [stream])
+  }, [stream, playbackSrc])
 
-  // Attach the live stream to the <video> element after it mounts.
   useEffect(() => {
     if (stream && liveVideoRef.current) {
       liveVideoRef.current.srcObject = stream
@@ -51,7 +52,6 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     }
   }, [stream])
 
-  // Capture a snapshot from a live <video> element to a data URL.
   const captureSnapshot = (videoEl: HTMLVideoElement): string | null => {
     const w = videoEl.videoWidth
     const h = videoEl.videoHeight
@@ -69,6 +69,39 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     }
   }
 
+  // Feed the recorded chunks back through MediaSource so the <video> element
+  // gets correct dimensions/timing from the init segment instead of the
+  // broken global container metadata.
+  const setupMsePlayback = (chunks: Blob[], mime: string): string | null => {
+    try {
+      if (typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported(mime)) {
+        console.log('[VideoRecorder] MSE not supported for', mime)
+        return null
+      }
+      const ms = new MediaSource()
+      const url = URL.createObjectURL(ms)
+      ms.addEventListener('sourceopen', async () => {
+        try {
+          const sb = ms.addSourceBuffer(mime)
+          const merged = new Blob(chunks, { type: mime })
+          const buf = await merged.arrayBuffer()
+          sb.addEventListener('updateend', () => {
+            if (ms.readyState === 'open') {
+              try { ms.endOfStream() } catch {}
+            }
+          })
+          sb.appendBuffer(buf)
+        } catch (err) {
+          console.error('[VideoRecorder] MSE append failed', err)
+        }
+      })
+      return url
+    } catch (err) {
+      console.error('[VideoRecorder] MSE setup failed', err)
+      return null
+    }
+  }
+
   const startRecording = async () => {
     if (startingRef.current || isRecording || mediaRecorderRef.current?.state === 'recording') {
       return
@@ -82,8 +115,6 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       })
       setStream(mediaStream)
 
-      // Pick best supported codec. mp4 first (closer to what the transcoder
-      // expects as input on Safari/iOS), webm fallback.
       const candidates = [
         'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
         'video/mp4',
@@ -106,10 +137,22 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         const blob = new Blob(chunks, { type: blobType })
         const durationMs = Date.now() - startedAtRef.current
 
-        // Snapshot the last visible frame BEFORE we tear the stream down.
+        chunksRef.current = chunks
+        mimeTypeRef.current = blobType
+
         const snap = liveVideoRef.current ? captureSnapshot(liveVideoRef.current) : null
         setSnapshot(snap)
         setRecordingMeta({ sizeBytes: blob.size, durationMs })
+
+        // Attempt MSE playback. If unsupported, the UI falls back to snapshot.
+        const mseUrl = setupMsePlayback(chunks, blobType)
+        if (mseUrl) {
+          console.log('[VideoRecorder] using MSE playback')
+          setPlaybackSrc(mseUrl)
+        } else {
+          console.log('[VideoRecorder] MSE unavailable, falling back to snapshot only')
+        }
+
         onRecordComplete(blob)
 
         mediaStream.getTracks().forEach(track => track.stop())
@@ -136,18 +179,24 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   }
 
   const resetRecording = () => {
+    if (playbackSrc) {
+      URL.revokeObjectURL(playbackSrc)
+    }
+    setPlaybackSrc(null)
     setSnapshot(null)
     setRecordingMeta(null)
+    chunksRef.current = []
     onRecordComplete(null)
   }
 
-  // External reset — parent cleared recordedVideo.
   useEffect(() => {
-    if (!recordedVideo && (snapshot || recordingMeta)) {
+    if (!recordedVideo && (snapshot || recordingMeta || playbackSrc)) {
+      if (playbackSrc) URL.revokeObjectURL(playbackSrc)
+      setPlaybackSrc(null)
       setSnapshot(null)
       setRecordingMeta(null)
     }
-  }, [recordedVideo, snapshot, recordingMeta])
+  }, [recordedVideo, snapshot, recordingMeta, playbackSrc])
 
   const formatDuration = (ms: number) => {
     const totalSec = Math.max(0, Math.round(ms / 1000))
@@ -167,7 +216,23 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   return (
     <div className="space-y-3">
       <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden relative">
-        {inReviewState ? (
+        {inReviewState && playbackSrc ? (
+          <video
+            ref={playbackVideoRef}
+            src={playbackSrc}
+            controls
+            playsInline
+            className="w-full h-full object-contain bg-black"
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget
+              console.log('[VideoRecorder] MSE playback loadedmetadata', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight })
+            }}
+            onError={(e) => {
+              const v = e.currentTarget
+              console.error('[VideoRecorder] MSE playback error', { code: v.error?.code, message: v.error?.message })
+            }}
+          />
+        ) : inReviewState ? (
           <div className="w-full h-full relative bg-black">
             {snapshot ? (
               <img src={snapshot} alt="Recording snapshot" className="w-full h-full object-cover" />
@@ -219,13 +284,6 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         <div className="text-red-600 text-sm bg-red-50 px-3 py-2 rounded-md">
           {error}
         </div>
-      )}
-
-      {inReviewState && (
-        <p className="text-xs text-gray-500">
-          In-browser playback isn&apos;t supported for fresh recordings — the file will play normally
-          once uploaded.
-        </p>
       )}
 
       <div className="flex gap-2">
