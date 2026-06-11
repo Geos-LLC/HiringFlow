@@ -51,11 +51,14 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       setError(null)
       console.log('[VideoRecorder] startRecording: requesting getUserMedia')
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true,
       })
+      const videoTrack = mediaStream.getVideoTracks()[0]
       console.log('[VideoRecorder] got stream', {
         tracks: mediaStream.getTracks().map(t => ({ kind: t.kind, label: t.label, enabled: t.enabled, readyState: t.readyState })),
+        videoSettings: videoTrack?.getSettings(),
+        videoConstraints: videoTrack?.getConstraints(),
       })
       setStream(mediaStream)
 
@@ -104,8 +107,11 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       }
 
       mediaRecorderRef.current = recorder
-      recorder.start()
-      console.log('[VideoRecorder] recorder.start() called', { state: recorder.state })
+      // 1s timeslice forces chunks to be emitted with proper timing data.
+      // Without this, the container header lands with duration=Infinity and
+      // dimensions=2x2 placeholder values.
+      recorder.start(1000)
+      console.log('[VideoRecorder] recorder.start(1000) called', { state: recorder.state })
       setIsRecording(true)
     } catch (err) {
       console.error('[VideoRecorder] Failed to start recording', err)
@@ -139,6 +145,20 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
             onLoadedMetadata={(e) => {
               const v = e.currentTarget
               console.log('[VideoRecorder] playback loadedmetadata', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight, readyState: v.readyState })
+              // Force the browser to re-scan the file by seeking to a huge
+              // time then back. After this, duration and dimensions become
+              // valid for MediaRecorder output that started with a bogus
+              // container header.
+              if (!isFinite(v.duration) || v.videoWidth < 16) {
+                console.log('[VideoRecorder] applying seek-back metadata fix')
+                const onSeeked = () => {
+                  v.removeEventListener('seeked', onSeeked)
+                  v.currentTime = 0
+                  console.log('[VideoRecorder] after seek-back', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight })
+                }
+                v.addEventListener('seeked', onSeeked)
+                v.currentTime = 1e101
+              }
             }}
             onCanPlay={(e) => {
               const v = e.currentTarget
