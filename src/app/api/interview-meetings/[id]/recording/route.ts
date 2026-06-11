@@ -48,11 +48,20 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
   if (!authorized) return new Response('Unauthorized', { status: 401 })
 
+  // Parallel-testing escape hatch: `?source=drive` forces the Meet/Drive path
+  // even when a Recall recording is present, so the UI can render Recall +
+  // Meet side-by-side to verify Meet auto-record is reliable before we
+  // strip Recall recording. `?source=recall` is the explicit form of the
+  // default behavior (kept for symmetry).
+  const sourceParam = request.nextUrl.searchParams.get('source')
+  const preferDrive = sourceParam === 'drive' && !!meeting.driveRecordingFileId
+  const useRecall = hasRecall && !preferDrive
+
   // Recall path: fetch a fresh presigned download URL from the Recall API
   // (their URLs have a 15-min TTL so we can't cache them) and 302-redirect
   // the browser to it. <video src> follows the redirect and streams the
   // file directly from Recall's CDN — no bandwidth on our function.
-  if (hasRecall) {
+  if (useRecall) {
     try {
       const { getBot } = await import('@/lib/recall/client')
       // Look up the bot to get the recording's media_shortcuts. We don't

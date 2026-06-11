@@ -304,38 +304,58 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                 </div>
 
                 {m.recordingState === 'ready' && (m.driveRecordingFileId || m.recallRecordingId) && (
-                  <div className="mt-2">
-                    <video
-                      controls
-                      className="w-full rounded-[6px] border border-surface-border"
-                      src={`/api/interview-meetings/${m.id}/recording`}
-                    />
-                    <div className="flex items-center gap-3 mt-1">
-                      <a href={`/api/interview-meetings/${m.id}/recording?download=1`} className="text-xs text-primary hover:underline">
-                        Download recording
-                      </a>
-                      {m.driveRecordingFileId && (
-                        <>
-                          <span className="text-grey-40 text-xs">·</span>
-                          <a
-                            href={`https://drive.google.com/file/d/${m.driveRecordingFileId}/view`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs text-primary hover:underline"
-                          >
-                            Open in Drive
-                          </a>
-                        </>
+                  <div className="mt-2 space-y-3">
+                    {/* Primary player: Recall when present, Drive otherwise. */}
+                    <div>
+                      {m.recallRecordingId && m.driveRecordingFileId && (
+                        <div className="text-[10px] uppercase tracking-wide text-grey-40 mb-1">Recall recording</div>
                       )}
-                      <span className="text-grey-40 text-xs">·</span>
-                      <button
-                        onClick={() => removeRecording(m.id)}
-                        disabled={removingRecording === m.id}
-                        className="text-xs text-red-600 hover:underline disabled:opacity-50"
-                      >
-                        {removingRecording === m.id ? 'Removing…' : 'Remove recording'}
-                      </button>
+                      <video
+                        controls
+                        className="w-full rounded-[6px] border border-surface-border"
+                        src={`/api/interview-meetings/${m.id}/recording`}
+                      />
+                      <div className="flex items-center gap-3 mt-1">
+                        <a href={`/api/interview-meetings/${m.id}/recording?download=1`} className="text-xs text-primary hover:underline">
+                          Download recording
+                        </a>
+                        {m.driveRecordingFileId && (
+                          <>
+                            <span className="text-grey-40 text-xs">·</span>
+                            <a
+                              href={`https://drive.google.com/file/d/${m.driveRecordingFileId}/view`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-primary hover:underline"
+                            >
+                              Open in Drive
+                            </a>
+                          </>
+                        )}
+                        <span className="text-grey-40 text-xs">·</span>
+                        <button
+                          onClick={() => removeRecording(m.id)}
+                          disabled={removingRecording === m.id}
+                          className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                        >
+                          {removingRecording === m.id ? 'Removing…' : 'Remove recording'}
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Parallel test: Meet's native recording, when both exist,
+                        so we can verify Drive reliability before retiring the
+                        Recall recording path. */}
+                    {m.recallRecordingId && m.driveRecordingFileId && (
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wide text-grey-40 mb-1">Google Meet recording (parallel)</div>
+                        <video
+                          controls
+                          className="w-full rounded-[6px] border border-surface-border"
+                          src={`/api/interview-meetings/${m.id}/recording?source=drive`}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
                 {(() => {
