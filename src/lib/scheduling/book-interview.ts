@@ -39,6 +39,7 @@ import { fireMeetingScheduledAutomations } from '../automation'
 import { emitAutomationEvent, eventKeys } from '../automation-emit'
 import { scheduleBot, RecallApiError } from '../recall/client'
 import { logger } from '../logger'
+import { notifyRecallOutOfCredits } from '../alerts/recall-credits'
 import { sendMeetingConfirmation } from './meeting-confirmation'
 
 export type BookingSource = 'operator' | 'public'
@@ -289,7 +290,7 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   // the booking itself never breaks.
   const workspace = await prisma.workspace.findUnique({
     where: { id: workspaceId },
-    select: { recallBotEnabled: true },
+    select: { recallBotEnabled: true, name: true },
   })
   if (workspace?.recallBotEnabled && process.env.RECALL_API_KEY) {
     try {
@@ -327,6 +328,15 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
         // project_recall_credit_balance_zero).
         recallOutOfCredits: status === 402,
       })
+      if (status === 402) {
+        await notifyRecallOutOfCredits({
+          workspaceId,
+          workspaceName: workspace.name,
+          meetingUri: space.meetingUri,
+          interviewMeetingId: meeting.id,
+          recallDetail: detail,
+        })
+      }
       warnings.push('Recording bot could not be scheduled — meeting will use Google Meet recording as a fallback.')
     }
   }
