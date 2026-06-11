@@ -89,7 +89,10 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       }
 
       mediaRecorderRef.current = recorder
-      recorder.start()
+      // Emit chunks every second so the resulting blob has usable timing
+      // metadata; without a timeslice, MediaRecorder produces a single chunk
+      // with duration: Infinity and the preview can't play or seek.
+      recorder.start(1000)
       setIsRecording(true)
     } catch (err) {
       console.error('Failed to start recording:', err)
@@ -119,7 +122,23 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
           <video
             src={previewUrl}
             controls
+            playsInline
             className="w-full h-full object-cover"
+            onLoadedMetadata={(e) => {
+              // Workaround for Chrome's MediaRecorder webm output: when
+              // duration comes back as Infinity, seeking to a huge time and
+              // back to 0 forces the browser to recompute it from chunks so
+              // the controls become usable.
+              const v = e.currentTarget
+              if (!isFinite(v.duration)) {
+                v.currentTime = 1e101
+                const reset = () => {
+                  v.currentTime = 0
+                  v.removeEventListener('timeupdate', reset)
+                }
+                v.addEventListener('timeupdate', reset)
+              }
+            }}
           />
         ) : stream ? (
           <video
