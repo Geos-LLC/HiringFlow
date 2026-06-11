@@ -429,12 +429,14 @@ export default function FlowBuilderPage() {
   // then dispatches the new videoId to whichever surface opened the modal.
   const handleRecordedVideo = async (file: File) => {
     const target = recorderTarget
+    console.log('[builder] handleRecordedVideo', { target, name: file.name, size: file.size, type: file.type })
     setRecorderTarget(null)
     if (!target) return
     setUploadingStepVideo(true)
     setStepVideoProgress(5)
     try {
       const result = await startUpload(file, 'interview')
+      console.log('[builder] startUpload result', result)
       setStepVideoProgress(100)
       if (!result.videoId) return
       setVideos(prev => [{ id: result.videoId, filename: result.filename, url: '', displayName: null }, ...prev])
@@ -445,7 +447,9 @@ export default function FlowBuilderPage() {
       } else if (target.kind === 'edit') {
         updateStep(target.stepId, { videoId: result.videoId })
       }
-    } catch {}
+    } catch (err) {
+      console.error('[builder] handleRecordedVideo error', err)
+    }
     setUploadingStepVideo(false)
   }
 

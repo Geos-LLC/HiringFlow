@@ -19,6 +19,7 @@ export async function POST(request: NextRequest) {
   const mimeType = (body.mimeType || 'video/mp4').toString()
   const sizeBytes = Number.isFinite(body.sizeBytes) ? Number(body.sizeBytes) : 0
   const kind = body.kind === 'interview' ? 'interview' : 'training'
+  console.log('[upload-init]', { workspaceId: ws.workspaceId, filename, mimeType, sizeBytes, kind })
 
   const videoId = randomUUID()
   const stagingKey = stagingKeyForVideo(videoId, filename)

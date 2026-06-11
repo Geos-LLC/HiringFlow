@@ -49,24 +49,39 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   const startRecording = async () => {
     try {
       setError(null)
+      console.log('[VideoRecorder] startRecording: requesting getUserMedia')
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true
       })
+      console.log('[VideoRecorder] got stream', {
+        tracks: mediaStream.getTracks().map(t => ({ kind: t.kind, label: t.label, enabled: t.enabled, readyState: t.readyState })),
+      })
       setStream(mediaStream)
 
+      const isWebmVp9 = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      console.log('[VideoRecorder] codec support', { 'webm/vp9,opus': isWebmVp9, 'webm': MediaRecorder.isTypeSupported('video/webm'), 'mp4': MediaRecorder.isTypeSupported('video/mp4') })
       const recorder = new MediaRecorder(mediaStream, {
         mimeType: 'video/webm;codecs=vp9,opus'
       })
+      console.log('[VideoRecorder] recorder created', { mimeType: recorder.mimeType, state: recorder.state })
       const chunks: Blob[] = []
 
       recorder.ondataavailable = (e) => {
+        console.log('[VideoRecorder] ondataavailable', { size: e.data.size, type: e.data.type })
         if (e.data.size > 0) chunks.push(e.data)
       }
 
+      recorder.onerror = (e) => {
+        console.error('[VideoRecorder] recorder error', e)
+      }
+
       recorder.onstop = () => {
+        console.log('[VideoRecorder] onstop', { chunkCount: chunks.length, totalSize: chunks.reduce((a, c) => a + c.size, 0) })
         const blob = new Blob(chunks, { type: 'video/webm' })
+        console.log('[VideoRecorder] blob ready', { size: blob.size, type: blob.type })
         const url = URL.createObjectURL(blob)
+        console.log('[VideoRecorder] objectURL', url)
         setPreviewUrl(url)
         onRecordComplete(blob)
 
@@ -77,9 +92,10 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
       mediaRecorderRef.current = recorder
       recorder.start()
+      console.log('[VideoRecorder] recorder.start() called', { state: recorder.state })
       setIsRecording(true)
     } catch (err) {
-      console.error('Failed to start recording:', err)
+      console.error('[VideoRecorder] Failed to start recording', err)
       setError('Could not access camera/microphone. Please check permissions.')
     }
   }
@@ -107,6 +123,20 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
             src={previewUrl}
             controls
             className="w-full h-full object-cover"
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget
+              console.log('[VideoRecorder] playback loadedmetadata', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight, readyState: v.readyState })
+            }}
+            onCanPlay={(e) => {
+              const v = e.currentTarget
+              console.log('[VideoRecorder] playback canplay', { duration: v.duration, readyState: v.readyState })
+            }}
+            onError={(e) => {
+              const v = e.currentTarget
+              console.error('[VideoRecorder] playback error', { error: v.error, code: v.error?.code, message: v.error?.message })
+            }}
+            onPlay={() => console.log('[VideoRecorder] playback play')}
+            onPause={() => console.log('[VideoRecorder] playback pause')}
           />
         ) : stream ? (
           <video

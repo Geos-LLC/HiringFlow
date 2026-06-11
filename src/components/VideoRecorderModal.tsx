@@ -30,6 +30,7 @@ export default function VideoRecorderModal({
     if (!recorded) return
     const ext = recorded.type.includes('mp4') ? 'mp4' : 'webm'
     const file = new File([recorded], `${filenameStem}.${ext}`, { type: recorded.type })
+    console.log('[VideoRecorderModal] handleUse → onAccept', { name: file.name, size: file.size, type: file.type })
     onAccept(file)
     setRecorded(null)
   }, [recorded, filenameStem, onAccept])
