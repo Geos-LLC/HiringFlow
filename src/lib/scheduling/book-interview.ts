@@ -38,6 +38,7 @@ import { logSchedulingEvent, updatePipelineStatus } from '../scheduling'
 import { fireMeetingScheduledAutomations } from '../automation'
 import { emitAutomationEvent, eventKeys } from '../automation-emit'
 import { scheduleBot, RecallApiError } from '../recall/client'
+import { logger } from '../logger'
 import { sendMeetingConfirmation } from './meeting-confirmation'
 
 export type BookingSource = 'operator' | 'public'
@@ -312,10 +313,20 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
         },
       })
     } catch (err) {
-      const msg = err instanceof RecallApiError
-        ? `Recall ${err.status}: ${err.message}`
-        : (err as Error).message
-      console.error('[bookInterview] recall scheduleBot failed:', msg)
+      const status = err instanceof RecallApiError ? err.status : 0
+      const detail = err instanceof RecallApiError ? err.message : (err as Error).message
+      logger.error('recall scheduleBot failed — meeting will fall back to Meet auto-record', {
+        workspaceId,
+        sessionId: session.id,
+        interviewMeetingId: meeting.id,
+        meetingUri: space.meetingUri,
+        recallStatus: status,
+        recallDetail: detail,
+        // 402 is the silent-killer case: account out of credits. Tag it so a
+        // Loki alert can page on it specifically (see project memory
+        // project_recall_credit_balance_zero).
+        recallOutOfCredits: status === 402,
+      })
       warnings.push('Recording bot could not be scheduled — meeting will use Google Meet recording as a fallback.')
     }
   }
