@@ -9,14 +9,13 @@ interface VideoRecorderProps {
 
 // Chrome's MediaRecorder writes broken container metadata (duration: Infinity,
 // videoWidth/Height: 2) into the produced blob. The bytes themselves are valid
-// — the server transcoder consumes them fine — but a plain
-// `<video src={blobUrl}>` element refuses to play it.
+// — the server transcoder consumes them fine — but a plain `<video src={blobUrl}>`
+// element loads with `duration === Infinity`, can't seek, and shows "0:00".
 //
-// Workaround: feed the recorded chunks back via MediaSource Extensions. MSE
-// handles fragmented mp4/webm input natively (that's how live video streams
-// work) and gets correct dimensions from the init segment instead of the
-// broken global container metadata. If MSE setup fails (older browser /
-// codec mismatch), we fall back to a snapshot-based review UI.
+// Workaround: load the blob URL directly, then on loadedmetadata if duration is
+// not finite, seek to a huge offset. The browser scans the stream to find the
+// real end, fires durationchange with a usable number, and we seek back to 0.
+// This is the canonical fix and works for both webm and mp4 MediaRecorder output.
 export default function VideoRecorder({ onRecordComplete, recordedVideo }: VideoRecorderProps) {
   const liveVideoRef = useRef<HTMLVideoElement>(null)
   const playbackVideoRef = useRef<HTMLVideoElement>(null)
@@ -25,8 +24,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   // on the same MediaStream each produce a broken half-recording.
   const startingRef = useRef(false)
   const startedAtRef = useRef<number>(0)
-  const chunksRef = useRef<Blob[]>([])
-  const mimeTypeRef = useRef<string>('')
+  const durationRepairedRef = useRef(false)
   const [isRecording, setIsRecording] = useState(false)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [playbackSrc, setPlaybackSrc] = useState<string | null>(null)
@@ -69,39 +67,6 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     }
   }
 
-  // Feed the recorded chunks back through MediaSource so the <video> element
-  // gets correct dimensions/timing from the init segment instead of the
-  // broken global container metadata.
-  const setupMsePlayback = (chunks: Blob[], mime: string): string | null => {
-    try {
-      if (typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported(mime)) {
-        console.log('[VideoRecorder] MSE not supported for', mime)
-        return null
-      }
-      const ms = new MediaSource()
-      const url = URL.createObjectURL(ms)
-      ms.addEventListener('sourceopen', async () => {
-        try {
-          const sb = ms.addSourceBuffer(mime)
-          const merged = new Blob(chunks, { type: mime })
-          const buf = await merged.arrayBuffer()
-          sb.addEventListener('updateend', () => {
-            if (ms.readyState === 'open') {
-              try { ms.endOfStream() } catch {}
-            }
-          })
-          sb.appendBuffer(buf)
-        } catch (err) {
-          console.error('[VideoRecorder] MSE append failed', err)
-        }
-      })
-      return url
-    } catch (err) {
-      console.error('[VideoRecorder] MSE setup failed', err)
-      return null
-    }
-  }
-
   const startRecording = async () => {
     if (startingRef.current || isRecording || mediaRecorderRef.current?.state === 'recording') {
       return
@@ -137,21 +102,14 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         const blob = new Blob(chunks, { type: blobType })
         const durationMs = Date.now() - startedAtRef.current
 
-        chunksRef.current = chunks
-        mimeTypeRef.current = blobType
-
         const snap = liveVideoRef.current ? captureSnapshot(liveVideoRef.current) : null
         setSnapshot(snap)
         setRecordingMeta({ sizeBytes: blob.size, durationMs })
 
-        // Attempt MSE playback. If unsupported, the UI falls back to snapshot.
-        const mseUrl = setupMsePlayback(chunks, blobType)
-        if (mseUrl) {
-          console.log('[VideoRecorder] using MSE playback')
-          setPlaybackSrc(mseUrl)
-        } else {
-          console.log('[VideoRecorder] MSE unavailable, falling back to snapshot only')
-        }
+        durationRepairedRef.current = false
+        const blobUrl = URL.createObjectURL(blob)
+        console.log('[VideoRecorder] playback ready', { type: blobType, size: blob.size })
+        setPlaybackSrc(blobUrl)
 
         onRecordComplete(blob)
 
@@ -185,7 +143,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     setPlaybackSrc(null)
     setSnapshot(null)
     setRecordingMeta(null)
-    chunksRef.current = []
+    durationRepairedRef.current = false
     onRecordComplete(null)
   }
 
@@ -222,14 +180,28 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
             src={playbackSrc}
             controls
             playsInline
+            preload="metadata"
             className="w-full h-full object-contain bg-black"
             onLoadedMetadata={(e) => {
               const v = e.currentTarget
-              console.log('[VideoRecorder] MSE playback loadedmetadata', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight })
+              console.log('[VideoRecorder] playback loadedmetadata', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight })
+              // Chrome ships MediaRecorder blobs with duration: Infinity. Force the
+              // browser to scan the file so it discovers the real end timestamp,
+              // then seek back to 0 so the user starts at the beginning.
+              if (!durationRepairedRef.current && (!Number.isFinite(v.duration) || v.duration === 0)) {
+                durationRepairedRef.current = true
+                const onTimeUpdate = () => {
+                  v.removeEventListener('timeupdate', onTimeUpdate)
+                  v.currentTime = 0
+                  console.log('[VideoRecorder] duration repaired', { duration: v.duration })
+                }
+                v.addEventListener('timeupdate', onTimeUpdate)
+                try { v.currentTime = Number.MAX_SAFE_INTEGER } catch {}
+              }
             }}
             onError={(e) => {
               const v = e.currentTarget
-              console.error('[VideoRecorder] MSE playback error', { code: v.error?.code, message: v.error?.message })
+              console.error('[VideoRecorder] playback error', { code: v.error?.code, message: v.error?.message })
             }}
           />
         ) : inReviewState ? (
