@@ -59,11 +59,23 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       })
       setStream(mediaStream)
 
-      const isWebmVp9 = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-      console.log('[VideoRecorder] codec support', { 'webm/vp9,opus': isWebmVp9, 'webm': MediaRecorder.isTypeSupported('video/webm'), 'mp4': MediaRecorder.isTypeSupported('video/mp4') })
-      const recorder = new MediaRecorder(mediaStream, {
-        mimeType: 'video/webm;codecs=vp9,opus'
-      })
+      // Pick best supported codec. Prefer mp4 because Chrome's webm output
+      // from MediaRecorder has a corrupt container header (dimensions read
+      // as 2x2, duration as Infinity), making the preview unplayable.
+      const candidates = [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+      ]
+      const support = Object.fromEntries(candidates.map(c => [c, MediaRecorder.isTypeSupported(c)]))
+      console.log('[VideoRecorder] codec support', support)
+      const mimeType = candidates.find(c => support[c])
+      console.log('[VideoRecorder] selected mimeType', mimeType)
+      const recorder = mimeType
+        ? new MediaRecorder(mediaStream, { mimeType })
+        : new MediaRecorder(mediaStream)
       console.log('[VideoRecorder] recorder created', { mimeType: recorder.mimeType, state: recorder.state })
       const chunks: Blob[] = []
 
@@ -78,7 +90,8 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
       recorder.onstop = () => {
         console.log('[VideoRecorder] onstop', { chunkCount: chunks.length, totalSize: chunks.reduce((a, c) => a + c.size, 0) })
-        const blob = new Blob(chunks, { type: 'video/webm' })
+        const blobType = recorder.mimeType || 'video/webm'
+        const blob = new Blob(chunks, { type: blobType })
         console.log('[VideoRecorder] blob ready', { size: blob.size, type: blob.type })
         const url = URL.createObjectURL(blob)
         console.log('[VideoRecorder] objectURL', url)
