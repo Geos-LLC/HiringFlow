@@ -10,6 +10,10 @@ interface VideoRecorderProps {
 export default function VideoRecorder({ onRecordComplete, recordedVideo }: VideoRecorderProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  // Guards against the click handler firing twice (double-click / accessibility
+  // re-fire). Without this, two MediaRecorders race on the same MediaStream
+  // and each produces a half-broken recording with corrupt container metadata.
+  const startingRef = useRef(false)
   const [isRecording, setIsRecording] = useState(false)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -47,6 +51,11 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   }, [recordedVideo, previewUrl])
 
   const startRecording = async () => {
+    if (startingRef.current || isRecording || mediaRecorderRef.current?.state === 'recording') {
+      console.log('[VideoRecorder] startRecording: skip — already starting/recording')
+      return
+    }
+    startingRef.current = true
     try {
       setError(null)
       console.log('[VideoRecorder] startRecording: requesting getUserMedia')
@@ -116,6 +125,8 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     } catch (err) {
       console.error('[VideoRecorder] Failed to start recording', err)
       setError('Could not access camera/microphone. Please check permissions.')
+    } finally {
+      startingRef.current = false
     }
   }
 
