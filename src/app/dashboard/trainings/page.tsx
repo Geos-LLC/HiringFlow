@@ -322,9 +322,18 @@ export default function TrainingsPage() {
                     </div>
                     <div className="pt-3 flex justify-between items-center text-[11px]">
                       <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => copyShareUrl(t.slug)} className="text-grey-35 hover:text-ink hover:underline">
-                          {copiedSlug === t.slug ? 'Copied' : 'Share'}
-                        </button>
+                        {t.accessMode === 'invitation_only' ? (
+                          <span
+                            className="text-grey-50 cursor-not-allowed"
+                            title="Gated training — candidates receive a per-invitation link via the automation that uses this training."
+                          >
+                            Share
+                          </span>
+                        ) : (
+                          <button onClick={() => copyShareUrl(t.slug)} className="text-grey-35 hover:text-ink hover:underline">
+                            {copiedSlug === t.slug ? 'Copied' : 'Share'}
+                          </button>
+                        )}
                         <button onClick={() => openRename(t)} className="text-grey-35 hover:text-ink hover:underline">
                           Rename
                         </button>
