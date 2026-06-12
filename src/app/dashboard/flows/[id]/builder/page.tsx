@@ -474,6 +474,15 @@ export default function FlowBuilderPage() {
       // If no transcript yet, wait for analysis then generate
       setAddStepTitle('Generating title...')
       const analyzeRes = await fetch(`/api/videos/${videoId}/analyze`, { method: 'POST' })
+      if (analyzeRes.status === 202) {
+        // Transcode pipeline still running. The transcode-complete webhook
+        // will call /analyze internally once R2 has the file. Drop the
+        // "Generating title..." placeholder so the user can type their own
+        // — title will get auto-filled on next page load if analyze
+        // eventually populates displayName.
+        setAddStepTitle('')
+        return
+      }
       if (analyzeRes.ok) {
         const data = await analyzeRes.json()
         if (data.displayName) setAddStepTitle(data.displayName)
@@ -484,9 +493,20 @@ export default function FlowBuilderPage() {
             body: JSON.stringify({ transcript: data.transcript, summary: data.summary }),
           })
           if (titleRes.ok) { const { title } = await titleRes.json(); if (title) setAddStepTitle(title) }
+        } else {
+          // Analyze succeeded but returned no transcript/displayName.
+          // Don't leave the placeholder hanging.
+          setAddStepTitle('')
         }
+      } else {
+        // Analyze failed for some other reason — don't trap the user
+        // behind a "Generating title..." placeholder.
+        setAddStepTitle('')
       }
-    } catch { /* keep whatever title we have */ }
+    } catch {
+      // Don't leave the placeholder if anything threw.
+      setAddStepTitle(prev => prev === 'Generating title...' ? '' : prev)
+    }
   }
 
   const submitAddStep = () => {

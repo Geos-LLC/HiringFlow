@@ -53,6 +53,22 @@ export async function POST(
       ? cleanKey
       : `${request.nextUrl.origin}${getVideoUrl(cleanKey)}`
 
+    // Browser-recorded videos race ahead of the transcode pipeline: the
+    // client calls /analyze the moment startUpload resolves, but the
+    // Lambda hasn't yet copied the file out of staging into the public
+    // R2 bucket. Deepgram fetches the URL, gets 404, and we return 500
+    // — the client treats that as a hard failure and the title is stuck.
+    // HEAD-check first; if not there, return 202 so the client can either
+    // poll or fall back gracefully. The transcode-complete webhook will
+    // call analyze again when the file is actually ready.
+    const head = await fetch(videoUrl, { method: 'HEAD' }).catch(() => null)
+    if (!head || !head.ok) {
+      return NextResponse.json(
+        { status: 'pending', message: 'Video not yet available at storage URL — transcode pipeline still running.' },
+        { status: 202 }
+      )
+    }
+
     console.log(`[analyze] Step 1: Transcribing via Deepgram URL: ${videoUrl.slice(0, 80)}...`)
 
     // Step 2: Transcribe with Deepgram (no file size limit — sends URL, not file)
