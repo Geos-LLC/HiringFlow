@@ -12,6 +12,7 @@ import { type BrandingConfig } from '@/lib/branding'
 import { validateCaptureConfig } from '@/lib/capture/capture-config'
 import CaptureStepConfigPanel from './_CaptureStepConfigPanel'
 import { useUploads } from '../../../_components/UploadProvider'
+import { videoBlobCache } from '@/lib/video-blob-cache'
 
 interface Video {
   id: string
@@ -439,6 +440,9 @@ export default function FlowBuilderPage() {
       console.log('[builder] startUpload result', result)
       setStepVideoProgress(100)
       if (!result.videoId) return
+      // Stash the just-recorded file so the step preview can play it back
+      // immediately without waiting for the Lambda HLS transcode.
+      videoBlobCache.set(result.videoId, file)
       setVideos(prev => [{ id: result.videoId, filename: result.filename, url: '', displayName: null }, ...prev])
       if (target === 'add') {
         setAddStepVideoId(result.videoId)

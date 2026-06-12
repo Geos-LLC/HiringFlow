@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect, useCallback } from 'react'
+import { videoBlobCache } from '@/lib/video-blob-cache'
 
 interface Segment {
   start: number
@@ -99,6 +100,13 @@ export default function CaptionedVideo({
   const isProcessing = effectiveStatus && effectiveStatus !== 'ready' && effectiveStatus !== 'failed'
   const isFailed = effectiveStatus === 'failed'
 
+  // Look up the just-recorded blob from the in-tab cache. Used so a fresh
+  // upload plays back immediately instead of staring at "Processing…"
+  // while Lambda transcodes.
+  const cachedLocalBlob = videoId ? videoBlobCache.get(videoId) : undefined
+  const [localBlobAttached, setLocalBlobAttached] = useState(false)
+  const canPlay = !!effectiveHlsUrl || (isProcessing && !!cachedLocalBlob)
+
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -107,6 +115,58 @@ export default function CaptionedVideo({
     video.addEventListener('timeupdate', handleTimeUpdate)
     return () => video.removeEventListener('timeupdate', handleTimeUpdate)
   }, [])
+
+  // When the video is still transcoding but we have the just-recorded
+  // blob in the in-tab cache, attach it directly to the visible <video>
+  // element via MediaSource. The recorder used the same trick to play
+  // its review preview — Chrome MediaRecorder webm is unplayable as a
+  // plain `src` but works fine when fed through MSE.
+  useEffect(() => {
+    if (effectiveHlsUrl) return // HLS wins as soon as it's available
+    if (!isProcessing || !cachedLocalBlob) return
+    const videoEl = videoRef.current
+    if (!videoEl) return
+    if (typeof MediaSource === 'undefined') return
+    const mime = cachedLocalBlob.type || 'video/webm'
+    if (!MediaSource.isTypeSupported(mime)) return
+
+    let cancelled = false
+    const ms = new MediaSource()
+    const url = URL.createObjectURL(ms)
+    videoEl.src = url
+
+    const cleanup = () => {
+      try { URL.revokeObjectURL(url) } catch {}
+    }
+
+    ms.addEventListener('sourceopen', async () => {
+      if (cancelled) return cleanup()
+      try {
+        const sb = ms.addSourceBuffer(mime)
+        sb.mode = 'sequence'
+        const buf = await cachedLocalBlob.arrayBuffer()
+        await new Promise<void>((res, rej) => {
+          const onEnd = () => { sb.removeEventListener('updateend', onEnd); res() }
+          sb.addEventListener('updateend', onEnd)
+          sb.addEventListener('error', () => rej(new Error('SourceBuffer error')))
+          try { sb.appendBuffer(buf) } catch (err) { rej(err as Error) }
+        })
+        if (cancelled) return cleanup()
+        if (ms.readyState === 'open') {
+          try { ms.endOfStream() } catch {}
+        }
+        setLocalBlobAttached(true)
+      } catch (err) {
+        console.warn('[CaptionedVideo] local-blob MSE attach failed', err)
+        cleanup()
+      }
+    }, { once: true })
+
+    return () => {
+      cancelled = true
+      cleanup()
+    }
+  }, [isProcessing, cachedLocalBlob, effectiveHlsUrl])
 
   // Attach HLS to the video element via hls.js when an HLS manifest is
   // available. Safari plays HLS natively, so it just gets src=hlsUrl. For
@@ -253,7 +313,24 @@ export default function CaptionedVideo({
     <div className="relative">
       {/* Video */}
       <div ref={containerRef} className={`relative rounded-md overflow-hidden bg-black ${className || ''}`}>
-        {isProcessing ? (
+        {/* Render the <video> element whenever there's a playable source:
+            HLS once transcode finishes, or the just-recorded local blob via
+            MSE while it's still processing. Hide it visually until MSE has
+            actually attached so we don't flash a 0:00 broken player. */}
+        {canPlay ? (
+          <video
+            ref={videoRef}
+            {...(effectiveHlsUrl || cachedLocalBlob ? {} : { src })}
+            className={videoClassName || "w-full"}
+            controls
+            preload="metadata"
+            autoPlay={autoPlay}
+            playsInline
+            onEnded={onEnded}
+            style={!effectiveHlsUrl && cachedLocalBlob && !localBlobAttached ? { visibility: 'hidden' } : undefined}
+          />
+        ) : null}
+        {!canPlay && isProcessing && (
           <div className={`${videoClassName || 'w-full'} aspect-video flex items-center justify-center bg-gray-900 text-gray-200 text-sm`}>
             <div className="text-center px-6">
               <svg className="w-10 h-10 mx-auto mb-2 animate-spin text-brand-400" fill="none" viewBox="0 0 24 24">
@@ -264,24 +341,14 @@ export default function CaptionedVideo({
               <div className="text-gray-400 text-xs mt-1">The recording is saved. The player will appear automatically as soon as it&apos;s ready.</div>
             </div>
           </div>
-        ) : isFailed ? (
+        )}
+        {!canPlay && isFailed && (
           <div className={`${videoClassName || 'w-full'} aspect-video flex items-center justify-center bg-gray-900 text-red-300 text-sm`}>
             <div className="text-center px-6">
               <div className="font-medium">Video processing failed</div>
               <div className="text-gray-400 text-xs mt-1">Try re-uploading the recording.</div>
             </div>
           </div>
-        ) : (
-          <video
-            ref={videoRef}
-            {...(effectiveHlsUrl ? {} : { src })}
-            className={videoClassName || "w-full"}
-            controls
-            preload="metadata"
-            autoPlay={autoPlay}
-            playsInline
-            onEnded={onEnded}
-          />
         )}
 
         {/* Caption overlay — draggable */}
