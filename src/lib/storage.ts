@@ -10,16 +10,22 @@ async function saveToBlobStore(file: File, prefix = '') {
   const ext = path.extname(file.name) || '.webm'
   const blobPath = `${prefix}${uuidv4()}${ext}`
 
+  // Drop the codec suffix that Chrome MediaRecorder attaches
+  // (`video/webm;codecs=vp9,opus`). Vercel Blob stores Content-Type
+  // verbatim and Deepgram's URL-fetch demuxer rejects the codec hint.
+  const rawType = file.type || 'video/mp4'
+  const cleanType = rawType.split(';')[0].trim() || 'video/mp4'
+
   const blob = await put(blobPath, file, {
     access: 'public',
-    contentType: file.type || 'video/mp4',
+    contentType: cleanType,
   })
 
   // Store the full blob URL as storageKey — getVideoUrl handles http URLs
   return {
     storageKey: blob.url,
     filename: file.name || `recording${ext}`,
-    mimeType: file.type || 'video/mp4',
+    mimeType: cleanType,
     sizeBytes: file.size,
   }
 }

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { openai } from '@/lib/openai'
 import { transcribeFromUrl } from '@/lib/deepgram'
 import { getVideoUrl } from '@/lib/storage'
+import { logger } from '@/lib/logger'
 import { createHmac, timingSafeEqual } from 'crypto'
 
 export const maxDuration = 120
@@ -106,7 +107,14 @@ Respond in JSON format:
     })
   } catch (error: any) {
     const errMsg = error?.message || String(error)
-    console.error('Video analysis error:', errMsg)
+    logger.error('video_analyze_failed', {
+      videoId: params.videoId,
+      storageKey: video.storageKey?.slice(0, 80),
+      mimeType: video.mimeType,
+      filename: video.filename,
+      err: errMsg,
+      stack: error?.stack?.split('\n').slice(0, 4).join(' | '),
+    })
     return NextResponse.json(
       { error: errMsg },
       { status: 500 }

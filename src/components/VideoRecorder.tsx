@@ -278,6 +278,17 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
           }
         }
 
+        // Strip the codec suffix from the blob type before handing it
+        // upstream. Deepgram and other server-side parsers choke on
+        // `video/webm;codecs=vp9,opus` Content-Type headers; the codec
+        // hint is redundant once the container is on disk.
+        const cleanType = blobType.split(';')[0].trim() || (
+          /webm/i.test(blobType) ? 'video/webm' : 'video/mp4'
+        )
+        if (fileBlob.type !== cleanType) {
+          fileBlob = new Blob([fileBlob], { type: cleanType })
+        }
+
         setRecordingMeta({ sizeBytes: fileBlob.size, durationMs })
 
         // React mounts the playback video element after the review state
