@@ -34,6 +34,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   const [isRecording, setIsRecording] = useState(false)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [playbackSrc, setPlaybackSrc] = useState<string | null>(null)
+  const [mseAttached, setMseAttached] = useState(false)
   const [snapshot, setSnapshot] = useState<string | null>(null)
   const [recordingMeta, setRecordingMeta] = useState<{ sizeBytes: number; durationMs: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -61,6 +62,39 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     }
   }, [stream])
 
+  // Request camera/mic on mount so the live preview shows immediately,
+  // before the user clicks Start Recording. This is the "mirror" UX they
+  // expect from native camera apps.
+  useEffect(() => {
+    let cancelled = false
+    let acquired: MediaStream | null = null
+    ;(async () => {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true,
+        })
+        if (cancelled) {
+          s.getTracks().forEach(t => t.stop())
+          return
+        }
+        acquired = s
+        setStream(s)
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[VideoRecorder] mount-time getUserMedia failed', err)
+          setError('Could not access camera/microphone. Please check permissions.')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (acquired) {
+        acquired.getTracks().forEach(t => t.stop())
+      }
+    }
+  }, [])
+
   const captureSnapshot = (videoEl: HTMLVideoElement): string | null => {
     const w = videoEl.videoWidth
     const h = videoEl.videoHeight
@@ -78,12 +112,21 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     }
   }
 
-  // Buffers all MediaRecorder chunks into a MediaSource via an offscreen
-  // <video> element (needed to trigger `sourceopen`), sets the real duration,
-  // calls endOfStream, and only then returns the URL. By the time the visible
-  // player attaches this URL, the stream is fully buffered and the element
-  // reads correct duration/dimensions on loadedmetadata.
-  const buildBufferedMseUrl = async (chunks: Blob[], mime: string, durationSec: number): Promise<string | null> => {
+  // Attaches a MediaSource directly to the *visible* video element via its
+  // ref, feeds the recorded chunks into a SourceBuffer, sets the real
+  // duration, and calls endOfStream. The element must already be mounted —
+  // caller is responsible for ensuring playbackVideoRef.current is non-null
+  // before invoking this (e.g. via requestAnimationFrame after setRecordingMeta).
+  //
+  // MediaSource can only be attached to one media element. Using a separate
+  // offscreen trigger and then re-attaching to the visible element does not
+  // work: detaching closes the MS, and another element can't pick it up.
+  const attachMseToElement = async (
+    videoEl: HTMLVideoElement,
+    chunks: Blob[],
+    mime: string,
+    durationSec: number,
+  ): Promise<string | null> => {
     if (typeof MediaSource === 'undefined') {
       console.log('[VideoRecorder] MediaSource API not available')
       return null
@@ -96,14 +139,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     const ms = new MediaSource()
     const url = URL.createObjectURL(ms)
     console.log('[VideoRecorder] MS created', { readyState: ms.readyState })
-
-    // Attach to a detached video element — MediaSource only fires sourceopen
-    // when its objectURL is loaded by a media element. The element doesn't
-    // need to be in the DOM, just have its src set.
-    const trigger = document.createElement('video')
-    trigger.muted = true
-    trigger.preload = 'auto'
-    trigger.src = url
+    videoEl.src = url
 
     const opened = await new Promise<boolean>((resolve) => {
       const timeout = window.setTimeout(() => {
@@ -123,6 +159,8 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
     if (!opened) {
       URL.revokeObjectURL(url)
+      videoEl.removeAttribute('src')
+      videoEl.load()
       return null
     }
 
@@ -171,13 +209,10 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       return url
     } catch (err) {
       console.error('[VideoRecorder] MSE feed failed', err)
+      videoEl.removeAttribute('src')
+      videoEl.load()
       URL.revokeObjectURL(url)
       return null
-    } finally {
-      // Detach the trigger so it can be GC'd. Do NOT revoke the URL — the
-      // real playback element still needs it.
-      trigger.src = ''
-      trigger.load()
     }
   }
 
@@ -188,11 +223,17 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     startingRef.current = true
     try {
       setError(null)
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: true,
-      })
-      setStream(mediaStream)
+      // The mount-time effect already acquired a stream for the live preview.
+      // Reuse it. If permission was denied or unavailable, request again here
+      // so the user gets a chance to grant after the modal is already open.
+      let mediaStream = stream
+      if (!mediaStream) {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true,
+        })
+        setStream(mediaStream)
+      }
 
       // Prefer webm — Chrome's mp4 output has broken metadata that nothing
       // client-side can repair. mp4 fallbacks are kept for Safari which only
@@ -239,12 +280,22 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
         setRecordingMeta({ sizeBytes: fileBlob.size, durationMs })
 
-        const mseUrl = await buildBufferedMseUrl(recordedChunks, blobType, durationMs / 1000)
-        if (mseUrl) {
-          console.log('[VideoRecorder] MSE playback URL ready (buffered)', { type: blobType, chunks: recordedChunks.length, durationMs })
-          setPlaybackSrc(mseUrl)
+        // Wait one frame so React mounts the playback video element and
+        // playbackVideoRef.current becomes available for direct MSE attach.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+
+        const videoEl = playbackVideoRef.current
+        if (videoEl) {
+          const mseUrl = await attachMseToElement(videoEl, recordedChunks, blobType, durationMs / 1000)
+          if (mseUrl) {
+            console.log('[VideoRecorder] MSE attached to visible element', { type: blobType, chunks: recordedChunks.length, durationMs })
+            setPlaybackSrc(mseUrl)
+            setMseAttached(true)
+          } else {
+            console.log('[VideoRecorder] MSE unavailable, falling back to snapshot only')
+          }
         } else {
-          console.log('[VideoRecorder] MSE unavailable, falling back to snapshot only')
+          console.warn('[VideoRecorder] playback video element not mounted yet, snapshot fallback')
         }
 
         onRecordComplete(fileBlob)
@@ -276,11 +327,22 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     if (playbackSrc) {
       URL.revokeObjectURL(playbackSrc)
     }
+    if (playbackVideoRef.current) {
+      playbackVideoRef.current.removeAttribute('src')
+      playbackVideoRef.current.load()
+    }
     setPlaybackSrc(null)
+    setMseAttached(false)
     setSnapshot(null)
     setRecordingMeta(null)
     onRecordComplete(null)
   }
+
+  useEffect(() => {
+    if (!recordedVideo) {
+      setMseAttached(false)
+    }
+  }, [recordedVideo])
 
   useEffect(() => {
     if (!recordedVideo && (snapshot || recordingMeta || playbackSrc)) {
@@ -309,42 +371,45 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   return (
     <div className="space-y-3">
       <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden relative">
-        {inReviewState && playbackSrc ? (
-          <video
-            ref={playbackVideoRef}
-            src={playbackSrc}
-            controls
-            playsInline
-            className="w-full h-full object-contain bg-black"
-            onLoadedMetadata={(e) => {
-              const v = e.currentTarget
-              console.log('[VideoRecorder] playback loadedmetadata', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight })
-            }}
-            onError={(e) => {
-              const v = e.currentTarget
-              console.error('[VideoRecorder] playback error', { code: v.error?.code, message: v.error?.message })
-            }}
-          />
-        ) : inReviewState ? (
+        {inReviewState ? (
           <div className="w-full h-full relative bg-black">
-            {snapshot ? (
-              <img src={snapshot} alt="Recording snapshot" className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-gray-300 text-sm">
-                Snapshot unavailable
-              </div>
-            )}
-            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-4 py-3 flex items-center gap-3 text-white">
-              <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              <div className="text-xs">
-                <div className="font-medium">Recording captured</div>
-                <div className="opacity-80">
-                  {formatDuration(recordingMeta!.durationMs)} · {formatSize(recordingMeta!.sizeBytes)}
+            <video
+              ref={playbackVideoRef}
+              controls
+              playsInline
+              className="w-full h-full object-contain bg-black"
+              style={{ display: mseAttached ? 'block' : 'none' }}
+              onLoadedMetadata={(e) => {
+                const v = e.currentTarget
+                console.log('[VideoRecorder] playback loadedmetadata', { duration: v.duration, videoWidth: v.videoWidth, videoHeight: v.videoHeight })
+              }}
+              onError={(e) => {
+                const v = e.currentTarget
+                console.error('[VideoRecorder] playback error', { code: v.error?.code, message: v.error?.message })
+              }}
+            />
+            {!mseAttached && (
+              <>
+                {snapshot ? (
+                  <img src={snapshot} alt="Recording snapshot" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-gray-300 text-sm">
+                    Preparing playback…
+                  </div>
+                )}
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-4 py-3 flex items-center gap-3 text-white">
+                  <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <div className="text-xs">
+                    <div className="font-medium">Recording captured</div>
+                    <div className="opacity-80">
+                      {formatDuration(recordingMeta!.durationMs)} · {formatSize(recordingMeta!.sizeBytes)}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
+              </>
+            )}
           </div>
         ) : stream ? (
           <video
@@ -360,7 +425,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
               <svg className="w-12 h-12 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
-              <p className="text-sm">Click &quot;Start Recording&quot; to begin</p>
+              <p className="text-sm">{error ? 'Camera unavailable' : 'Starting camera…'}</p>
             </div>
           </div>
         )}
