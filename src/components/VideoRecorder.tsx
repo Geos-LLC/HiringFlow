@@ -31,6 +31,7 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   // on the same MediaStream each produce a broken half-recording.
   const startingRef = useRef(false)
   const startedAtRef = useRef<number>(0)
+  const prevRecordedVideoRef = useRef<Blob | null>(null)
   const [isRecording, setIsRecording] = useState(false)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [playbackSrc, setPlaybackSrc] = useState<string | null>(null)
@@ -262,7 +263,6 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         const recordedChunks = chunks.slice()
 
         const snap = liveVideoRef.current ? captureSnapshot(liveVideoRef.current) : null
-        setSnapshot(snap)
 
         // Patch the WebM blob handed to upstream consumers so server/Drive/
         // playback elsewhere sees a real duration. Inline preview uses MSE
@@ -289,6 +289,12 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
           fileBlob = new Blob([fileBlob], { type: cleanType })
         }
 
+        // Notify the parent BEFORE setting local review state. The cleanup
+        // useEffect treats a null `recordedVideo` prop + truthy local state
+        // as "parent cleared, reset us" and would otherwise yank
+        // recordingMeta back to null before the playback element can mount.
+        onRecordComplete(fileBlob)
+        setSnapshot(snap)
         setRecordingMeta({ sizeBytes: fileBlob.size, durationMs })
 
         // React mounts the playback video element after the review state
@@ -314,8 +320,6 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
         } else {
           console.warn('[VideoRecorder] playback video element not mounted yet, snapshot fallback')
         }
-
-        onRecordComplete(fileBlob)
 
         mediaStream.getTracks().forEach(track => track.stop())
         setStream(null)
@@ -355,20 +359,27 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
     onRecordComplete(null)
   }
 
+  // Only reset local review state when the parent transitions from holding
+  // a recording back to null (e.g. modal closed, Use clicked). Watching just
+  // `!recordedVideo` would also fire on initial mount and — critically —
+  // while onstop is mid-flight (before onRecordComplete propagates), yanking
+  // recordingMeta away and unmounting the playback element before MSE can
+  // attach.
   useEffect(() => {
-    if (!recordedVideo) {
-      setMseAttached(false)
-    }
-  }, [recordedVideo])
-
-  useEffect(() => {
-    if (!recordedVideo && (snapshot || recordingMeta || playbackSrc)) {
+    const prev = prevRecordedVideoRef.current
+    prevRecordedVideoRef.current = recordedVideo
+    if (prev && !recordedVideo) {
       if (playbackSrc) URL.revokeObjectURL(playbackSrc)
+      if (playbackVideoRef.current) {
+        playbackVideoRef.current.removeAttribute('src')
+        playbackVideoRef.current.load()
+      }
       setPlaybackSrc(null)
+      setMseAttached(false)
       setSnapshot(null)
       setRecordingMeta(null)
     }
-  }, [recordedVideo, snapshot, recordingMeta, playbackSrc])
+  }, [recordedVideo, playbackSrc])
 
   const formatDuration = (ms: number) => {
     const totalSec = Math.max(0, Math.round(ms / 1000))
