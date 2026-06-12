@@ -51,6 +51,13 @@ export default function TrainingsPage() {
   const [renameTarget, setRenameTarget] = useState<Training | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [renaming, setRenaming] = useState(false)
+  const [copiedSlug, setCopiedSlug] = useState<string | null>(null)
+
+  const copyShareUrl = (slug: string) => {
+    navigator.clipboard.writeText(`${window.location.origin}/t/${slug}`)
+    setCopiedSlug(slug)
+    setTimeout(() => setCopiedSlug(null), 2000)
+  }
 
   const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -314,9 +321,14 @@ export default function TrainingsPage() {
                       </span>
                     </div>
                     <div className="pt-3 flex justify-between items-center text-[11px]">
-                      <button onClick={() => openRename(t)} className="text-grey-35 hover:text-ink hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
-                        Rename
-                      </button>
+                      <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => copyShareUrl(t.slug)} className="text-grey-35 hover:text-ink hover:underline">
+                          {copiedSlug === t.slug ? 'Copied' : 'Share'}
+                        </button>
+                        <button onClick={() => openRename(t)} className="text-grey-35 hover:text-ink hover:underline">
+                          Rename
+                        </button>
+                      </div>
                       <button onClick={() => deleteTraining(t.id)} className="text-[color:var(--danger-fg)] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                         Delete
                       </button>
