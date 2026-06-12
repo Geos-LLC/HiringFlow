@@ -41,6 +41,14 @@ const FONT_OPTIONS = [
 
 interface CaptionedVideoProps {
   src: string
+  /** R2 HLS master.m3u8 — preferred when present. The raw `src` is the
+   *  original upload (often Chrome MediaRecorder webm with broken metadata
+   *  that <video> can't decode), so always prefer HLS when ready. */
+  hlsUrl?: string | null
+  /** Video.status from the Video model. When not 'ready', the transcode
+   *  pipeline hasn't produced a playable HLS yet — show a processing
+   *  placeholder instead of trying to render the broken raw file. */
+  status?: string | null
   segments: Segment[]
   captionsEnabled: boolean
   captionStyle?: CaptionStyle
@@ -54,6 +62,8 @@ interface CaptionedVideoProps {
 
 export default function CaptionedVideo({
   src,
+  hlsUrl,
+  status,
   segments,
   captionsEnabled,
   captionStyle = DEFAULT_CAPTION_STYLE,
@@ -81,6 +91,33 @@ export default function CaptionedVideo({
     video.addEventListener('timeupdate', handleTimeUpdate)
     return () => video.removeEventListener('timeupdate', handleTimeUpdate)
   }, [])
+
+  // Attach HLS to the video element via hls.js when an HLS manifest is
+  // available. Safari plays HLS natively, so it just gets src=hlsUrl. For
+  // Chrome/Firefox/Edge, dynamically import hls.js so it doesn't bloat the
+  // initial bundle. Mirrors DashboardVideoPreview's playback path.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !hlsUrl) return
+    if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      v.src = hlsUrl
+      return
+    }
+    let hls: { destroy: () => void } | null = null
+    let cancelled = false
+    import('hls.js').then((mod) => {
+      const Hls = mod.default
+      if (cancelled || !Hls.isSupported()) return
+      const instance = new Hls({ startLevel: 1, maxBufferLength: 60 })
+      instance.loadSource(hlsUrl)
+      instance.attachMedia(v)
+      hls = instance
+    }).catch(() => {})
+    return () => { cancelled = true; if (hls) hls.destroy() }
+  }, [hlsUrl])
+
+  const isProcessing = status && status !== 'ready' && status !== 'failed'
+  const isFailed = status === 'failed'
 
   const currentSegment = captionsEnabled
     ? segments.find((s) => currentTime >= s.start && currentTime <= s.end)
@@ -176,16 +213,36 @@ export default function CaptionedVideo({
     <div className="relative">
       {/* Video */}
       <div ref={containerRef} className={`relative rounded-md overflow-hidden bg-black ${className || ''}`}>
-        <video
-          ref={videoRef}
-          src={src}
-          className={videoClassName || "w-full"}
-          controls
-          preload="metadata"
-          autoPlay={autoPlay}
-          playsInline
-          onEnded={onEnded}
-        />
+        {isProcessing ? (
+          <div className={`${videoClassName || 'w-full'} aspect-video flex items-center justify-center bg-gray-900 text-gray-200 text-sm`}>
+            <div className="text-center px-6">
+              <svg className="w-10 h-10 mx-auto mb-2 animate-spin text-brand-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z" />
+              </svg>
+              <div className="font-medium">Processing video…</div>
+              <div className="text-gray-400 text-xs mt-1">The recording is saved. Playback will be available in a moment — refresh to see it.</div>
+            </div>
+          </div>
+        ) : isFailed ? (
+          <div className={`${videoClassName || 'w-full'} aspect-video flex items-center justify-center bg-gray-900 text-red-300 text-sm`}>
+            <div className="text-center px-6">
+              <div className="font-medium">Video processing failed</div>
+              <div className="text-gray-400 text-xs mt-1">Try re-uploading the recording.</div>
+            </div>
+          </div>
+        ) : (
+          <video
+            ref={videoRef}
+            {...(hlsUrl ? {} : { src })}
+            className={videoClassName || "w-full"}
+            controls
+            preload="metadata"
+            autoPlay={autoPlay}
+            playsInline
+            onEnded={onEnded}
+          />
+        )}
 
         {/* Caption overlay — draggable */}
         {currentSegment && (

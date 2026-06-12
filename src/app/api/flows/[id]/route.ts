@@ -52,6 +52,12 @@ export async function GET(
         ? {
             ...step.video,
             url: getVideoUrl(step.video.storageKey),
+            // The raw storageKey is the unplayable Chrome MediaRecorder webm
+            // for browser-recorded uploads. Surface the HLS manifest and
+            // transcode status so the client can pick HLS for ready videos
+            // and show a "processing" state otherwise.
+            hlsUrl: step.video.hlsManifestUrl,
+            status: step.video.status,
           }
         : null,
     })),
