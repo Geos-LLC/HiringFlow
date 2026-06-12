@@ -499,6 +499,7 @@ export default function StepEditorPanel({
                 src={step.video.url}
                 hlsUrl={(step.video as { hlsUrl?: string | null }).hlsUrl}
                 status={(step.video as { status?: string | null }).status}
+                videoId={step.video.id}
                 segments={transcript?.segments || videoSegments || []}
                 captionsEnabled={captionsEnabled}
                 captionStyle={captionStyle}

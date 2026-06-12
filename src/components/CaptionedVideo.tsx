@@ -49,6 +49,10 @@ interface CaptionedVideoProps {
    *  pipeline hasn't produced a playable HLS yet — show a processing
    *  placeholder instead of trying to render the broken raw file. */
   status?: string | null
+  /** Video id used for auto-polling while status is 'transcoding' so the
+   *  player flips to the HLS playback automatically without the user
+   *  needing to refresh. */
+  videoId?: string
   segments: Segment[]
   captionsEnabled: boolean
   captionStyle?: CaptionStyle
@@ -64,6 +68,7 @@ export default function CaptionedVideo({
   src,
   hlsUrl,
   status,
+  videoId,
   segments,
   captionsEnabled,
   captionStyle = DEFAULT_CAPTION_STYLE,
@@ -83,6 +88,17 @@ export default function CaptionedVideo({
   const [isDragging, setIsDragging] = useState(false)
   const dragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null)
 
+  // Auto-poll the video row while it's still transcoding so the player
+  // flips to HLS the moment the Lambda webhook fires status='ready'. No
+  // refresh required — the recorder gives the user instant inline
+  // playback, so the saved-step view should match.
+  const [polledStatus, setPolledStatus] = useState<string | null | undefined>(undefined)
+  const [polledHlsUrl, setPolledHlsUrl] = useState<string | null | undefined>(undefined)
+  const effectiveStatus = polledStatus !== undefined ? polledStatus : status
+  const effectiveHlsUrl = polledHlsUrl !== undefined ? polledHlsUrl : hlsUrl
+  const isProcessing = effectiveStatus && effectiveStatus !== 'ready' && effectiveStatus !== 'failed'
+  const isFailed = effectiveStatus === 'failed'
+
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -96,11 +112,13 @@ export default function CaptionedVideo({
   // available. Safari plays HLS natively, so it just gets src=hlsUrl. For
   // Chrome/Firefox/Edge, dynamically import hls.js so it doesn't bloat the
   // initial bundle. Mirrors DashboardVideoPreview's playback path.
+  // Uses effectiveHlsUrl so polled updates trigger a re-attach as soon as
+  // transcode completes.
   useEffect(() => {
     const v = videoRef.current
-    if (!v || !hlsUrl) return
+    if (!v || !effectiveHlsUrl) return
     if (v.canPlayType('application/vnd.apple.mpegurl')) {
-      v.src = hlsUrl
+      v.src = effectiveHlsUrl
       return
     }
     let hls: { destroy: () => void } | null = null
@@ -109,15 +127,37 @@ export default function CaptionedVideo({
       const Hls = mod.default
       if (cancelled || !Hls.isSupported()) return
       const instance = new Hls({ startLevel: 1, maxBufferLength: 60 })
-      instance.loadSource(hlsUrl)
+      instance.loadSource(effectiveHlsUrl)
       instance.attachMedia(v)
       hls = instance
     }).catch(() => {})
     return () => { cancelled = true; if (hls) hls.destroy() }
-  }, [hlsUrl])
+  }, [effectiveHlsUrl])
 
-  const isProcessing = status && status !== 'ready' && status !== 'failed'
-  const isFailed = status === 'failed'
+  useEffect(() => {
+    if (!videoId || !isProcessing) return
+    let cancelled = false
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    const poll = async () => {
+      if (cancelled) return
+      try {
+        const res = await fetch(`/api/videos/${videoId}`)
+        if (res.ok) {
+          const v = await res.json()
+          if (v.status === 'ready' || v.status === 'failed') {
+            if (!cancelled) {
+              setPolledStatus(v.status)
+              setPolledHlsUrl(v.hlsManifestUrl || null)
+            }
+            return
+          }
+        }
+      } catch {}
+      if (!cancelled) timeout = setTimeout(poll, 2500)
+    }
+    timeout = setTimeout(poll, 2500)
+    return () => { cancelled = true; if (timeout) clearTimeout(timeout) }
+  }, [videoId, isProcessing])
 
   const currentSegment = captionsEnabled
     ? segments.find((s) => currentTime >= s.start && currentTime <= s.end)
@@ -221,7 +261,7 @@ export default function CaptionedVideo({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z" />
               </svg>
               <div className="font-medium">Processing video…</div>
-              <div className="text-gray-400 text-xs mt-1">The recording is saved. Playback will be available in a moment — refresh to see it.</div>
+              <div className="text-gray-400 text-xs mt-1">The recording is saved. The player will appear automatically as soon as it&apos;s ready.</div>
             </div>
           </div>
         ) : isFailed ? (
@@ -234,7 +274,7 @@ export default function CaptionedVideo({
         ) : (
           <video
             ref={videoRef}
-            {...(hlsUrl ? {} : { src })}
+            {...(effectiveHlsUrl ? {} : { src })}
             className={videoClassName || "w-full"}
             controls
             preload="metadata"
