@@ -10,7 +10,13 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 function need(name: string): string {
   const v = process.env[name]
   if (!v) throw new Error(`Missing env var: ${name}`)
-  return v
+  // `vercel env add` has a known footgun where a copy-pasted value carrying
+  // a UTF-8 BOM (U+FEFF) and/or trailing CR/LF gets stored verbatim. The
+  // characters then ride into interpolated URLs like
+  // `https://<domain>/path` and downstream fetches 404. Strip BOM + ASCII
+  // control whitespace at the read site so a single bad paste can't poison
+  // dozens of callsites.
+  return v.replace(/﻿/g, '').replace(/[\r\n\t]/g, '').trim()
 }
 
 function r2Client(): S3Client {

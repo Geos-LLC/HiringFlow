@@ -44,10 +44,14 @@ export async function POST(
   }
 
   try {
-    // Step 1: Get the public URL for the video
-    const videoUrl = video.storageKey.startsWith('http')
-      ? video.storageKey
-      : `${request.nextUrl.origin}${getVideoUrl(video.storageKey)}`
+    // Step 1: Get the public URL for the video. Old rows may have a BOM
+    // + CR/LF baked into the storageKey from a polluted R2_PUBLIC_DOMAIN
+    // env var (the env-read now strips this, but the bad data is already
+    // persisted). Sanitize at the read site so existing uploads recover.
+    const cleanKey = video.storageKey.replace(/﻿/g, '').replace(/[\r\n\t]/g, '').trim()
+    const videoUrl = cleanKey.startsWith('http')
+      ? cleanKey
+      : `${request.nextUrl.origin}${getVideoUrl(cleanKey)}`
 
     console.log(`[analyze] Step 1: Transcribing via Deepgram URL: ${videoUrl.slice(0, 80)}...`)
 
