@@ -280,11 +280,17 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
 
         setRecordingMeta({ sizeBytes: fileBlob.size, durationMs })
 
-        // Wait one frame so React mounts the playback video element and
-        // playbackVideoRef.current becomes available for direct MSE attach.
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-
-        const videoEl = playbackVideoRef.current
+        // React mounts the playback video element after the review state
+        // commits. One rAF isn't always enough on cold renders, so retry up
+        // to ~10 frames before giving up to the snapshot fallback.
+        let videoEl: HTMLVideoElement | null = null
+        for (let attempt = 0; attempt < 10; attempt++) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+          if (playbackVideoRef.current) {
+            videoEl = playbackVideoRef.current
+            break
+          }
+        }
         if (videoEl) {
           const mseUrl = await attachMseToElement(videoEl, recordedChunks, blobType, durationMs / 1000)
           if (mseUrl) {
