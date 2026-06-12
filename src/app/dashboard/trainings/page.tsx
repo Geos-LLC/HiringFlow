@@ -51,12 +51,27 @@ export default function TrainingsPage() {
   const [renameTarget, setRenameTarget] = useState<Training | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [renaming, setRenaming] = useState(false)
-  const [copiedSlug, setCopiedSlug] = useState<string | null>(null)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [sharingId, setSharingId] = useState<string | null>(null)
 
-  const copyShareUrl = (slug: string) => {
-    navigator.clipboard.writeText(`${window.location.origin}/t/${slug}`)
-    setCopiedSlug(slug)
-    setTimeout(() => setCopiedSlug(null), 2000)
+  const copyShareUrl = async (t: Training) => {
+    let url: string
+    if (t.accessMode === 'invitation_only') {
+      setSharingId(t.id)
+      try {
+        const res = await fetch(`/api/trainings/${t.id}/share-link`, { method: 'POST' })
+        if (!res.ok) return
+        const data = await res.json() as { url: string }
+        url = data.url
+      } finally {
+        setSharingId(null)
+      }
+    } else {
+      url = `${window.location.origin}/t/${t.slug}`
+    }
+    await navigator.clipboard.writeText(url)
+    setCopiedId(t.id)
+    setTimeout(() => setCopiedId(null), 2000)
   }
 
   const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -322,18 +337,14 @@ export default function TrainingsPage() {
                     </div>
                     <div className="pt-3 flex justify-between items-center text-[11px]">
                       <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {t.accessMode === 'invitation_only' ? (
-                          <span
-                            className="text-grey-50 cursor-not-allowed"
-                            title="Gated training — candidates receive a per-invitation link via the automation that uses this training."
-                          >
-                            Share
-                          </span>
-                        ) : (
-                          <button onClick={() => copyShareUrl(t.slug)} className="text-grey-35 hover:text-ink hover:underline">
-                            {copiedSlug === t.slug ? 'Copied' : 'Share'}
-                          </button>
-                        )}
+                        <button
+                          onClick={() => copyShareUrl(t)}
+                          disabled={sharingId === t.id}
+                          className="text-grey-35 hover:text-ink hover:underline disabled:text-grey-50 disabled:cursor-wait"
+                          title={t.accessMode === 'invitation_only' ? 'Gated training — generates a one-off anonymous invitation link.' : undefined}
+                        >
+                          {copiedId === t.id ? 'Copied' : sharingId === t.id ? 'Generating…' : 'Share'}
+                        </button>
                         <button onClick={() => openRename(t)} className="text-grey-35 hover:text-ink hover:underline">
                           Rename
                         </button>
