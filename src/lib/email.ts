@@ -4,6 +4,16 @@ import { buildUnsubscribeUrl } from './unsubscribe'
 export const PLATFORM_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || 'noreply@hirefunnel.app'
 export const PLATFORM_FROM_NAME = process.env.SENDGRID_FROM_NAME || 'HireFunnel'
 
+// Recipient domains where SendGrid reports `delivered` (250 OK at SMTP) but
+// the message then gets silently filtered to Junk or dropped — historically
+// a problem for low-volume custom workspace sender domains. When the
+// recipient is on one of these, swap the From to the platform sender (which
+// has clean reputation + full DMARC alignment) and route replies back to the
+// originally-requested sender via Reply-To so candidate replies still reach
+// the recruiter. The display name on From is preserved so the inbox UI
+// still shows the workspace's brand.
+const SILENT_FILTER_DOMAINS = ['icloud.com', 'me.com', 'mac.com'] as const
+
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY
 
 if (SENDGRID_API_KEY) {
@@ -45,13 +55,25 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
     return { success: false, error: 'SendGrid not configured' }
   }
 
-  const from = payload.from?.email
+  const requestedFrom = payload.from?.email
     ? { email: payload.from.email, name: payload.from.name || PLATFORM_FROM_NAME }
     : { email: PLATFORM_FROM_EMAIL, name: PLATFORM_FROM_NAME }
 
+  const recipientDomain = payload.to.split('@')[1]?.toLowerCase()
+  const shouldFallback =
+    !!recipientDomain &&
+    (SILENT_FILTER_DOMAINS as readonly string[]).includes(recipientDomain) &&
+    requestedFrom.email.toLowerCase() !== PLATFORM_FROM_EMAIL.toLowerCase()
+
+  const from = shouldFallback
+    ? { email: PLATFORM_FROM_EMAIL, name: requestedFrom.name }
+    : requestedFrom
+
   const replyTo = payload.replyTo?.email
     ? { email: payload.replyTo.email, name: payload.replyTo.name || undefined }
-    : undefined
+    : shouldFallback
+      ? { email: requestedFrom.email, name: requestedFrom.name }
+      : undefined
 
   // SendGrid echoes customArgs back on every webhook event for this send.
   // Keep keys short — SendGrid caps the total customArgs payload at 10 KB
@@ -91,7 +113,11 @@ export async function sendEmail(payload: EmailPayload): Promise<{ success: boole
     })
 
     const messageId = response.headers['x-message-id'] as string || undefined
-    console.log('[Email] Sent to', payload.to, 'messageId:', messageId)
+    if (shouldFallback) {
+      console.log('[Email] Sent to', payload.to, 'messageId:', messageId, 'fallback: platform sender (recipient on silent-filter domain', recipientDomain + ', originally', requestedFrom.email + ')')
+    } else {
+      console.log('[Email] Sent to', payload.to, 'messageId:', messageId)
+    }
     return { success: true, messageId }
   } catch (error: any) {
     const message = error?.response?.body?.errors?.[0]?.message || error?.message || 'Unknown error'
