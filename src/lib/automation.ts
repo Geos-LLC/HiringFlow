@@ -95,27 +95,29 @@ export async function fireFlowRecordingReadyAutomations(
   sessionId: string,
   opts?: FireDispatchOptions,
 ) {
-  try {
-    const session = await prisma.session.findUnique({
-      where: { id: sessionId },
-      include: { flow: true, ad: true },
-    })
-    if (!session) return
-    const triggerStageSnapshot = session.pipelineStatus ?? null
-    await applyStageTrigger({
-      sessionId,
-      workspaceId: session.workspaceId,
-      event: 'recording_ready',
-      flowId: session.flowId,
-    }).catch(() => {})
-    await dispatchRulesForTrigger(sessionId, 'recording_ready', session, {
-      executionMode: opts?.executionMode,
-      actorUserId: opts?.actorUserId,
-      triggerStageSnapshot,
-    })
-  } catch (error) {
-    console.error('[Automation] Error firing flow recording_ready automations for session', sessionId, ':', error)
-  }
+  // Errors propagate so the wrapping `emitAutomationEvent` can stamp
+  // `dispatchError` on the AutomationEvent row. Swallowing here used to mask
+  // mid-flight failures (Vercel kill, prisma timeout, send error) as
+  // "dispatched successfully" — the orphan sweep then refused to retry and
+  // candidates never received their training email. Direct callers that
+  // want fire-and-forget semantics attach `.catch()` themselves.
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: { flow: true, ad: true },
+  })
+  if (!session) return
+  const triggerStageSnapshot = session.pipelineStatus ?? null
+  await applyStageTrigger({
+    sessionId,
+    workspaceId: session.workspaceId,
+    event: 'recording_ready',
+    flowId: session.flowId,
+  }).catch(() => {})
+  await dispatchRulesForTrigger(sessionId, 'recording_ready', session, {
+    executionMode: opts?.executionMode,
+    actorUserId: opts?.actorUserId,
+    triggerStageSnapshot,
+  })
 }
 
 export async function fireTrainingCompletedAutomations(

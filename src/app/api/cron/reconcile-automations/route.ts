@@ -200,7 +200,31 @@ export async function GET(request: NextRequest) {
         payload: { captureResponseId: cap.id },
         dispatch: () => fireFlowRecordingReadyAutomations(cap.sessionId, { executionMode: 'cron' }),
       })
-      if (result.accepted) counts.fired.recordingReady++
+      if (result.accepted) {
+        counts.fired.recordingReady++
+      } else if (result.reason === 'duplicate' && result.eventId) {
+        // Prior emit landed but the absence of an AutomationExecution row
+        // proves dispatch didn't reach executeStep. The (workspaceId,
+        // eventKey) dedup blocks the normal recovery path: emit returned
+        // "duplicate" so the dispatch closure we passed never ran. The
+        // orphan sweep is also no help — it skips events whose
+        // dispatchedAt is already set. Force-dispatch directly and re-stamp
+        // the audit row so the next sweep has clean state to reason about.
+        const eventId = result.eventId
+        try {
+          await fireFlowRecordingReadyAutomations(cap.sessionId, { executionMode: 'cron' })
+          await prisma.automationEvent
+            .update({ where: { id: eventId }, data: { dispatchedAt: new Date(), dispatchError: null } })
+            .catch(() => {})
+          counts.fired.recordingReady++
+        } catch (recoverErr) {
+          const message = recoverErr instanceof Error ? recoverErr.message : String(recoverErr)
+          await prisma.automationEvent
+            .update({ where: { id: eventId }, data: { dispatchError: message.slice(0, 1000) } })
+            .catch(() => {})
+          throw recoverErr
+        }
+      }
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] fireFlowRecordingReadyAutomations failed', { captureId: cap.id, err })
