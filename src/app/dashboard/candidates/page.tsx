@@ -1451,28 +1451,38 @@ function CandidatesPageInner() {
                             </button>
                           </div>
                           <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                            {/* Outcome badge: green with the stage label when
-                                the candidate is still progressing (or hired);
-                                red "Not finished" when they stalled / lost
-                                somewhere (e.g. didn't submit a video, didn't
-                                complete training). Disposition pill below
-                                still surfaces *which* step was dropped. */}
+                            {/* Outcome badge: green with the stage label only
+                                when the candidate *passed* that stage (i.e.
+                                advanced into it via a trigger). Red "Not
+                                finished" otherwise — sitting in the entry
+                                stage with no flow completion, stalled/lost
+                                via cron, or in a danger-toned stage like
+                                Rejected. The entry-stage rule is the one
+                                that catches "applied but never recorded";
+                                status='active' alone isn't enough because
+                                the stalled cron lags by days. */}
                             {(() => {
                               const rawStatus: string = c.status ?? 'active'
-                              const didNotFinish = rawStatus === 'stalled' || rawStatus === 'lost'
+                              const stage = resolveStage(c.pipelineStatus, stages)
+                              const stuckAtEntry = stage.order === 0 && !c.finishedAt
+                              const dangerStage = stage.tone === 'danger'
+                              const didNotFinish = rawStatus === 'stalled' || rawStatus === 'lost' || stuckAtEntry || dangerStage
                               if (didNotFinish) {
                                 const reason = c.dispositionReason && DISPOSITION_DISPLAY[c.dispositionReason]
                                   ? DISPOSITION_DISPLAY[c.dispositionReason]
-                                  : 'Candidate did not finish this step'
+                                  : c.rejectionReason
+                                    ? c.rejectionReason
+                                    : stuckAtEntry
+                                      ? `Started application but did not complete (still at "${stage.label}")`
+                                      : 'Candidate did not finish this step'
                                 return (
                                   <span title={reason} className="inline-flex">
                                     <Badge tone="danger">Not finished</Badge>
                                   </span>
                                 )
                               }
-                              const stage = resolveStage(c.pipelineStatus, stages)
                               return (
-                                <span title={`Reached: ${stage.label}`} className="inline-flex">
+                                <span title={`Passed: ${stage.label}`} className="inline-flex">
                                   <Badge tone="success">{stage.label}</Badge>
                                 </span>
                               )
