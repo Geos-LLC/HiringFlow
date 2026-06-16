@@ -119,13 +119,6 @@ const DISPOSITION_TINT: Partial<Record<CandidateStatus, { bg: string; text: stri
   nurture: { bg: 'bg-surface-light', text: 'text-grey-15', border: 'border-surface-border' },
 }
 
-function daysSince(iso: string | null | undefined): number | null {
-  if (!iso) return null
-  const ms = Date.now() - new Date(iso).getTime()
-  if (!isFinite(ms) || ms < 0) return null
-  return Math.floor(ms / (24 * 60 * 60 * 1000))
-}
-
 // Compact "X ago" for the per-card latest-step line. Coarsens up the unit so
 // the card stays narrow ("3h", "2d", "5w") instead of wrapping.
 function shortAgo(iso: string | null | undefined): string | null {
@@ -1458,38 +1451,36 @@ function CandidatesPageInner() {
                             </button>
                           </div>
                           <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                            {/* Status badge replaces the stage badge here —
-                                the kanban column already labels the stage,
-                                so showing it on every card is redundant.
-                                Days-since indicator: stalled/lost/hired use
-                                their lifecycle stamp; active/waiting/nurture
-                                fall back to the application date so the
-                                badge is uniformly "<status> · <days>d". */}
+                            {/* Outcome badge: green with the stage label when
+                                the candidate is still progressing (or hired);
+                                red "Not finished" when they stalled / lost
+                                somewhere (e.g. didn't submit a video, didn't
+                                complete training). Disposition pill below
+                                still surfaces *which* step was dropped. */}
                             {(() => {
                               const rawStatus: string = c.status ?? 'active'
-                              const builtin = (STATUS_DISPLAY as Record<string, { label: string; tone: 'neutral' | 'brand' | 'success' | 'warn' | 'info' | 'danger' }>)[rawStatus]
-                              const custom = customStatuses.find((cs) => cs.id === rawStatus)
-                              const meta = builtin
-                                ? builtin
-                                : custom
-                                  ? { label: custom.label, tone: custom.tone }
-                                  : { label: rawStatus, tone: 'neutral' as const }
-                              const stamp = rawStatus === 'stalled' ? c.stalledAt
-                                : rawStatus === 'lost' ? c.lostAt
-                                : rawStatus === 'hired' ? c.hiredAt
-                                : c.startedAt
-                              const days = daysSince(stamp)
+                              const didNotFinish = rawStatus === 'stalled' || rawStatus === 'lost'
+                              if (didNotFinish) {
+                                const reason = c.dispositionReason && DISPOSITION_DISPLAY[c.dispositionReason]
+                                  ? DISPOSITION_DISPLAY[c.dispositionReason]
+                                  : 'Candidate did not finish this step'
+                                return (
+                                  <span title={reason} className="inline-flex">
+                                    <Badge tone="danger">Not finished</Badge>
+                                  </span>
+                                )
+                              }
+                              const stage = resolveStage(c.pipelineStatus, stages)
                               return (
-                                <Badge tone={meta.tone}>
-                                  {meta.label}{days !== null ? ` · ${days}d` : ''}
-                                </Badge>
+                                <span title={`Reached: ${stage.label}`} className="inline-flex">
+                                  <Badge tone="success">{stage.label}</Badge>
+                                </span>
                               )
                             })()}
                             {/* Structured disposition reason — uses humanized
                                 label from DISPOSITION_DISPLAY. Tinted by
                                 the candidate's current status so stalled
-                                reasons read amber and lost reasons red,
-                                consistent with the status badge palette. */}
+                                reasons read amber and lost reasons red. */}
                             {c.dispositionReason && DISPOSITION_DISPLAY[c.dispositionReason] && (() => {
                               const tint = DISPOSITION_TINT[(c.status ?? 'active') as CandidateStatus]
                                 ?? { bg: 'bg-surface-light', text: 'text-grey-15', border: 'border-surface-border' }
