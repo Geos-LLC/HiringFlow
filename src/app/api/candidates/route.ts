@@ -244,10 +244,26 @@ export async function GET(request: NextRequest) {
       ad: { select: { id: true, name: true, source: true } },
       answers: { select: { id: true } },
       submissions: { select: { id: true } },
+      // The FlowStep the candidate was last viewing — used to label the
+      // "Not finished on X" pill on the kanban card when they abandoned
+      // mid-flow. Carries questionText for question/capture steps because
+      // recruiters often leave title='Step 3' and the actual prompt lives
+      // in questionText.
+      lastStep: { select: { id: true, title: true, questionText: true, stepType: true, stepOrder: true } },
       trainingEnrollments: {
         select: {
           id: true, status: true, startedAt: true, completedAt: true,
-          training: { select: { title: true } },
+          progress: true,
+          training: {
+            select: {
+              id: true,
+              title: true,
+              sections: {
+                select: { id: true, title: true, sortOrder: true },
+                orderBy: { sortOrder: 'asc' },
+              },
+            },
+          },
         },
       },
       schedulingEvents: { select: { id: true, eventType: true, eventAt: true, metadata: true } },
@@ -396,6 +412,59 @@ export async function GET(request: NextRequest) {
     return { label: best.label, at: best.at.toISOString() }
   }
 
+  // Exact "where they dropped off" for a candidate stuck mid-funnel. Drives
+  // the "Not finished on <X>" pill on the kanban card so recruiters can see
+  // the specific step without opening the profile. Resolution order:
+  //   1. Interview no-show (terminal — always wins if present)
+  //   2. Active training enrollment → current section title from progress
+  //   3. Flow incomplete (no finishedAt) → Session.lastStep.title
+  //   4. Never opened the flow → "Did not open the flow"
+  // Returns null when the candidate is progressing fine (caller treats null
+  // as "no drop-off label needed", i.e. green stage badge wins).
+  const computeDropOffPoint = (s: typeof sessions[number]): { kind: string; label: string } | null => {
+    // Interview no-show beats everything below.
+    const noShow = s.schedulingEvents.find((e) => e.eventType === 'meeting_no_show')
+    if (noShow) return { kind: 'interview', label: 'Interview no-show' }
+
+    // Training currently in progress — surface the section they're stuck on.
+    // The candidate-side training UI writes progress.currentLesson.sectionId
+    // each time they open a section, and pushes the section id into
+    // progress.completedSections[] when the section finishes. We prefer the
+    // recorded currentLesson; fall back to the first not-yet-completed
+    // section in sortOrder.
+    const enrolled = s.trainingEnrollments.find((te) => te.status === 'in_progress' && !te.completedAt)
+    if (enrolled) {
+      const sections = enrolled.training.sections ?? []
+      const progress = (enrolled.progress ?? {}) as { completedSections?: string[]; currentLesson?: { sectionId?: string } }
+      const completed = new Set(progress.completedSections ?? [])
+      const currentId = progress.currentLesson?.sectionId
+      const current = currentId ? sections.find((sec) => sec.id === currentId) : null
+      const firstUnfinished = sections.find((sec) => !completed.has(sec.id))
+      const target = current ?? firstUnfinished
+      const trainingTitle = enrolled.training.title
+      if (target) return { kind: 'training', label: `Training: ${target.title}` }
+      return { kind: 'training', label: `Training: ${trainingTitle}` }
+    }
+
+    // Flow incomplete — Session.lastStep is the FlowStep the candidate last
+    // viewed (set by the flow runner on every step nav). Use questionText
+    // when the recruiter left title='Step 3' default and put the real
+    // prompt in the question field.
+    if (!s.finishedAt) {
+      const ls = s.lastStep
+      if (ls) {
+        const raw = ls.title?.trim() || ls.questionText?.trim() || ''
+        const looksLikeDefault = /^step\s*\d+$/i.test(raw)
+        const label = (!raw || looksLikeDefault) && ls.questionText?.trim()
+          ? ls.questionText.trim()
+          : raw || `Step ${ls.stepOrder + 1}`
+        return { kind: 'flow', label }
+      }
+      return { kind: 'application', label: 'Did not open the flow' }
+    }
+    return null
+  }
+
   // Next upcoming meeting time. Prefer the InterviewMeeting (Meet v2 row) when
   // present; fall back to the latest meeting_scheduled / meeting_rescheduled
   // SchedulingEvent's metadata for legacy / Calendly bookings that didn't go
@@ -447,6 +516,7 @@ export async function GET(request: NextRequest) {
     lastSchedulingEvent: s.schedulingEvents[0]?.eventType || null,
     nextMeetingAt: computeNextMeetingAt(s),
     latestStep: computeLatestStep(s),
+    dropOffPoint: computeDropOffPoint(s),
   })))
 }
 

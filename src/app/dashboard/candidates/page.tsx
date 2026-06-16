@@ -57,6 +57,11 @@ interface Candidate {
   // server-side so the card can show "where this candidate is right now"
   // without each row pulling its own timeline.
   latestStep?: { label: string; at: string } | null
+  // Exact step the candidate dropped off on, when they didn't finish. Server-
+  // computed: flow step title for mid-flow drop-offs, training section title
+  // for mid-training drop-offs, "Interview no-show" for missed meetings.
+  // Null when the candidate is still progressing (no drop-off to label).
+  dropOffPoint?: { kind: string; label: string } | null
 }
 
 // Status tabs above the kanban. The "Active" tab — the default view —
@@ -1451,16 +1456,16 @@ function CandidatesPageInner() {
                             </button>
                           </div>
                           <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                            {/* Outcome badge: green with the stage label only
-                                when the candidate *passed* that stage (i.e.
-                                advanced into it via a trigger). Red "Not
-                                finished" otherwise — sitting in the entry
-                                stage with no flow completion, stalled/lost
-                                via cron, or in a danger-toned stage like
-                                Rejected. The entry-stage rule is the one
-                                that catches "applied but never recorded";
-                                status='active' alone isn't enough because
-                                the stalled cron lags by days. */}
+                            {/* Outcome badge + drop-off pill. Green stage
+                                label = passed that stage; red "Not finished"
+                                + a second pill naming the exact step they
+                                stopped on (flow step, training section, or
+                                "Interview no-show") = where they dropped.
+                                The disposition pill is only shown as the
+                                fallback when the server couldn't compute a
+                                more specific drop-off (avoids duplication
+                                between "Video interview not completed" and
+                                the actual step name). */}
                             {(() => {
                               const rawStatus: string = c.status ?? 'active'
                               const stage = resolveStage(c.pipelineStatus, stages)
@@ -1468,38 +1473,42 @@ function CandidatesPageInner() {
                               const dangerStage = stage.tone === 'danger'
                               const didNotFinish = rawStatus === 'stalled' || rawStatus === 'lost' || stuckAtEntry || dangerStage
                               if (didNotFinish) {
-                                const reason = c.dispositionReason && DISPOSITION_DISPLAY[c.dispositionReason]
+                                const dropOff = c.dropOffPoint?.label ?? null
+                                const dispositionLabel = c.dispositionReason && DISPOSITION_DISPLAY[c.dispositionReason]
                                   ? DISPOSITION_DISPLAY[c.dispositionReason]
-                                  : c.rejectionReason
-                                    ? c.rejectionReason
-                                    : stuckAtEntry
-                                      ? `Started application but did not complete (still at "${stage.label}")`
-                                      : 'Candidate did not finish this step'
+                                  : null
+                                const detail = dropOff || dispositionLabel || c.rejectionReason || 'Candidate did not finish this step'
                                 return (
-                                  <span title={reason} className="inline-flex">
-                                    <Badge tone="danger">Not finished</Badge>
-                                  </span>
+                                  <>
+                                    <span title={`Not finished — ${detail}`} className="inline-flex">
+                                      <Badge tone="danger">Not finished</Badge>
+                                    </span>
+                                    {dropOff && (
+                                      <span
+                                        title={`Stuck on: ${dropOff}`}
+                                        className="inline-flex items-center max-w-[200px] truncate text-[10px] px-2 py-0.5 rounded-full font-medium border bg-red-50 text-red-700 border-red-200"
+                                      >
+                                        {dropOff}
+                                      </span>
+                                    )}
+                                    {!dropOff && dispositionLabel && (() => {
+                                      const tint = DISPOSITION_TINT[(c.status ?? 'active') as CandidateStatus]
+                                        ?? { bg: 'bg-surface-light', text: 'text-grey-15', border: 'border-surface-border' }
+                                      return (
+                                        <span
+                                          title={`Disposition: ${dispositionLabel}`}
+                                          className={`inline-flex items-center max-w-[160px] truncate text-[10px] px-2 py-0.5 rounded-full font-medium border ${tint.bg} ${tint.text} ${tint.border}`}
+                                        >
+                                          {dispositionLabel}
+                                        </span>
+                                      )
+                                    })()}
+                                  </>
                                 )
                               }
                               return (
                                 <span title={`Passed: ${stage.label}`} className="inline-flex">
                                   <Badge tone="success">{stage.label}</Badge>
-                                </span>
-                              )
-                            })()}
-                            {/* Structured disposition reason — uses humanized
-                                label from DISPOSITION_DISPLAY. Tinted by
-                                the candidate's current status so stalled
-                                reasons read amber and lost reasons red. */}
-                            {c.dispositionReason && DISPOSITION_DISPLAY[c.dispositionReason] && (() => {
-                              const tint = DISPOSITION_TINT[(c.status ?? 'active') as CandidateStatus]
-                                ?? { bg: 'bg-surface-light', text: 'text-grey-15', border: 'border-surface-border' }
-                              return (
-                                <span
-                                  title={`Disposition: ${DISPOSITION_DISPLAY[c.dispositionReason]}`}
-                                  className={`inline-flex items-center max-w-[160px] truncate text-[10px] px-2 py-0.5 rounded-full font-medium border ${tint.bg} ${tint.text} ${tint.border}`}
-                                >
-                                  {DISPOSITION_DISPLAY[c.dispositionReason]}
                                 </span>
                               )
                             })()}
