@@ -247,6 +247,56 @@ function CampaignsPageInner() {
     if (!name?.trim()) return
     router.push(`/dashboard/campaigns/${encodeURIComponent(name.trim())}`)
   }
+  // Duplicate every ad in a position into a brand-new position. Mirrors the
+  // per-ad `confirmDuplicate` field-copy rules (placementUrl + templateId
+  // intentionally dropped) but applied in bulk, with the new targetPosition
+  // pointing at the name the recruiter types in. Skipped for Unassigned —
+  // there's no meaningful "copy of unassigned" since the bucket is defined
+  // by absence of a position, not a real value to duplicate.
+  const [duplicatingPosition, setDuplicatingPosition] = useState<string | null>(null)
+  const duplicatePosition = async (sourceLabel: string) => {
+    const next = window.prompt(`Duplicate "${sourceLabel}" — name for the new position:`, `${sourceLabel} (copy)`)
+    if (next === null) return
+    const trimmed = next.trim()
+    if (!trimmed) { alert('Position name cannot be empty.'); return }
+    if (existingPositionNames.includes(trimmed)) {
+      alert(`A position named "${trimmed}" already exists.`)
+      return
+    }
+    const sourceAds = ads.filter((a) => a.targetPosition === sourceLabel)
+    if (sourceAds.length === 0) return
+    setDuplicatingPosition(sourceLabel)
+    try {
+      const results = await Promise.all(sourceAds.map((ad) =>
+        fetch('/api/ads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: ad.name,
+            source: ad.source,
+            campaign: ad.campaign,
+            targetPosition: trimmed,
+            flowId: ad.flowId,
+            imageUrl: ad.imageUrl,
+            placementUrl: null,
+            templateId: null,
+            headline: ad.headline,
+            bodyText: ad.bodyText,
+            requirements: ad.requirements,
+            benefits: ad.benefits,
+            callToAction: ad.callToAction,
+            notes: ad.notes,
+          }),
+        })
+      ))
+      const failed = results.filter((r) => !r.ok).length
+      await refresh()
+      if (failed > 0) alert(`${failed} of ${sourceAds.length} ad(s) failed to duplicate.`)
+    } finally {
+      setDuplicatingPosition(null)
+    }
+  }
+
   const renamePositionInline = async (currentLabel: string) => {
     const next = window.prompt(`Rename "${currentLabel}" to:`, currentLabel)
     if (next === null) return
@@ -847,15 +897,26 @@ function CampaignsPageInner() {
                         Assign to position
                       </button>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => renamePositionInline(g.label)}
-                        disabled={renamingPosition === g.label}
-                        className="w-full inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] bg-ink text-white hover:bg-grey-15 disabled:opacity-50 font-medium"
-                        title="Rename this position (bulk-updates every ad in it)"
-                      >
-                        {renamingPosition === g.label ? 'Renaming…' : 'Edit position'}
-                      </button>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => renamePositionInline(g.label)}
+                          disabled={renamingPosition === g.label || duplicatingPosition === g.label}
+                          className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] bg-ink text-white hover:bg-grey-15 disabled:opacity-50 font-medium"
+                          title="Rename this position (bulk-updates every ad in it)"
+                        >
+                          {renamingPosition === g.label ? 'Renaming…' : 'Edit position'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => duplicatePosition(g.label)}
+                          disabled={duplicatingPosition === g.label || renamingPosition === g.label}
+                          className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light disabled:opacity-50 font-medium"
+                          title="Copy every ad in this position into a new position"
+                        >
+                          {duplicatingPosition === g.label ? 'Duplicating…' : 'Duplicate'}
+                        </button>
+                      </div>
                     )}
                     <div className="grid grid-cols-2 gap-2">
                       <Link
