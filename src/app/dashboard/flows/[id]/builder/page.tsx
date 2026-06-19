@@ -93,6 +93,50 @@ export default function FlowBuilderPage() {
   const [previewStepId, setPreviewStepId] = useState<string | null>(null)
   const [hasChanges, setHasChanges] = useState(false)
 
+  // Undo stack for Visual Flow connection ops. Every change here persists
+  // immediately to the API, so plain state rollback doesn't help — each entry
+  // stashes the *inverse* call (re-target arrow, recreate option, restore
+  // start/end message) and replays it through the same handlers. No redo.
+  type UndoEntry = { run: () => Promise<void> | void }
+  const undoStackRef = useRef<UndoEntry[]>([])
+  const [undoVersion, setUndoVersion] = useState(0)
+  const undoInFlightRef = useRef(false)
+  const pushUndo = (entry: UndoEntry) => {
+    undoStackRef.current.push(entry)
+    if (undoStackRef.current.length > 50) undoStackRef.current.shift()
+    setUndoVersion((v) => v + 1)
+  }
+  const handleUndo = async () => {
+    if (undoInFlightRef.current) return
+    const entry = undoStackRef.current.pop()
+    if (!entry) return
+    setUndoVersion((v) => v + 1)
+    undoInFlightRef.current = true
+    try {
+      await entry.run()
+    } catch (err) {
+      console.error('undo failed', err)
+    } finally {
+      undoInFlightRef.current = false
+    }
+  }
+  // Global Ctrl/Cmd+Z. Skip when typing in a field so it doesn't fight
+  // browser-native text undo inside inputs.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z'
+      if (!isUndo) return
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if ((e.target as HTMLElement | null)?.isContentEditable) return
+      if (undoStackRef.current.length === 0) return
+      e.preventDefault()
+      void handleUndo()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   useEffect(() => {
     fetchFlow()
     fetchVideos()
@@ -232,7 +276,11 @@ export default function FlowBuilderPage() {
     )
   }, [pendingArrowInsertion])
 
-  const createStep = async (stepType: string, config?: Record<string, unknown>) => {
+  const createStep = async (
+    stepType: string,
+    config?: Record<string, unknown>,
+    opts?: { combineSourceId?: string },
+  ) => {
     markChanged()
     const stepNum = (flow?.steps.length || 0) + 1
     const defaults: Record<string, Record<string, unknown>> = {
@@ -271,9 +319,12 @@ export default function FlowBuilderPage() {
       const newStep = await res.json()
       setShowAddStepModal(false)
 
-      // Auto-combine if triggered from Combine dropdown
-      if (combineAfterCreateId) {
-        await fetch(`/api/steps/${combineAfterCreateId}`, {
+      // Auto-combine if triggered from Combine UI (explicit param wins over
+      // state because callers that bypass the add-step modal can't rely on
+      // setCombineAfterCreateId having flushed before the create.)
+      const combineSourceId = opts?.combineSourceId ?? combineAfterCreateId
+      if (combineSourceId) {
+        await fetch(`/api/steps/${combineSourceId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ combinedWithId: newStep.id }),
@@ -791,7 +842,7 @@ export default function FlowBuilderPage() {
     }
   }
 
-  const connectSteps = async (fromStepId: string, toStepId: string) => {
+  const connectSteps = async (fromStepId: string, toStepId: string): Promise<string | null> => {
     markChanged()
     // Create a new option on the source step pointing to the target
     const res = await fetch(`/api/steps/${fromStepId}/options`, {
@@ -820,7 +871,9 @@ export default function FlowBuilderPage() {
             }
           : null
       )
+      return newOption.id as string
     }
+    return null
   }
 
   const updateButtonConfigNext = async (stepId: string, nextStepId: string | null) => {
@@ -974,6 +1027,10 @@ export default function FlowBuilderPage() {
     fetchFlow()
     setHasChanges(false)
     setPopupStepId(null)
+    // Drop the undo stack — replaying inverses against the refreshed flow
+    // would race with the in-flight fetch and confuse the user.
+    undoStackRef.current = []
+    setUndoVersion((v) => v + 1)
   }
 
   const handleSave = () => {
@@ -1070,16 +1127,99 @@ export default function FlowBuilderPage() {
     )
   }
 
+  // Lists every step whose forward link (button or question option) points at
+  // `step` — i.e. the steps that route INTO it. Used by the "Previous step"
+  // panel below.
+  const findPredecessors = (step: Step): Array<{ id: string; title: string; via: 'button' | 'option' }> => {
+    if (!flow) return []
+    const out: Array<{ id: string; title: string; via: 'button' | 'option' }> = []
+    for (const s of flow.steps) {
+      if (s.id === step.id) continue
+      if (s.buttonConfig?.nextStepId === step.id) {
+        out.push({ id: s.id, title: s.title, via: 'button' })
+      } else if (s.stepType === 'question' && s.options.some(o => o.nextStepId === step.id)) {
+        out.push({ id: s.id, title: s.title, via: 'option' })
+      }
+    }
+    return out
+  }
+
+  const renderPreviousStepConfig = (step: Step) => {
+    if (!flow) return null
+    const predecessors = findPredecessors(step)
+    // Only button-bearing types are pickable — they have a single deterministic
+    // nextStepId we can flip. Question predecessors would need an option-target
+    // choice that doesn't fit in this row.
+    const pickableTypes = new Set(['submission', 'form', 'info', 'capture'])
+    const predecessorIds = new Set(predecessors.map(p => p.id))
+    const pickable = flow.steps.filter(s =>
+      s.id !== step.id
+      && pickableTypes.has(s.stepType)
+      && !predecessorIds.has(s.id)
+    )
+
+    return (
+      <div className="border-t border-surface-border pt-4 mt-4">
+        <label className="text-sm font-medium text-grey-20 block mb-2">Previous step</label>
+        {predecessors.length > 0 ? (
+          <div className="space-y-1.5 mb-2">
+            {predecessors.map(p => (
+              <div key={`${p.id}-${p.via}`} className="flex items-center gap-2 p-2.5 bg-brand-50 rounded-[8px] border border-brand-200">
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-brand-100 text-brand-600">
+                  {p.via === 'button' ? 'Button' : 'Option'}
+                </span>
+                <span className="text-sm text-grey-15 flex-1 truncate">{p.title}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-grey-40 mb-2">No step routes here yet.</p>
+        )}
+        {pickable.length > 0 && (
+          <select
+            value=""
+            onChange={async (e) => {
+              const sourceId = e.target.value
+              if (!sourceId) return
+              const source = flow.steps.find(s => s.id === sourceId)
+              if (!source) return
+              const buttonConfig = {
+                ...(source.buttonConfig ?? { enabled: true, text: 'Continue' }),
+                enabled: true,
+                nextStepId: step.id,
+              }
+              await updateStep(sourceId, { buttonConfig } as any)
+            }}
+            className="w-full px-3 py-2 text-sm border border-surface-border rounded-[8px] text-grey-15 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          >
+            <option value="">Set a previous step…</option>
+            {pickable.map(s => (
+              <option key={s.id} value={s.id}>
+                {s.title}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+    )
+  }
+
   const renderCombineConfig = (step: Step) => {
     const forwardId = step.combinedWithId || null
     const reverseStep = flow?.steps.find(s => s.combinedWithId === step.id) || null
     const combinedId = forwardId || reverseStep?.id || null
     const isCombined = !!combinedId
-    const otherSteps = flow?.steps.filter(s =>
-      s.id !== step.id
-      && !s.combinedWithId
-      && !flow.steps.some(o => o.combinedWithId === s.id)
-    ) || []
+
+    // Type choices for "Combine with" — clicking creates a new step of that
+    // type AND combines it with the current step in one go. Audio answer is
+    // gated by the same composite flag used in the add-step modal.
+    const combineTypes: Array<{ key: string; label: string }> = [
+      { key: 'submission', label: 'Video' },
+      ...(flow?.captureStepsEnabled ? [{ key: 'capture', label: 'Audio' }] : []),
+      { key: 'question', label: 'Question' },
+      { key: 'form', label: 'Form' },
+      { key: 'info', label: 'Screen' },
+    ]
 
     return (
       <div className="border-t border-surface-border pt-4 mt-4">
@@ -1093,7 +1233,7 @@ export default function FlowBuilderPage() {
                 if (forwardId) updateStep(step.id, { combinedWithId: null } as any)
                 if (reverseStep) updateStep(reverseStep.id, { combinedWithId: null } as any)
               } else {
-                // Turn on — show dropdown
+                // Turn on — reveal the type picker
                 setCombineEnabled(true)
               }
             }}
@@ -1103,36 +1243,21 @@ export default function FlowBuilderPage() {
           </button>
         </div>
         {(combineEnabled && !isCombined) && (
-          <select
-            value=""
-            onChange={(e) => {
-              if (e.target.value === '__create__') { setCombineEnabled(false); setCombineAfterCreateId(step.id); addStep(); return }
-              if (e.target.value) { updateStep(step.id, { combinedWithId: e.target.value } as any); setCombineEnabled(false) }
-            }}
-            className="w-full px-3 py-2 text-sm border border-surface-border rounded-[8px] text-grey-15 focus:outline-none focus:ring-1 focus:ring-brand-500"
-          >
-            <option value="">Select step to combine with...</option>
-            {(() => {
-              const groups = [
-                { type: 'submission', label: 'Video' },
-                { type: 'question', label: 'Question' },
-                { type: 'form', label: 'Form' },
-                { type: 'info', label: 'Screen' },
-              ]
-              return groups.map(g => {
-                const groupSteps = otherSteps.filter(s => s.stepType === g.type)
-                if (groupSteps.length === 0) return null
-                return (
-                  <optgroup key={g.type} label={g.label}>
-                    {groupSteps.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
-                  </optgroup>
-                )
-              })
-            })()}
-            <optgroup label="—">
-              <option value="__create__">+ Create new step...</option>
-            </optgroup>
-          </select>
+          <div className="grid grid-cols-2 gap-2">
+            {combineTypes.map(t => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => {
+                  setCombineEnabled(false)
+                  createStep(t.key, undefined, { combineSourceId: step.id })
+                }}
+                className="px-3 py-2 text-sm border border-surface-border rounded-[8px] text-grey-15 hover:border-brand-500 hover:bg-brand-50 font-medium text-left"
+              >
+                + {t.label}
+              </button>
+            ))}
+          </div>
         )}
         {isCombined && (() => {
           const partner = flow?.steps.find(s => s.id === combinedId)
@@ -1336,6 +1461,20 @@ export default function FlowBuilderPage() {
             {copied ? 'Copied!' : 'Copy Link'}
           </button>
 
+          {viewMode === 'schema' && undoStackRef.current.length > 0 && (
+            <button
+              onClick={handleUndo}
+              title="Undo last change (Ctrl+Z)"
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 8h10a4 4 0 0 1 0 8H8" />
+                <path d="M7 4 3 8l4 4" />
+              </svg>
+              Undo
+            </button>
+          )}
+
           {/* Status badge */}
           <span
             className={`px-3 py-1.5 text-sm rounded-md ${
@@ -1443,16 +1582,54 @@ export default function FlowBuilderPage() {
               setPopupStepId(null)
             }}
             onOptionUpdate={(optionId, data) => {
+              // Capture prior nextStepId from current flow state so undo can
+              // restore it (covers Delete-key disconnect, arrowhead retarget,
+              // and right-click "Remove connection").
+              let priorNextStepId: string | null | undefined
+              for (const s of flow.steps) {
+                const opt = s.options.find((o) => o.id === optionId)
+                if (opt) { priorNextStepId = opt.nextStepId; break }
+              }
+              const nextVal = data.nextStepId ?? null
+              if (priorNextStepId !== undefined && priorNextStepId !== nextVal) {
+                pushUndo({
+                  run: () => updateOption(optionId, { nextStepId: priorNextStepId ?? null }),
+                })
+              }
               updateOption(optionId, data)
             }}
-            onConnectSteps={connectSteps}
+            onConnectSteps={async (fromStepId, toStepId) => {
+              const newOptId = await connectSteps(fromStepId, toStepId)
+              if (newOptId) {
+                pushUndo({ run: () => deleteOption(fromStepId, newOptId) })
+              }
+            }}
             onChangeFirstStep={changeFirstStep}
             onChangeEndStep={changeEndStep}
             onAddStep={addStep}
             onInsertStepOnArrow={insertStepOnArrow}
-            onButtonConfigUpdate={updateButtonConfigNext}
-            onClearStartScreen={() => updateFlow({ startMessage: '' })}
-            onClearEndScreen={() => updateFlow({ endMessage: '' })}
+            onButtonConfigUpdate={(stepId, nextStepId) => {
+              const step = flow.steps.find((s) => s.id === stepId)
+              const prior = step?.buttonConfig?.nextStepId ?? null
+              if (prior !== nextStepId) {
+                pushUndo({ run: () => updateButtonConfigNext(stepId, prior) })
+              }
+              updateButtonConfigNext(stepId, nextStepId)
+            }}
+            onClearStartScreen={() => {
+              const prior = flow.startMessage
+              if (prior) {
+                pushUndo({ run: () => updateFlow({ startMessage: prior }) })
+              }
+              updateFlow({ startMessage: '' })
+            }}
+            onClearEndScreen={() => {
+              const prior = flow.endMessage
+              if (prior) {
+                pushUndo({ run: () => updateFlow({ endMessage: prior }) })
+              }
+              updateFlow({ endMessage: '' })
+            }}
             initialPositions={flow.canvasLayout ?? null}
             onPositionsChange={savePositions}
           />
@@ -1562,6 +1739,7 @@ export default function FlowBuilderPage() {
                           <video src={popupStep.video.url} controls className="w-full rounded-[8px] max-h-[50vh] object-contain" />
                         )}
                         {renderButtonConfig(popupStep)}
+                        {renderPreviousStepConfig(popupStep)}
                         {renderCombineConfig(popupStep)}
                       </div>
                     )}
@@ -1629,6 +1807,7 @@ export default function FlowBuilderPage() {
                             </div>
                           </div>
                         )}
+                        {renderPreviousStepConfig(popupStep)}
                         {renderCombineConfig(popupStep)}
                       </div>
                     )}
@@ -1730,6 +1909,7 @@ export default function FlowBuilderPage() {
                             </div>
                           </div>
                           {renderButtonConfig(popupStep)}
+                        {renderPreviousStepConfig(popupStep)}
                         {renderCombineConfig(popupStep)}
                         </div>
                       )
@@ -1788,6 +1968,7 @@ export default function FlowBuilderPage() {
                           )}
                         </div>
                         {renderButtonConfig(popupStep)}
+                        {renderPreviousStepConfig(popupStep)}
                         {renderCombineConfig(popupStep)}
                       </div>
                     )}
