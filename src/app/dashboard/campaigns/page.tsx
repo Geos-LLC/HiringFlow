@@ -247,6 +247,48 @@ function CampaignsPageInner() {
     if (!name?.trim()) return
     router.push(`/dashboard/campaigns/${encodeURIComponent(name.trim())}`)
   }
+  // Tracks which position card's kebab menu is open (g.key, never label —
+  // Unassigned uses the sentinel so we keep things consistent). Single key
+  // because only one menu can be open at a time. Closed on outside click via
+  // the effect below.
+  const [openMenuKey, setOpenMenuKey] = useState<string | null>(null)
+  useEffect(() => {
+    if (!openMenuKey) return
+    const onDocMouseDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t?.closest('[data-position-menu]')) setOpenMenuKey(null)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [openMenuKey])
+
+  // "Delete" a position: there's no Position row to remove (positions live as
+  // a free-text string on Ad.targetPosition), so this nulls the field on
+  // every ad in the bucket, sending them to Unassigned. The ad rows are
+  // preserved — per-ad Delete on the position detail page is the path for
+  // actually destroying ads.
+  const [deletingPosition, setDeletingPosition] = useState<string | null>(null)
+  const deletePosition = async (sourceLabel: string) => {
+    const matching = ads.filter((a) => a.targetPosition === sourceLabel)
+    const count = matching.length
+    if (!window.confirm(`Delete position "${sourceLabel}"? ${count} ad${count === 1 ? '' : 's'} will be moved to Unassigned (ads themselves are kept).`)) return
+    setDeletingPosition(sourceLabel)
+    try {
+      const results = await Promise.all(matching.map((ad) =>
+        fetch(`/api/ads/${ad.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetPosition: null }),
+        })
+      ))
+      const failed = results.filter((r) => !r.ok).length
+      await refresh()
+      if (failed > 0) alert(`${failed} ad update(s) failed.`)
+    } finally {
+      setDeletingPosition(null)
+    }
+  }
+
   // Duplicate every ad in a position into a brand-new position. Mirrors the
   // per-ad `confirmDuplicate` field-copy rules (placementUrl + templateId
   // intentionally dropped) but applied in bulk, with the new targetPosition
@@ -857,8 +899,59 @@ function CampaignsPageInner() {
                         {g.adsCount} ad{g.adsCount === 1 ? '' : 's'} · {g.activeCount} active
                       </div>
                     </div>
-                    {g.key === UNASSIGNED_POSITION_SLUG && (
+                    {g.key === UNASSIGNED_POSITION_SLUG ? (
                       <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-surface-light text-grey-50">No position</span>
+                    ) : (
+                      <div className="relative shrink-0" data-position-menu>
+                        <button
+                          type="button"
+                          onClick={() => setOpenMenuKey(openMenuKey === g.key ? null : g.key)}
+                          className="w-7 h-7 flex items-center justify-center rounded-md text-grey-40 hover:text-ink hover:bg-surface-light"
+                          aria-label="Position actions"
+                          aria-haspopup="menu"
+                          aria-expanded={openMenuKey === g.key}
+                        >
+                          <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+                            <circle cx="8" cy="3" r="1.4" />
+                            <circle cx="8" cy="8" r="1.4" />
+                            <circle cx="8" cy="13" r="1.4" />
+                          </svg>
+                        </button>
+                        {openMenuKey === g.key && (
+                          <div
+                            role="menu"
+                            className="absolute right-0 top-8 z-20 w-44 rounded-[10px] border border-surface-border bg-white shadow-lg py-1"
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => { setOpenMenuKey(null); renamePositionInline(g.label) }}
+                              disabled={renamingPosition === g.label}
+                              className="w-full text-left px-3 py-1.5 text-[13px] text-grey-15 hover:bg-surface-light disabled:opacity-50"
+                            >
+                              {renamingPosition === g.label ? 'Renaming…' : 'Edit position'}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => { setOpenMenuKey(null); duplicatePosition(g.label) }}
+                              disabled={duplicatingPosition === g.label}
+                              className="w-full text-left px-3 py-1.5 text-[13px] text-grey-15 hover:bg-surface-light disabled:opacity-50"
+                            >
+                              {duplicatingPosition === g.label ? 'Duplicating…' : 'Duplicate'}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => { setOpenMenuKey(null); deletePosition(g.label) }}
+                              disabled={deletingPosition === g.label}
+                              className="w-full text-left px-3 py-1.5 text-[13px] text-red-600 hover:bg-red-50 disabled:opacity-50"
+                            >
+                              {deletingPosition === g.label ? 'Deleting…' : 'Delete'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -887,7 +980,7 @@ function CampaignsPageInner() {
                   </div>
 
                   <div className="mt-auto pt-3 border-t border-surface-divider space-y-2 text-[12px]">
-                    {g.key === UNASSIGNED_POSITION_SLUG ? (
+                    {g.key === UNASSIGNED_POSITION_SLUG && (
                       <button
                         type="button"
                         onClick={openAssignModal}
@@ -896,27 +989,6 @@ function CampaignsPageInner() {
                       >
                         Assign to position
                       </button>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => renamePositionInline(g.label)}
-                          disabled={renamingPosition === g.label || duplicatingPosition === g.label}
-                          className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] bg-ink text-white hover:bg-grey-15 disabled:opacity-50 font-medium"
-                          title="Rename this position (bulk-updates every ad in it)"
-                        >
-                          {renamingPosition === g.label ? 'Renaming…' : 'Edit position'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => duplicatePosition(g.label)}
-                          disabled={duplicatingPosition === g.label || renamingPosition === g.label}
-                          className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-[8px] border border-surface-border bg-white text-ink hover:bg-surface-light disabled:opacity-50 font-medium"
-                          title="Copy every ad in this position into a new position"
-                        >
-                          {duplicatingPosition === g.label ? 'Duplicating…' : 'Duplicate'}
-                        </button>
-                      </div>
                     )}
                     <div className="grid grid-cols-2 gap-2">
                       <Link
