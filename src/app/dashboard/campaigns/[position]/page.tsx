@@ -462,14 +462,18 @@ export default function CampaignPositionPage() {
                   <tbody className="divide-y divide-surface-divider">
                     {positionAds.map((ad) => (
                       <tr key={ad.id} className="hover:bg-surface-light/40">
-                        <td className="px-4 py-3 text-ink font-medium">{ad.name}</td>
+                        <td className="px-4 py-3 text-ink font-medium">
+                          <Link
+                            href={`/dashboard/campaigns/preview/${ad.id}`}
+                            className="hover:text-brand-600"
+                            title="Preview this ad"
+                          >
+                            {ad.name}
+                          </Link>
+                        </td>
                         <td className="px-4 py-3 text-grey-15 capitalize">{ad.source}</td>
                         <td className="px-4 py-3 text-grey-15">
-                          {ad.flow ? (
-                            <Link href={`/dashboard/flows/${ad.flowId}/builder`} className="text-brand-500 hover:text-brand-600">
-                              {ad.flow.name}
-                            </Link>
-                          ) : '—'}
+                          {ad.flow ? ad.flow.name : '—'}
                         </td>
                         <td className="px-4 py-3 text-grey-15">
                           {ad._count.sessions > 0 ? (
