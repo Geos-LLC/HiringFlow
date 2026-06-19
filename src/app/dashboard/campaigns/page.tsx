@@ -79,6 +79,8 @@ function CampaignsPageInner() {
   // Filters for the Ads tab. Empty string means "all". Both filters intersect.
   const [adsSourceFilter, setAdsSourceFilter] = useState<string>('')
   const [adsFlowFilter, setAdsFlowFilter] = useState<string>('')
+  // Filter by Ad.campaign (the free-text group label like "Miami" / "Q1 hiring")
+  const [adsCampaignFilter, setAdsCampaignFilter] = useState<string>('')
   // Time window — filters the Ads table by Ad.createdAt so recruiters can
   // narrow to "campaigns launched this week" / etc. 'all' is the default.
   const [adsDateFilter, setAdsDateFilter] = useState<'all' | 'today' | '7d' | '30d' | '90d' | 'thisMonth' | 'lastMonth'>('all')
@@ -778,6 +780,7 @@ function CampaignsPageInner() {
     const filtered = ads.filter((a) => {
       if (adsSourceFilter && a.source !== adsSourceFilter) return false
       if (adsFlowFilter && a.flowId !== adsFlowFilter) return false
+      if (adsCampaignFilter && a.campaign !== adsCampaignFilter) return false
       if (adsDateBounds.from || adsDateBounds.to) {
         const created = new Date(a.createdAt)
         if (adsDateBounds.from && created < adsDateBounds.from) return false
@@ -806,7 +809,16 @@ function CampaignsPageInner() {
         break
     }
     return out
-  }, [ads, adsSourceFilter, adsFlowFilter, adsDateBounds, adsSort])
+  }, [ads, adsSourceFilter, adsFlowFilter, adsCampaignFilter, adsDateBounds, adsSort])
+
+  // Unique non-null Ad.campaign values for the filter dropdown — sorted
+  // alphabetically. Recomputed when ads change so newly-typed campaign
+  // groups appear without a reload.
+  const campaignGroupOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const a of ads) if (a.campaign) set.add(a.campaign)
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [ads])
 
   // Sources breakdown — built up from the ads' actual source values so
   // custom workspace sources appear in the table alongside built-ins.
@@ -852,7 +864,7 @@ function CampaignsPageInner() {
       <div className="flex gap-1 mb-4 border-b border-surface-border">
         {[
           { key: 'overview' as const,  label: 'Overview' },
-          { key: 'campaigns' as const, label: `All Campaigns (${ads.length})` },
+          { key: 'campaigns' as const, label: `All Ads (${ads.length})` },
           { key: 'sources' as const,   label: `Sources (${sourceStats.length})` },
           { key: 'templates' as const, label: `Templates (${adTemplates.length})` },
         ].map(t => (
@@ -1066,6 +1078,16 @@ function CampaignsPageInner() {
                   {flows.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select>
                 <select
+                  value={adsCampaignFilter}
+                  onChange={(e) => setAdsCampaignFilter(e.target.value)}
+                  className="px-3 py-2 border border-surface-border rounded-[8px] text-sm text-grey-15 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  title="Filter ads by campaign group"
+                  disabled={campaignGroupOptions.length === 0}
+                >
+                  <option value="">All campaigns</option>
+                  {campaignGroupOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select
                   value={adsDateFilter}
                   onChange={(e) => setAdsDateFilter(e.target.value as typeof adsDateFilter)}
                   className="px-3 py-2 border border-surface-border rounded-[8px] text-sm text-grey-15 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -1091,10 +1113,10 @@ function CampaignsPageInner() {
                   <option value="source">Sort: Source A→Z</option>
                   <option value="name">Sort: Name A→Z</option>
                 </select>
-                {(adsSourceFilter || adsFlowFilter || adsDateFilter !== 'all') && (
+                {(adsSourceFilter || adsFlowFilter || adsCampaignFilter || adsDateFilter !== 'all') && (
                   <>
                     <button
-                      onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter(''); setAdsDateFilter('all') }}
+                      onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter(''); setAdsCampaignFilter(''); setAdsDateFilter('all') }}
                       className="px-3 py-2 text-sm text-grey-40 hover:text-grey-15"
                     >
                       Clear
@@ -1109,7 +1131,7 @@ function CampaignsPageInner() {
                 <div className="section-card text-center py-12">
                   <p className="text-grey-35">No ads match the current filters.</p>
                   <button
-                    onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter(''); setAdsDateFilter('all') }}
+                    onClick={() => { setAdsSourceFilter(''); setAdsFlowFilter(''); setAdsCampaignFilter(''); setAdsDateFilter('all') }}
                     className="mt-3 text-sm text-brand-500 hover:text-brand-600 font-medium"
                   >
                     Clear filters

@@ -341,7 +341,7 @@ export default function CampaignPositionPage() {
           <div className="flex flex-wrap gap-2">
             {!isUnassigned && (
               <Link href={`/dashboard/campaigns?new=1&position=${encodeURIComponent(positionLabel)}`}>
-                <Button size="sm">+ New Campaign</Button>
+                <Button size="sm">+ New Ad</Button>
               </Link>
             )}
             <Button variant="secondary" size="sm" onClick={openAddModal} disabled={bulkSaving}>
@@ -433,7 +433,7 @@ export default function CampaignPositionPage() {
                 <div className="flex flex-wrap justify-center gap-2">
                   {!isUnassigned && (
                     <Link href={`/dashboard/campaigns?new=1&position=${encodeURIComponent(positionLabel)}`}>
-                      <Button size="sm">+ New Campaign in this position</Button>
+                      <Button size="sm">+ New Ad in this position</Button>
                     </Link>
                   )}
                   <Button variant="secondary" size="sm" onClick={openAddModal}>
