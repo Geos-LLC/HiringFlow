@@ -195,14 +195,19 @@ export default function FlowSchemaView({
             onDeleteStep?.(selectedStepId)
           }
         } else if (selectedArrow) {
+          // Implicit end arrows are not real connections — they're a hint that
+          // the source step has no forward route. Suppress Delete here so it
+          // doesn't accidentally clear the whole End card.
+          if (selectedArrow.kind === 'end') {
+            e.preventDefault()
+            return
+          }
           e.preventDefault()
           if (confirm('Remove this connection?')) {
             if (selectedArrow.kind === 'button') {
               onButtonConfigUpdate?.(selectedArrow.stepId, null)
             } else if (selectedArrow.kind === 'start') {
               onClearStartScreen?.()
-            } else if (selectedArrow.kind === 'end') {
-              onClearEndScreen?.()
             } else if (selectedArrow.kind === 'option' || !selectedArrow.kind) {
               onOptionUpdate?.(selectedArrow.optionId, { nextStepId: null })
             }
@@ -1308,9 +1313,13 @@ export default function FlowSchemaView({
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
         const [eMidX, eMidY] = bezierMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)
 
+        // No delete button here: the arrow is implicit (the source step has
+        // no forward route), so there's no stored connection to delete. The
+        // X used to clear the whole End screen, which was misleading. Users
+        // remove the arrow by routing the source step somewhere else or
+        // deleting the source step.
         if (isThisEndSelected) {
           drawDragHandle(ctx, g.fromX, g.fromY)
-          drawDeleteButton(ctx, eMidX, eMidY)
         } else {
           const isPlusHovered = hoveredPort === `__insert_end_${stepId}`
           drawInsertButton(ctx, eMidX, eMidY, isPlusHovered)
@@ -1481,7 +1490,8 @@ export default function FlowSchemaView({
   }, [selectedStepId])
 
   // Hit test: arrow delete button (midpoint of selected arrow). Handles
-  // option, button, start, and implicit end arrows.
+  // option, button, and start arrows. Implicit end arrows have no delete
+  // button (they're not stored connections).
   const hitTestArrowDelete = useCallback((cx: number, cy: number): boolean => {
     if (!selectedArrow) return false
 
@@ -1501,10 +1511,7 @@ export default function FlowSchemaView({
     }
 
     if (selectedArrow.kind === 'end') {
-      const g = endArrowGeomByStep.get(selectedArrow.stepId)
-      if (!g) return false
-      const [midX, midY] = bezierMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)
-      return dist(cx, cy, midX, midY) <= 14
+      return false
     }
 
     const step = steps.find((s) => s.id === selectedArrow.stepId)
@@ -1728,20 +1735,18 @@ export default function FlowSchemaView({
       return
     }
 
-    // Check arrow delete button (option, button, start, end arrows)
+    // Check arrow delete button (option, button, start arrows). Implicit end
+    // arrows have no delete button — see the End-arrow draw block.
     if (
       (selectedArrow?.kind === 'option' ||
         selectedArrow?.kind === 'button' ||
-        selectedArrow?.kind === 'start' ||
-        selectedArrow?.kind === 'end') &&
+        selectedArrow?.kind === 'start') &&
       hitTestArrowDelete(cx, cy)
     ) {
       if (selectedArrow.kind === 'button') {
         onButtonConfigUpdate?.(selectedArrow.stepId, null)
       } else if (selectedArrow.kind === 'start') {
         onClearStartScreen?.()
-      } else if (selectedArrow.kind === 'end') {
-        onClearEndScreen?.()
       } else {
         onOptionUpdate?.(selectedArrow.optionId, { nextStepId: null })
       }
