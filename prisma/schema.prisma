@@ -95,32 +95,35 @@ model Workspace {
   createdAt                    DateTime  @default(now()) @map("created_at")
   updatedAt                    DateTime  @updatedAt @map("updated_at")
 
-  members           WorkspaceMember[]
-  videos            Video[]
-  pictures          Picture[]
-  flows             Flow[]
-  ads               Ad[]
-  sessions          Session[]
-  trainings         Training[]
-  emailTemplates    EmailTemplate[]
-  smsTemplates      SmsTemplate[]
-  automationRules   AutomationRule[]
-  automationEvents  AutomationEvent[]
-  schedulingConfigs SchedulingConfig[]
-  adTemplates       AdTemplate[]
-  aiCallConfigs     AICallConfig[]
-  aiCallCandidates  AICallCandidate[]
-  googleIntegration GoogleIntegration?
-  interviewMeetings InterviewMeeting[]
-  certnIntegration  CertnIntegration?
-  backgroundChecks  BackgroundCheck[]
-  captureResponses  CaptureResponse[]
-  pipelines         Pipeline[]
-  transitionRules   PipelineTransitionRule[]
-  stageEntries      StageEntry[]
-  billingEvents     BillingEvent[]
+  members              WorkspaceMember[]
+  videos               Video[]
+  pictures             Picture[]
+  flows                Flow[]
+  ads                  Ad[]
+  sessions             Session[]
+  trainings            Training[]
+  emailTemplates       EmailTemplate[]
+  smsTemplates         SmsTemplate[]
+  automationRules      AutomationRule[]
+  automationEvents     AutomationEvent[]
+  schedulingConfigs    SchedulingConfig[]
+  adTemplates          AdTemplate[]
+  aiCallConfigs        AICallConfig[]
+  aiCallCandidates     AICallCandidate[]
+  googleIntegration    GoogleIntegration?
+  interviewMeetings    InterviewMeeting[]
+  certnIntegration     CertnIntegration?
+  backgroundChecks     BackgroundCheck[]
+  captureResponses     CaptureResponse[]
+  pipelines            Pipeline[]
+  transitionRules      PipelineTransitionRule[]
+  stageEntries         StageEntry[]
+  billingEvents        BillingEvent[]
   candidateEvaluations CandidateEvaluation[]
-  hiringProcesses   HiringProcess[]
+  hiringProcesses      HiringProcess[]
+  telegramSubscription TelegramSubscription?
+  telegramChannels     TelegramChannel[]
+  telegramPlacements   TelegramPlacement[]
 
   @@map("workspaces")
 }
@@ -205,28 +208,28 @@ model Pipeline {
 // what makes the "find by flowId" lookup at session-create unambiguous.
 // Enforced via partial unique index, defined inline below.
 model HiringProcess {
-  id                 String                    @id @default(uuid())
-  workspaceId        String                    @map("workspace_id")
-  workspace          Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  id                 String            @id @default(uuid())
+  workspaceId        String            @map("workspace_id")
+  workspace          Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   name               String
   description        String?
   // 'draft' | 'active' | 'archived'. New rows start as 'draft'. Validation
   // for 'active' lives at the API layer (requires flowId + pipelineId).
-  status             String                    @default("draft")
+  status             String            @default("draft")
   // All four references are nullable on purpose: drafts can be saved with
   // partial wiring, then completed later. onDelete: SetNull so deleting the
   // underlying flow/training/etc. doesn't cascade-destroy the process — the
   // recruiter just sees an empty slot and re-picks.
-  flowId             String?                   @map("flow_id")
-  flow               Flow?                     @relation(fields: [flowId], references: [id], onDelete: SetNull)
-  trainingId         String?                   @map("training_id")
-  training           Training?                 @relation(fields: [trainingId], references: [id], onDelete: SetNull)
-  schedulingConfigId String?                   @map("scheduling_config_id")
-  schedulingConfig   SchedulingConfig?         @relation(fields: [schedulingConfigId], references: [id], onDelete: SetNull)
-  pipelineId         String?                   @map("pipeline_id")
-  pipeline           Pipeline?                 @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
-  createdAt          DateTime                  @default(now()) @map("created_at")
-  updatedAt          DateTime                  @updatedAt @map("updated_at")
+  flowId             String?           @map("flow_id")
+  flow               Flow?             @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  trainingId         String?           @map("training_id")
+  training           Training?         @relation(fields: [trainingId], references: [id], onDelete: SetNull)
+  schedulingConfigId String?           @map("scheduling_config_id")
+  schedulingConfig   SchedulingConfig? @relation(fields: [schedulingConfigId], references: [id], onDelete: SetNull)
+  pipelineId         String?           @map("pipeline_id")
+  pipeline           Pipeline?         @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
 
   automations HiringProcessAutomation[]
   sessions    Session[]
@@ -696,34 +699,35 @@ model Flow {
 }
 
 model Ad {
-  id           String      @id @default(uuid())
-  workspaceId  String      @map("workspace_id")
-  workspace    Workspace   @relation(fields: [workspaceId], references: [id])
-  createdById  String      @map("created_by_id")
-  name         String
-  source       String // 'indeed' | 'facebook' | 'craigslist' | 'google' | 'linkedin' | 'other'
-  campaign     String?
+  id                 String              @id @default(uuid())
+  workspaceId        String              @map("workspace_id")
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id])
+  createdById        String              @map("created_by_id")
+  name               String
+  source             String // 'indeed' | 'facebook' | 'craigslist' | 'google' | 'linkedin' | 'other'
+  campaign           String?
   // Free-text role this ad is hiring for (e.g. "Dispatcher", "Cleaner").
   // Drives the Campaigns page position-grouped overview and the
   // ?targetPosition= filter on Candidates / Analytics. Null = "Unassigned".
-  targetPosition String?   @map("target_position")
-  flowId       String      @map("flow_id")
-  flow         Flow        @relation(fields: [flowId], references: [id])
-  slug         String      @unique
-  imageUrl     String?     @map("image_url")
-  placementUrl String?     @map("placement_url")
-  templateId   String?     @map("template_id")
-  template     AdTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  headline     String?
-  bodyText     String?     @map("body_text")
-  requirements String?
-  benefits     String?
-  callToAction String?     @map("call_to_action")
-  notes        String? // private — not shown on public landing page
-  isActive     Boolean     @default(true) @map("is_active")
-  createdAt    DateTime    @default(now()) @map("created_at")
-  updatedAt    DateTime    @updatedAt @map("updated_at")
-  sessions     Session[]
+  targetPosition     String?             @map("target_position")
+  flowId             String              @map("flow_id")
+  flow               Flow                @relation(fields: [flowId], references: [id])
+  slug               String              @unique
+  imageUrl           String?             @map("image_url")
+  placementUrl       String?             @map("placement_url")
+  templateId         String?             @map("template_id")
+  template           AdTemplate?         @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  headline           String?
+  bodyText           String?             @map("body_text")
+  requirements       String?
+  benefits           String?
+  callToAction       String?             @map("call_to_action")
+  notes              String? // private — not shown on public landing page
+  isActive           Boolean             @default(true) @map("is_active")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+  sessions           Session[]
+  telegramPlacements TelegramPlacement[]
 
   @@map("ads")
 }
@@ -1251,8 +1255,8 @@ model MediaAnalysisCache {
   workspaceId     String   @map("workspace_id")
   assetType       String   @map("asset_type") // 'capture' | 'ai_call' | 'meeting'
   assetId         String   @map("asset_id")
-  kind            String   // 'voice' | 'video'
-  model           String   // e.g. 'gpt-4o-audio-preview', 'gpt-4o'
+  kind            String // 'voice' | 'video'
+  model           String // e.g. 'gpt-4o-audio-preview', 'gpt-4o'
   analysisVersion Int      @default(1) @map("analysis_version")
   result          Json
   durationSec     Float?   @map("duration_sec")
@@ -1335,21 +1339,21 @@ model SmsTemplate {
 }
 
 model AutomationRule {
-  id                      String                @id @default(uuid())
-  workspaceId             String                @map("workspace_id")
-  workspace               Workspace             @relation(fields: [workspaceId], references: [id])
-  createdById             String                @map("created_by_id")
+  id                      String                    @id @default(uuid())
+  workspaceId             String                    @map("workspace_id")
+  workspace               Workspace                 @relation(fields: [workspaceId], references: [id])
+  createdById             String                    @map("created_by_id")
   name                    String
-  triggerType             String                @map("trigger_type")
+  triggerType             String                    @map("trigger_type")
   // Explicit funnel-stage assignment for the journey UI. The runtime engine
   // still dispatches by triggerType — stageId is just metadata that says
   // "this rule belongs to stage X in the applicant journey", overriding the
   // implicit triggerType→StageTrigger mapping. Nullable for back-compat:
   // older rules fall back to the implicit mapping. Stages live in JSON on
   // Workspace.settings, so this is intentionally a plain string (no FK).
-  stageId                 String?               @map("stage_id")
-  flowId                  String?               @map("flow_id")
-  flow                    Flow?                 @relation(fields: [flowId], references: [id])
+  stageId                 String?                   @map("stage_id")
+  flowId                  String?                   @map("flow_id")
+  flow                    Flow?                     @relation(fields: [flowId], references: [id])
   // Pipeline scope. When set, the rule only matches candidates whose flow's
   // pipeline (`Flow.pipelineId`, falling back to the workspace default) is
   // this one. Null = "any pipeline" — the rule applies workspace-wide,
@@ -1358,51 +1362,51 @@ model AutomationRule {
   // scheduleBeforeMeetingReminders, the meeting_ended branch, and the manual
   // run-stage-automations matcher) all enforce this via pipelineWhereForCandidate
   // in src/lib/automation-pipeline-scope.ts.
-  pipelineId              String?               @map("pipeline_id")
-  pipeline                Pipeline?             @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
-  triggerAutomationId     String?               @map("trigger_automation_id")
-  triggerAutomation       AutomationRule?       @relation("AutomationChain", fields: [triggerAutomationId], references: [id])
-  chainedBy               AutomationRule[]      @relation("AutomationChain")
-  actionType              String                @default("send_email") @map("action_type")
+  pipelineId              String?                   @map("pipeline_id")
+  pipeline                Pipeline?                 @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+  triggerAutomationId     String?                   @map("trigger_automation_id")
+  triggerAutomation       AutomationRule?           @relation("AutomationChain", fields: [triggerAutomationId], references: [id])
+  chainedBy               AutomationRule[]          @relation("AutomationChain")
+  actionType              String                    @default("send_email") @map("action_type")
   // 'email' (default) | 'sms'. Determines which send pipeline runs. Email
   // rules use emailTemplateId; SMS rules use smsBody (per-rule, no template
   // indirection in v1). Future channels: 'whatsapp'.
-  channel                 String                @default("email")
+  channel                 String                    @default("email")
   // Nullable for SMS rules. Required when channel='email' (validated at
   // API layer; the FK stays nullable for back-compat with future channels
   // that don't use email templates).
-  emailTemplateId         String?               @map("email_template_id")
-  emailTemplate           EmailTemplate?        @relation(fields: [emailTemplateId], references: [id])
+  emailTemplateId         String?                   @map("email_template_id")
+  emailTemplate           EmailTemplate?            @relation(fields: [emailTemplateId], references: [id])
   // Plaintext SMS body with merge tokens like {{candidate_name}}. Only used
   // when channel='sms'. Kept on the rule for v1 — no separate SmsTemplate
   // model yet.
-  smsBody                 String?               @map("sms_body")
-  emailDestination        String                @default("applicant") @map("email_destination") // 'applicant' | 'company' | 'specific'
-  emailDestinationAddress String?               @map("email_destination_address")
-  nextStepType            String?               @map("next_step_type")
-  nextStepUrl             String?               @map("next_step_url")
-  trainingId              String?               @map("training_id")
-  training                Training?             @relation(fields: [trainingId], references: [id])
-  schedulingConfigId      String?               @map("scheduling_config_id")
-  schedulingConfig        SchedulingConfig?     @relation(fields: [schedulingConfigId], references: [id])
-  delayMinutes            Int                   @default(0) @map("delay_minutes") // 0 = immediate
+  smsBody                 String?                   @map("sms_body")
+  emailDestination        String                    @default("applicant") @map("email_destination") // 'applicant' | 'company' | 'specific'
+  emailDestinationAddress String?                   @map("email_destination_address")
+  nextStepType            String?                   @map("next_step_type")
+  nextStepUrl             String?                   @map("next_step_url")
+  trainingId              String?                   @map("training_id")
+  training                Training?                 @relation(fields: [trainingId], references: [id])
+  schedulingConfigId      String?                   @map("scheduling_config_id")
+  schedulingConfig        SchedulingConfig?         @relation(fields: [schedulingConfigId], references: [id])
+  delayMinutes            Int                       @default(0) @map("delay_minutes") // 0 = immediate
   // For triggerType='before_meeting' rules: how many minutes before
   // InterviewMeeting.scheduledStart to fire. e.g. 60 = "1 hour before".
   // Ignored for all other trigger types.
-  minutesBefore           Int?                  @map("minutes_before")
+  minutesBefore           Int?                      @map("minutes_before")
   // When a meeting_ended rule has this set, execution is deferred until a
   // recording_ready event fires for the same session (or a 4h hard cutoff).
-  waitForRecording        Boolean               @default(false) @map("wait_for_recording")
+  waitForRecording        Boolean                   @default(false) @map("wait_for_recording")
   // Lifecycle statuses for which this rule is allowed to send (in addition
   // to the default "active" candidates). Use for goodbye emails or compliance
   // notifications that intentionally fire to stalled/lost/hired candidates.
   // Empty array = rule blocked for non-active statuses (the safe default).
   // Read by src/lib/automation-guard.ts; no UI exposes this yet — set in code
   // only.
-  allowedForStatuses      String[]              @default([]) @map("allowed_for_statuses")
-  isActive                Boolean               @default(true) @map("is_active")
-  createdAt               DateTime              @default(now()) @map("created_at")
-  updatedAt               DateTime              @updatedAt @map("updated_at")
+  allowedForStatuses      String[]                  @default([]) @map("allowed_for_statuses")
+  isActive                Boolean                   @default(true) @map("is_active")
+  createdAt               DateTime                  @default(now()) @map("created_at")
+  updatedAt               DateTime                  @updatedAt @map("updated_at")
   executions              AutomationExecution[]
   steps                   AutomationStep[]
   hiringProcesses         HiringProcessAutomation[]
@@ -1873,4 +1877,102 @@ model CaptureResponse {
   @@index([stepId])
   @@index([sessionId])
   @@map("capture_responses")
+}
+
+// ============ TELEGRAM PUBLISHING (Sigcore → TelePorter) ============
+// HF tenant cache of state Sigcore owns. Sigcore is source of truth; these
+// rows back the workspace UI + the placement state machine driven by the
+// /api/webhooks/sigcore/telegram-placement webhook. Contract reference:
+// ../../Sigcore/docs/TELEGRAM_PUBLISHER.md.
+
+model TelegramSubscription {
+  id           String    @id @default(uuid())
+  workspaceId  String    @unique @map("workspace_id")
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // Sigcore subscriber status: 'provisioning' | 'ready' | 'retired'.
+  // The 'not_initialized' case from Sigcore's /status response is the
+  // no-row case — never persisted.
+  status       String    @default("provisioning")
+  botUsername  String?   @map("bot_username")
+  // Free-text hint Sigcore/TelePorter returns (e.g. "Add @hf_bot_001 as
+  // an admin to your channel"). Rendered verbatim in onboarding UI.
+  inviteHint   String?   @map("invite_hint")
+  lastSyncedAt DateTime? @map("last_synced_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@map("telegram_subscriptions")
+}
+
+model TelegramChannel {
+  id              String              @id @default(uuid())
+  workspaceId     String              @map("workspace_id")
+  workspace       Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // Recruiter-supplied channel reference, e.g. "@cleaners_jax". Normalized
+  // (leading @, lowercase) on write so duplicate adds collide on the unique.
+  chatRef         String              @map("chat_ref")
+  // Optional friendly label shown in the channel picker.
+  displayName     String?             @map("display_name")
+  // Derived from the last TelePorter verdict:
+  //   'unverified' — never verified
+  //   'ready'      — verdict.status === 'ready', no blockers
+  //   'warning'    — ready but with warnings (e.g. PAY_TO_POST_NOT_DETECTABLE)
+  //   'blocked'    — verdict.status !== 'ready' OR blockers array non-empty
+  verifyStatus    String              @default("unverified") @map("verify_status")
+  // Full verdict body returned by Sigcore (TelePorter shape). Stored as JSON
+  // so we can render blockers + warnings without coupling to a fixed schema.
+  verifyVerdict   Json?               @map("verify_verdict")
+  verifiedAt      DateTime?           @map("verified_at")
+  lastVerifyError String?             @map("last_verify_error")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+  placements      TelegramPlacement[]
+
+  @@unique([workspaceId, chatRef])
+  @@index([workspaceId])
+  @@map("telegram_channels")
+}
+
+model TelegramPlacement {
+  // HF row id doubles as the `externalRef` we send to Sigcore — Sigcore's
+  // (workspace_id, external_ref) uniqueness is what makes retries idempotent.
+  // Re-publishing the same id returns the original Sigcore placementId
+  // without re-dispatching to TelePorter.
+  id                 String          @id @default(uuid())
+  workspaceId        String          @map("workspace_id")
+  workspace          Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  adId               String          @map("ad_id")
+  ad                 Ad              @relation(fields: [adId], references: [id], onDelete: Cascade)
+  channelId          String          @map("channel_id")
+  channel            TelegramChannel @relation(fields: [channelId], references: [id], onDelete: Restrict)
+  // Sigcore-side placement id returned by POST /publish. Null until the
+  // call lands (e.g. failed before dispatch).
+  sigcorePlacementId String?         @map("sigcore_placement_id")
+  // Snapshot of what we actually sent (post merge-token render) so the
+  // timeline renders the historical message even if the Ad is later edited.
+  text               String
+  parseMode          String?         @map("parse_mode")
+  imageUrl           String?         @map("image_url")
+  // Status ladder:
+  //   'queued'    — Sigcore accepted, immediate send pending dispatch
+  //   'scheduled' — Sigcore accepted, will fire at scheduledAt
+  //   'sent'      — telegram.placement.sent callback received (terminal)
+  //   'failed'    — telegram.placement.failed callback received (terminal)
+  //   'cancelled' — recruiter cancelled via /placements/:id/cancel
+  status             String          @default("queued")
+  scheduledAt        DateTime?       @map("scheduled_at")
+  providerMessageId  String?         @map("provider_message_id")
+  errorCode          String?         @map("error_code")
+  errorMessage       String?         @map("error_message")
+  sentAt             DateTime?       @map("sent_at")
+  failedAt           DateTime?       @map("failed_at")
+  cancelledAt        DateTime?       @map("cancelled_at")
+  createdById        String          @map("created_by_id")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+
+  @@index([workspaceId, adId])
+  @@index([workspaceId, status])
+  @@index([channelId])
+  @@map("telegram_placements")
 }
