@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
+import { TelegramPublishModal } from './_TelegramPublishModal'
+import { TelegramPlacementHistory } from './_TelegramPlacementHistory'
 
 interface Ad {
   id: string; name: string; source: string; campaign: string | null
@@ -63,6 +65,8 @@ export default function AdPreviewPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('__saved__')
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
+  const [tgModalOpen, setTgModalOpen] = useState(false)
+  const [tgHistoryKey, setTgHistoryKey] = useState(0)
 
   useEffect(() => {
     Promise.all([
@@ -145,6 +149,13 @@ export default function AdPreviewPage() {
             title="Copy headline + body + CTA + link as plain text — ready to paste into Telegram, Facebook, etc."
           >
             {copied ? 'Copied!' : 'Copy ad text'}
+          </button>
+          <button
+            onClick={() => setTgModalOpen(true)}
+            className="px-4 py-2 text-sm font-medium rounded-[8px] border border-surface-border text-grey-15 hover:bg-surface transition-colors"
+            title="Publish this ad to one or more Telegram channels via your workspace bot"
+          >
+            Publish to Telegram
           </button>
         </div>
       </div>
@@ -235,6 +246,25 @@ export default function AdPreviewPage() {
           </p>
         </div>
       </div>
+
+      <TelegramPlacementHistory adId={ad.id} refreshKey={tgHistoryKey} />
+
+      {tgModalOpen && (
+        <TelegramPublishModal
+          adId={ad.id}
+          defaultText={buildAdText({
+            headline: copy.headline,
+            body: copy.body,
+            requirements: copy.requirements,
+            benefits: copy.benefits,
+            cta: copy.cta,
+            link: trackedLink,
+          })}
+          defaultImageUrl={ad.imageUrl}
+          onClose={() => setTgModalOpen(false)}
+          onDispatched={() => setTgHistoryKey((k) => k + 1)}
+        />
+      )}
     </div>
   )
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { GoogleIntegrationCard } from './_GoogleIntegrationCard'
 import { CertnIntegrationCard } from './_CertnIntegrationCard'
+import { TelegramIntegrationCard } from './_TelegramIntegrationCard'
 import { SenderVerificationCard } from './_SenderVerificationCard'
 import { Badge, PageHeader, type BadgeTone } from '@/components/design'
 
@@ -317,6 +318,7 @@ export default function SettingsPage() {
         <div className="space-y-4 max-w-2xl">
           <GoogleIntegrationCard />
           <CertnIntegrationCard />
+          <TelegramIntegrationCard />
         </div>
       )}
       </div>
