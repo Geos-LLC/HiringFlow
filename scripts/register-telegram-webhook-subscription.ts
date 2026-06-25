@@ -1,35 +1,60 @@
 /**
- * One-time bootstrap: register HF as a subscriber to Sigcore's
- * `telegram.placement.sent` and `telegram.placement.failed` outbound events.
+ * Bootstrap: register HF as a subscriber to Sigcore's outbound Telegram events.
  *
- * Once this script has run once against prod, Sigcore will POST to
- *   {APP_BASE_URL}/api/webhooks/sigcore/telegram-placement
- * for every per-channel placement callback. The route's HMAC verify uses
- * `SIGCORE_WEBHOOK_KEY` (already shared with the SMS subscription, so we
- * pass the same value as the subscription `secret`).
+ * Two subscriptions are registered (each with its own webhook URL + HMAC
+ * secret reused from `SIGCORE_WEBHOOK_KEY`):
+ *
+ *   1. HF Telegram placement events  → /api/webhooks/sigcore/telegram-placement
+ *      events: telegram.placement.sent, telegram.placement.failed
+ *
+ *   2. HF Telegram account events    → /api/webhooks/sigcore/telegram-account
+ *      events: telegram.account.linked, telegram.account.revoked
+ *      (account-mode v2 — Sigcore wrapper must be live for these to fire)
+ *
+ * Both routes verify with the existing SIGCORE_WEBHOOK_KEY HMAC contract
+ * (X-Callio-Signature / X-Callio-Timestamp, ±5 min skew).
  *
  * Idempotency:
  *   - Sigcore /api/webhooks/subscriptions accepts the same payload repeatedly
- *     and returns the existing subscription if `name` collides. We pass a
- *     deterministic name so repeated runs are safe.
+ *     and returns the existing subscription if `name` collides. Names are
+ *     deterministic so repeated runs are safe — re-running this script after
+ *     the placement subscription was registered will skip-or-noop on it and
+ *     only register the account subscription if it's missing.
  *
  * Usage:
  *   # Local against staging Sigcore:
  *   set -a; source .env; set +a
  *   SIGCORE_API_URL=https://sigcore-staging.up.railway.app \
- *     npx tsx scripts/register-telegram-webhook-subscription.ts --dry-run
+ *     npx tsx scripts/register-telegram-webhook-subscription.ts
  *
- *   # Against prod:
+ *   # Against prod (apply):
  *   set -a; source .env.prod; set +a
- *   npx tsx scripts/register-telegram-webhook-subscription.ts --apply
+ *   APP_BASE_URL=https://hirefunnel.app \
+ *     npx tsx scripts/register-telegram-webhook-subscription.ts --apply
  *
  * Env required:
  *   SIGCORE_API_URL, SIGCORE_API_KEY, SIGCORE_WEBHOOK_KEY,
  *   APP_BASE_URL (e.g. https://hirefunnel.app)
  */
 
-const REQUIRED_EVENTS = ['telegram.placement.sent', 'telegram.placement.failed'] as const
-const SUBSCRIPTION_NAME = 'HF Telegram placement events'
+interface SubscriptionConfig {
+  name: string
+  path: string
+  events: readonly string[]
+}
+
+const SUBSCRIPTIONS: SubscriptionConfig[] = [
+  {
+    name: 'HF Telegram placement events',
+    path: '/api/webhooks/sigcore/telegram-placement',
+    events: ['telegram.placement.sent', 'telegram.placement.failed'],
+  },
+  {
+    name: 'HF Telegram account events',
+    path: '/api/webhooks/sigcore/telegram-account',
+    events: ['telegram.account.linked', 'telegram.account.revoked'],
+  },
+]
 
 async function main() {
   const apply = process.argv.includes('--apply')
@@ -48,38 +73,59 @@ async function main() {
     process.exit(1)
   }
 
-  const webhookUrl = `${appBaseUrl!.replace(/\/+$/, '')}/api/webhooks/sigcore/telegram-placement`
-  const payload = {
-    name: SUBSCRIPTION_NAME,
-    webhookUrl,
-    secret: webhookKey,
-    events: REQUIRED_EVENTS,
-  }
-
   console.log('Sigcore URL :', apiUrl)
-  console.log('Webhook URL :', webhookUrl)
-  console.log('Events      :', REQUIRED_EVENTS.join(', '))
+  console.log('App base    :', appBaseUrl)
   console.log('Mode        :', apply ? 'APPLY' : 'DRY-RUN (pass --apply to write)')
+  console.log('')
 
-  if (!apply) {
-    console.log('\nPayload that would be POSTed:')
-    console.log(JSON.stringify({ ...payload, secret: '*****' }, null, 2))
-    return
+  const apiBase = apiUrl!.replace(/\/+$/, '')
+  const appBase = appBaseUrl!.replace(/\/+$/, '')
+
+  let failed = 0
+  for (const sub of SUBSCRIPTIONS) {
+    const webhookUrl = `${appBase}${sub.path}`
+    const payload = {
+      name: sub.name,
+      webhookUrl,
+      secret: webhookKey,
+      events: sub.events,
+    }
+
+    console.log(`── ${sub.name}`)
+    console.log(`   URL    : ${webhookUrl}`)
+    console.log(`   Events : ${sub.events.join(', ')}`)
+
+    if (!apply) {
+      console.log('   Payload:', JSON.stringify({ ...payload, secret: '*****' }))
+      console.log('')
+      continue
+    }
+
+    try {
+      const res = await fetch(`${apiBase}/api/webhooks/subscriptions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiKey!,
+        },
+        body: JSON.stringify(payload),
+      })
+      const text = await res.text()
+      console.log(`   Result : ${res.status} ${res.statusText}`)
+      console.log(`            ${text.slice(0, 400)}${text.length > 400 ? '…' : ''}`)
+      if (!res.ok) failed++
+    } catch (err) {
+      console.error(`   Error  : ${(err as Error).message}`)
+      failed++
+    }
+    console.log('')
   }
 
-  const res = await fetch(`${apiUrl!.replace(/\/+$/, '')}/api/webhooks/subscriptions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': apiKey!,
-    },
-    body: JSON.stringify(payload),
-  })
-
-  const text = await res.text()
-  console.log(`\nResponse: ${res.status} ${res.statusText}`)
-  console.log(text)
-  if (!res.ok) process.exit(1)
+  if (failed > 0) {
+    console.error(`${failed}/${SUBSCRIPTIONS.length} subscription(s) failed`)
+    process.exit(1)
+  }
+  console.log(`All ${SUBSCRIPTIONS.length} subscription(s) ${apply ? 'registered' : 'previewed'}.`)
 }
 
 main().catch((err) => {
