@@ -44,7 +44,7 @@ function readConfig(): SigcoreConfig {
 }
 
 async function sigcoreFetch<T>(
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -81,10 +81,31 @@ export type TelegramSubscriberStatus =
   | 'ready'
   | 'retired'
 
+export type TelegramSubscriberMode = 'bot' | 'account'
+
+export type TelegramAccountLinkStatus =
+  | 'code_requested'
+  | 'password_required'
+  | 'linked'
+  | 'revoked'
+
 export interface TelegramSubscriberView {
-  botUsername?: string
   status: TelegramSubscriberStatus
+  /**
+   * Discriminator between bot-mode (workspace bot, channels you admin) and
+   * account-mode (linked user account, channels you're a member of). Older
+   * Sigcore responses may omit this; treat undefined as 'bot' for
+   * backwards-compat.
+   */
+  mode?: TelegramSubscriberMode
+  // Bot-mode identity
+  botUsername?: string
   inviteHint?: string
+  // Account-mode identity (only populated once linkStatus === 'linked')
+  tgUserId?: string
+  tgUsername?: string
+  linkAccountId?: string
+  linkStatus?: TelegramAccountLinkStatus
 }
 
 /**
@@ -106,6 +127,74 @@ export async function subscribeWorkspace(input?: { displayName?: string }): Prom
  */
 export async function getSubscriptionStatus(): Promise<TelegramSubscriberView> {
   return sigcoreFetch<TelegramSubscriberView>('GET', '/api/integrations/telegram/status')
+}
+
+// ---------- account-mode link flow ----------
+//
+// 3-step wizard backed by Sigcore → TelePorter (GramJS). Each call returns a
+// nextStep that drives the UI:
+//
+//   nextStep === 'code'     → SMS code prompt
+//   nextStep === 'password' → 2FA password prompt
+//   nextStep === 'linked'   → done, account is live
+//
+// All calls are tenant-scoped via SIGCORE_API_KEY. The actual `account.linked`
+// confirmation also arrives out-of-band via the telegram-account webhook so
+// HF persists tgUserId/tgUsername even if the wizard tab is closed mid-flow.
+
+export type TelegramLinkNextStep = 'code' | 'password' | 'linked'
+
+export interface TelegramLinkStepView {
+  nextStep: TelegramLinkNextStep
+  linkAccountId?: string
+  /** Free-text hint for the UI (e.g. "We sent a code to +1...4321"). */
+  message?: string
+  // Populated when nextStep === 'linked' so the wizard can show the result
+  // without waiting for the webhook to land.
+  tgUserId?: string
+  tgUsername?: string
+}
+
+export async function startAccountLink(input: { phoneNumber: string }): Promise<TelegramLinkStepView> {
+  if (!input.phoneNumber?.trim()) {
+    throw new TelegramApiError('phoneNumber is required')
+  }
+  return sigcoreFetch<TelegramLinkStepView>(
+    'POST',
+    '/api/integrations/telegram/account/start',
+    { phoneNumber: input.phoneNumber.trim() },
+  )
+}
+
+export async function submitAccountCode(input: { code: string }): Promise<TelegramLinkStepView> {
+  if (!input.code?.trim()) {
+    throw new TelegramApiError('code is required')
+  }
+  return sigcoreFetch<TelegramLinkStepView>(
+    'POST',
+    '/api/integrations/telegram/account/code',
+    { code: input.code.trim() },
+  )
+}
+
+export async function submitAccountPassword(input: { password: string }): Promise<TelegramLinkStepView> {
+  if (!input.password) {
+    throw new TelegramApiError('password is required')
+  }
+  return sigcoreFetch<TelegramLinkStepView>(
+    'POST',
+    '/api/integrations/telegram/account/password',
+    { password: input.password },
+  )
+}
+
+/**
+ * Logs the linked account out on the GramJS side and clears the encrypted
+ * session at Sigcore. Idempotent — returns success even when no account
+ * is currently linked.
+ */
+export async function unlinkAccount(): Promise<void> {
+  await sigcoreFetch<unknown>('DELETE', '/api/integrations/telegram/account')
 }
 
 // ---------- chat verify ----------
@@ -157,6 +246,14 @@ export interface PublishInput {
    * without re-dispatching to TelePorter.
    */
   externalRef: string
+  /**
+   * Sigcore dispatcher hint:
+   *   false (default) — workspace bot via TelePorter Bot API
+   *   true            — linked user account via TelePorter GramJS
+   * Set by the publish route based on the workspace's subscription.mode.
+   * Sigcore enforces actual capability; this is just a routing signal.
+   */
+  asAccount?: boolean
 }
 
 export interface PublishResult {

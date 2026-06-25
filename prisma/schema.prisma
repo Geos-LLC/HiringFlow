@@ -1893,10 +1893,28 @@ model TelegramSubscription {
   // The 'not_initialized' case from Sigcore's /status response is the
   // no-row case — never persisted.
   status       String    @default("provisioning")
+  // Dispatch identity: 'bot' (workspace bot, channels you admin) or
+  // 'account' (linked Telegram account, channels you're a member of).
+  // The two modes share this table; null/empty bot fields are normal
+  // for account mode and vice versa.
+  mode         String    @default("bot")
   botUsername  String?   @map("bot_username")
   // Free-text hint Sigcore/TelePorter returns (e.g. "Add @hf_bot_001 as
   // an admin to your channel"). Rendered verbatim in onboarding UI.
   inviteHint   String?   @map("invite_hint")
+  // Account-mode identity. Sigcore is source of truth; populated by
+  // /webhooks/sigcore/telegram-account on account.linked. Cleared on
+  // account.revoked (status flips to 'retired', linkStatus='revoked').
+  tgUserId       String? @map("tg_user_id")
+  tgUsername     String? @map("tg_username")
+  linkAccountId  String? @map("link_account_id")
+  // Account-mode link sub-state, narrower than status:
+  //   'code_requested'    — phone submitted, waiting on SMS code
+  //   'password_required' — code accepted, 2FA password needed
+  //   'linked'            — terminal happy state, GramJS session live
+  //   'revoked'           — Sigcore reported account.revoked
+  // Null in bot mode.
+  linkStatus     String? @map("link_status")
   lastSyncedAt DateTime? @map("last_synced_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")

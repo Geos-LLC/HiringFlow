@@ -11,9 +11,16 @@
  *     configured: boolean,           // Sigcore env vars present
  *     subscription: {
  *       status: 'not_initialized' | 'provisioning' | 'ready' | 'retired',
- *       botUsername?: string,
- *       inviteHint?: string,
- *       lastSyncedAt?: string
+ *       mode: 'bot' | 'account',
+ *       // bot-mode identity
+ *       botUsername?: string | null,
+ *       inviteHint?: string | null,
+ *       // account-mode identity
+ *       tgUserId?: string | null,
+ *       tgUsername?: string | null,
+ *       linkAccountId?: string | null,
+ *       linkStatus?: 'code_requested' | 'password_required' | 'linked' | 'revoked' | null,
+ *       lastSyncedAt?: string | null
  *     }
  *   }
  */
@@ -21,7 +28,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { getSubscriptionStatus, TelegramConfigError } from '@/lib/telegram-publisher'
+import { getSubscriptionStatus } from '@/lib/telegram-publisher'
 
 // How long before we consider a cached subscription row stale enough to
 // re-fetch on a plain GET (without ?sync=1). Onboarding polls hit ?sync=1
@@ -33,6 +40,10 @@ export async function GET(request: NextRequest) {
   if (!ws) return unauthorized()
 
   const configured = !!(process.env.SIGCORE_API_URL && process.env.SIGCORE_API_KEY)
+  // Account-mode is gated until the Sigcore wrapper + TelePorter GramJS
+  // session manager land. Flip `TELEGRAM_ACCOUNT_MODE_ENABLED=1` to expose
+  // the picker + wizard in the UI. Bot mode is unaffected.
+  const accountModeEnabled = process.env.TELEGRAM_ACCOUNT_MODE_ENABLED === '1'
 
   const url = new URL(request.url)
   const forceSync = url.searchParams.get('sync') === '1'
@@ -53,19 +64,32 @@ export async function GET(request: NextRequest) {
           row = null
         }
       } else {
+        // Preserve local mode if Sigcore omits it (older response shape).
+        // Once Sigcore returns mode, we adopt it as source of truth.
+        const mode = live.mode ?? row?.mode ?? 'bot'
         row = await prisma.telegramSubscription.upsert({
           where: { workspaceId: ws.workspaceId },
           create: {
             workspaceId: ws.workspaceId,
             status: live.status,
+            mode,
             botUsername: live.botUsername ?? null,
             inviteHint: live.inviteHint ?? null,
+            tgUserId: live.tgUserId ?? null,
+            tgUsername: live.tgUsername ?? null,
+            linkAccountId: live.linkAccountId ?? null,
+            linkStatus: live.linkStatus ?? null,
             lastSyncedAt: new Date(),
           },
           update: {
             status: live.status,
+            mode,
             botUsername: live.botUsername ?? null,
             inviteHint: live.inviteHint ?? null,
+            tgUserId: live.tgUserId ?? null,
+            tgUsername: live.tgUsername ?? null,
+            linkAccountId: live.linkAccountId ?? null,
+            linkStatus: live.linkStatus ?? null,
             lastSyncedAt: new Date(),
           },
         })
@@ -79,13 +103,19 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     configured,
+    accountModeEnabled,
     subscription: row
       ? {
           status: row.status,
+          mode: row.mode,
           botUsername: row.botUsername,
           inviteHint: row.inviteHint,
+          tgUserId: row.tgUserId,
+          tgUsername: row.tgUsername,
+          linkAccountId: row.linkAccountId,
+          linkStatus: row.linkStatus,
           lastSyncedAt: row.lastSyncedAt,
         }
-      : { status: 'not_initialized' },
+      : { status: 'not_initialized', mode: 'bot' },
   })
 }

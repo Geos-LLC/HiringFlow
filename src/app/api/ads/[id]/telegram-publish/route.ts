@@ -72,7 +72,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
   const subscription = await prisma.telegramSubscription.findUnique({
     where: { workspaceId: ws.workspaceId },
-    select: { status: true },
+    select: { status: true, mode: true },
   })
   if (!subscription || subscription.status !== 'ready') {
     return NextResponse.json(
@@ -80,6 +80,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       { status: 409 },
     )
   }
+  // Sigcore dispatches via Bot API or GramJS depending on the workspace's
+  // current mode. The actual capability check (admin-of vs member-of) runs
+  // on the Sigcore side via the channel's stored verifyVerdict.
+  const asAccount = subscription.mode === 'account'
 
   const channels = await prisma.telegramChannel.findMany({
     where: { id: { in: channelIds }, workspaceId: ws.workspaceId },
@@ -157,6 +161,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         imageUrl,
         scheduledAt: scheduledAt?.toISOString(),
         externalRef: placement.id,
+        asAccount,
       })
       const updated = await prisma.telegramPlacement.update({
         where: { id: placement.id },

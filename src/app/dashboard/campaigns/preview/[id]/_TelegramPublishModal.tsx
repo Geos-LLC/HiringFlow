@@ -44,6 +44,11 @@ export function TelegramPublishModal({ adId, defaultText, defaultImageUrl, onClo
   const [loading, setLoading] = useState(true)
   const [channels, setChannels] = useState<Channel[]>([])
   const [subscriptionStatus, setSubscriptionStatus] = useState<string>('unknown')
+  // Mode determines the rate-limit warning copy and which "not ready" reason
+  // is most likely (bot=Sigcore provisioning, account=session revoked).
+  const [subscriptionMode, setSubscriptionMode] = useState<'bot' | 'account'>('bot')
+  const [linkStatus, setLinkStatus] = useState<'code_requested' | 'password_required' | 'linked' | 'revoked' | null>(null)
+  const [tgUsername, setTgUsername] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [text, setText] = useState(defaultText)
   const [imageUrl, setImageUrl] = useState(defaultImageUrl || '')
@@ -60,6 +65,9 @@ export function TelegramPublishModal({ adId, defaultText, defaultImageUrl, onClo
       fetch('/api/integrations/telegram/channels').then((r) => r.json()).catch(() => null),
     ]).then(([s, c]) => {
       if (s?.subscription?.status) setSubscriptionStatus(s.subscription.status)
+      if (s?.subscription?.mode) setSubscriptionMode(s.subscription.mode)
+      if (s?.subscription?.linkStatus !== undefined) setLinkStatus(s.subscription.linkStatus ?? null)
+      if (s?.subscription?.tgUsername !== undefined) setTgUsername(s.subscription.tgUsername ?? null)
       if (Array.isArray(c?.channels)) setChannels(c.channels)
       setLoading(false)
     })
@@ -128,8 +136,14 @@ export function TelegramPublishModal({ adId, defaultText, defaultImageUrl, onClo
     }
   }
 
-  // Subscription not ready — short-circuit to a help message.
-  const subscriptionReady = subscriptionStatus === 'ready'
+  // Subscription not ready — short-circuit to a help message. Account-mode
+  // can be 'ready' but with linkStatus='revoked' (Sigcore lost the GramJS
+  // session); in that case we still gate dispatch.
+  const subscriptionReady = subscriptionStatus === 'ready' && linkStatus !== 'revoked'
+  const showRevokedBanner = subscriptionMode === 'account' && linkStatus === 'revoked'
+  // Account mode is meaningfully slower than bot mode (~20/min vs ~30/sec).
+  // Warn at 5+ channels so the recruiter knows to expect a slow batch.
+  const showRateLimitWarning = subscriptionMode === 'account' && selectedIds.size > 5
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-6" onClick={onClose}>
@@ -147,8 +161,19 @@ export function TelegramPublishModal({ adId, defaultText, defaultImageUrl, onClo
             <div className="text-sm text-grey-40">Loading channels…</div>
           ) : !subscriptionReady ? (
             <div className="bg-amber-50 text-amber-700 rounded-[8px] p-4 text-sm">
-              Telegram publishing isn't ready for this workspace. Enable it from{' '}
-              <a href="/dashboard/settings?tab=integrations" className="underline">Settings → Integrations</a>.
+              {showRevokedBanner ? (
+                <>
+                  Your Telegram account{tgUsername ? ` (@${tgUsername})` : ''} was logged out. Re-link
+                  it from{' '}
+                  <a href="/dashboard/settings?tab=integrations" className="underline">Settings → Integrations</a>{' '}
+                  to publish.
+                </>
+              ) : (
+                <>
+                  Telegram publishing isn't ready for this workspace. Enable it from{' '}
+                  <a href="/dashboard/settings?tab=integrations" className="underline">Settings → Integrations</a>.
+                </>
+              )}
             </div>
           ) : channels.length === 0 ? (
             <div className="bg-blue-50 text-blue-700 rounded-[8px] p-4 text-sm">
@@ -186,6 +211,18 @@ export function TelegramPublishModal({ adId, defaultText, defaultImageUrl, onClo
                 <p className="text-xs text-grey-50 mt-1">
                   Only verified channels can be selected. Re-verify failed channels from Settings.
                 </p>
+                {subscriptionMode === 'account' && (
+                  <p className="text-[11px] text-grey-50 mt-1">
+                    Dispatching from your linked Telegram account
+                    {tgUsername ? ` (@${tgUsername})` : ''}.
+                  </p>
+                )}
+                {showRateLimitWarning && (
+                  <div className="mt-2 bg-amber-50 text-amber-700 rounded-[6px] px-3 py-2 text-xs">
+                    Account-mode sends at ≈20 messages/minute. {selectedIds.size} channels will take
+                    roughly {Math.ceil(selectedIds.size * 3)} seconds to dispatch — keep this tab open.
+                  </div>
+                )}
               </div>
 
               {/* Text override */}
