@@ -21,6 +21,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1046.0",
     "@deepgram/sdk": "^5.0.0",
     "@elevenlabs/react": "^1.0.2",
+    "@fixprompt/browser": "^0.0.2",
     "@geos/loghub-client": "github:goscha01/geos-loghub-client",
     "@prisma/client": "^5.10.0",
     "@sendgrid/mail": "^8.1.6",
