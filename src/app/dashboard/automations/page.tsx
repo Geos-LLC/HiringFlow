@@ -597,6 +597,11 @@ function AutomationsPageInner() {
     templateName: string
     ruleName: string
     stepOrder?: number
+    // Populated for saved-rule previews only (drafts have no persisted step);
+    // the SMS test-send uses this pair to render with real merge tokens
+    // instead of forwarding the sample-token body.
+    ruleId?: string
+    stepId?: string
   } | null
   const [previewLoading, setPreviewLoading] = useState<string | null>(null)
   const [preview, setPreview] = useState<PreviewData>(null)
@@ -617,13 +622,22 @@ function AutomationsPageInner() {
       const res = await fetch('/api/automations/preview-sms-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: testSmsPhone, body: preview.smsBody }),
+        body: JSON.stringify({
+          phone: testSmsPhone,
+          // For saved rules the server re-renders with real training/schedule
+          // links keyed to a test session, so links inside the SMS actually
+          // open the training/booking page. Drafts fall back to fallbackBody.
+          ruleId: preview.ruleId,
+          stepId: preview.stepId,
+          fallbackBody: preview.smsBody,
+        }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         setTestSmsResult({ ok: false, message: data.error || res.statusText || 'Send failed' })
       } else {
-        setTestSmsResult({ ok: true, message: `Sent to ${data.sentTo || testSmsPhone}` })
+        const suffix = data.linksAreReal ? ' — links inside will open the real training / booking page.' : ' — save the rule to get working links.'
+        setTestSmsResult({ ok: true, message: `Sent to ${data.sentTo || testSmsPhone}${suffix}` })
       }
     } catch (err) {
       setTestSmsResult({ ok: false, message: (err as Error).message || 'Send failed' })
@@ -641,7 +655,7 @@ function AutomationsPageInner() {
         return
       }
       const data = await res.json()
-      setPreview({ ...data, ruleName: r.name })
+      setPreview({ ...data, ruleName: r.name, ruleId: r.id })
     } finally {
       setPreviewLoading(null)
     }
