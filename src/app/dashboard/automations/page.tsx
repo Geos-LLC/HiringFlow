@@ -1627,7 +1627,7 @@ function AutomationsPageInner() {
                   </div>
                 )}
                 <p className="text-[11px] text-grey-40 mt-1.5">
-                  Sends the exact preview above (sample merge-token values) via your workspace sender. Standard SMS rates apply.
+                  Links inside are minted for real — the training / booking page opens when you tap them. Standard SMS rates apply.
                 </p>
               </div>
             )}
