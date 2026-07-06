@@ -15,20 +15,20 @@ import { resolveDynamicLinks } from '@/lib/template-link-resolver'
  * tap the schedule link, land on the booking page. Sending the sample-token
  * preview body (`?token=SAMPLE_TOKEN`) yields an unusable link.
  *
- * When `ruleId` + `stepId` are provided (saved-rule preview):
- *   1. Spin up a Session with source='test' + placeholder InterviewMeeting
- *      (source='test' isolates it from analytics/kanban and bypasses guard
- *      gates in executeStep — same pattern as /api/automations/[id]/test).
- *   2. Mint a real TrainingAccessToken keyed to that session so the link
- *      resolves against the tester's own enrollment (they'll show up under
- *      `Training: in progress` on that stub candidate, which is fine).
- *   3. Resolve sub-tokens ({{training_link:<id>}}, {{schedule_link:<id>}})
- *      via the shared resolver so button links in the body work too.
- *   4. Render the SMS body with real merge tokens and send via Sigcore.
+ * Two entry paths — same output:
  *
- * When `ruleId`/`stepId` are omitted (draft step from an unsaved rule):
- *   Falls back to sending `fallbackBody` verbatim — links inside will still
- *   be sample-token placeholders. Save the rule to get working links.
+ * 1) Saved-rule preview (`ruleId` + `stepId`) — server loads the step from
+ *    DB.
+ *
+ * 2) Editor/draft preview (`draftStep`) — server uses the live in-modal
+ *    step config. Lets the recruiter iterate on the SMS body + training
+ *    picker without saving the rule first, and still tap the link.
+ *
+ * Both paths: spin up a `source='test'` Session, attach a placeholder
+ * InterviewMeeting (for `{{meeting_*}}`), mint a real TrainingAccessToken
+ * when a training is attached, resolve sub-tokens, render, send via
+ * Sigcore. Falls back to sending `fallbackBody` verbatim if neither path
+ * yields a resolvable step (defensive).
  */
 export async function POST(request: NextRequest) {
   const ws = await getWorkspaceSession()
@@ -38,6 +38,17 @@ export async function POST(request: NextRequest) {
     phone?: string
     ruleId?: string
     stepId?: string
+    editingRuleId?: string
+    draftStep?: {
+      channel?: string
+      smsTemplateId?: string | null
+      smsBody?: string | null
+      nextStepType?: string | null
+      trainingId?: string | null
+      schedulingConfigId?: string | null
+      smsDestination?: string
+      smsDestinationNumber?: string | null
+    }
     fallbackBody?: string
   } | null
   if (!payload || !payload.phone || typeof payload.phone !== 'string') {
@@ -52,10 +63,121 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // ── Draft path — no ruleId/stepId means unsaved editor state; just send
-  // the already-rendered sample body. Links inside won't work, but the
-  // recruiter can still eyeball formatting / length on-device.
-  if (!payload.ruleId || !payload.stepId) {
+  // ── Resolve step config into a shared shape so the render + send path
+  // is single-source. Step data can arrive from the DB (saved rule preview)
+  // or from the live editor state (draft preview).
+  type ResolvedStep = {
+    rawBody: string
+    nextStepType: string | null
+    nextStepUrl: string | null
+    training: { id: string; slug: string; title: string } | null
+    schedulingConfigId: string | null
+    schedulingConfig: { schedulingUrl: string | null } | null
+    ruleId: string | null
+    flowId: string | null
+    flowName: string | null
+    workspaceTz: string | null
+  }
+  let resolved: ResolvedStep | null = null
+
+  if (payload.ruleId && payload.stepId) {
+    const rule = await prisma.automationRule.findFirst({
+      where: { id: payload.ruleId, workspaceId: ws.workspaceId },
+      include: {
+        workspace: { select: { timezone: true } },
+        flow: { select: { id: true, name: true } },
+        steps: {
+          where: { id: payload.stepId },
+          include: {
+            smsTemplate: { select: { body: true } },
+            training: { select: { id: true, slug: true, title: true } },
+            schedulingConfig: { select: { schedulingUrl: true } },
+          },
+        },
+      },
+    })
+    const step = rule?.steps[0]
+    if (rule && step) {
+      const rawBody = (step.smsTemplate?.body && step.smsTemplate.body.trim().length > 0)
+        ? step.smsTemplate.body
+        : (step.smsBody ?? '')
+      if (rawBody.trim().length > 0) {
+        resolved = {
+          rawBody,
+          nextStepType: step.nextStepType,
+          nextStepUrl: step.nextStepUrl,
+          training: step.training ?? null,
+          schedulingConfigId: step.schedulingConfigId ?? null,
+          schedulingConfig: step.schedulingConfig ?? null,
+          ruleId: rule.id,
+          flowId: rule.flowId,
+          flowName: rule.flow?.name ?? null,
+          workspaceTz: rule.workspace?.timezone ?? null,
+        }
+      }
+    }
+  } else if (payload.draftStep) {
+    const d = payload.draftStep
+    // Resolve the raw body from either the picked template or the inline
+    // body — same rule the executor uses.
+    let rawBody = ''
+    if (d.smsTemplateId) {
+      const tpl = await prisma.smsTemplate.findFirst({
+        where: { id: d.smsTemplateId, workspaceId: ws.workspaceId },
+        select: { body: true },
+      })
+      if (tpl?.body && tpl.body.trim().length > 0) rawBody = tpl.body
+    }
+    if (!rawBody && d.smsBody && d.smsBody.trim().length > 0) rawBody = d.smsBody
+
+    if (rawBody.trim().length > 0) {
+      // Look up training + scheduling config from the workspace, if any.
+      const training = d.nextStepType === 'training' && d.trainingId
+        ? await prisma.training.findFirst({
+            where: { id: d.trainingId, workspaceId: ws.workspaceId },
+            select: { id: true, slug: true, title: true },
+          })
+        : null
+      const schedulingConfig = d.nextStepType === 'scheduling' && d.schedulingConfigId
+        ? await prisma.schedulingConfig.findFirst({
+            where: { id: d.schedulingConfigId, workspaceId: ws.workspaceId },
+            select: { schedulingUrl: true },
+          })
+        : null
+
+      // Prefer the workspace of the edited rule (for flow_name/tz), fall
+      // back to workspace defaults. editingRuleId means "user is editing
+      // a saved rule" — we can pull flow/tz from it for correctness.
+      const editingRule = payload.editingRuleId
+        ? await prisma.automationRule.findFirst({
+            where: { id: payload.editingRuleId, workspaceId: ws.workspaceId },
+            include: {
+              workspace: { select: { timezone: true } },
+              flow: { select: { id: true, name: true } },
+            },
+          })
+        : null
+
+      resolved = {
+        rawBody,
+        nextStepType: d.nextStepType ?? null,
+        nextStepUrl: null,
+        training,
+        schedulingConfigId: d.schedulingConfigId ?? null,
+        schedulingConfig,
+        ruleId: editingRule?.id ?? null,
+        flowId: editingRule?.flowId ?? null,
+        flowName: editingRule?.flow?.name ?? null,
+        workspaceTz: editingRule?.workspace?.timezone ?? null,
+      }
+    }
+  }
+
+  // ── Neither path yielded a step → send the fallback body as-is. Links
+  // inside will still be sample tokens — but the recruiter at least sees
+  // the SMS on their phone. (Should be rare; usually indicates the modal
+  // is missing a body entirely.)
+  if (!resolved) {
     if (!payload.fallbackBody || payload.fallbackBody.trim().length === 0) {
       return NextResponse.json({ error: 'SMS body is empty' }, { status: 400 })
     }
@@ -68,38 +190,9 @@ export async function POST(request: NextRequest) {
     })
   }
 
-  // ── Saved-rule path — load rule + step, then build a real-context send.
-  const rule = await prisma.automationRule.findFirst({
-    where: { id: payload.ruleId, workspaceId: ws.workspaceId },
-    include: {
-      workspace: { select: { timezone: true, phone: true } },
-      flow: { select: { id: true, name: true } },
-      steps: {
-        where: { id: payload.stepId },
-        include: {
-          smsTemplate: { select: { id: true, name: true, body: true } },
-          training: { select: { id: true, slug: true, title: true } },
-          schedulingConfig: { select: { id: true, name: true, schedulingUrl: true } },
-        },
-      },
-    },
-  })
-  if (!rule) return NextResponse.json({ error: 'Rule not found' }, { status: 404 })
-  const step = rule.steps[0]
-  if (!step) return NextResponse.json({ error: 'Step not found' }, { status: 404 })
-
-  const rawBody = (step.smsTemplate?.body && step.smsTemplate.body.trim().length > 0)
-    ? step.smsTemplate.body
-    : (step.smsBody ?? '')
-  if (!rawBody || rawBody.trim().length === 0) {
-    return NextResponse.json({ error: 'SMS body missing on this step' }, { status: 400 })
-  }
-
-  // Fallback flow — session-wide triggers (meeting_*, before_meeting, etc.)
-  // legitimately have no flowId. Mirror the pattern used in
-  // /api/automations/[id]/test so the test session always attaches to *a*
-  // flow — required by the Session FK.
-  let testFlowId = rule.flowId
+  // ── Real-render path: create a test session so TrainingAccessToken has
+  // a candidate to bind to (also lets the schedule-redirect URL work).
+  let testFlowId = resolved.flowId
   if (!testFlowId) {
     const fallbackFlow = await prisma.flow.findFirst({
       where: { workspaceId: ws.workspaceId, isPublished: true },
@@ -130,7 +223,6 @@ export async function POST(request: NextRequest) {
     },
   })
 
-  // Placeholder meeting so {{meeting_time}} / {{meeting_link}} render.
   const meetingStart = new Date()
   meetingStart.setDate(meetingStart.getDate() + 1)
   meetingStart.setHours(14, 0, 0, 0)
@@ -150,39 +242,36 @@ export async function POST(request: NextRequest) {
     console.warn('[preview-sms-test] placeholder meeting failed:', (err as Error).message)
   })
 
-  // Mint the real training link (top-level {{training_link}}). The token is
-  // keyed to the test session, so the tester lands on the training page as
-  // the "SMS test" candidate — expected behavior for a preview send.
+  // Real training link — top-level {{training_link}}.
   let trainingLink = ''
-  if (step.nextStepType === 'training' && step.training) {
+  if (resolved.nextStepType === 'training' && resolved.training) {
     const { token } = await createAccessToken({
       sessionId: session.id,
-      trainingId: step.training.id,
-      sourceRefId: `preview-sms-test:${rule.id}`,
+      trainingId: resolved.training.id,
+      sourceRefId: `preview-sms-test:${resolved.ruleId ?? 'draft'}`,
     })
-    trainingLink = buildTrainingLink(step.training.slug, token)
-  } else if (step.nextStepUrl) {
-    trainingLink = step.nextStepUrl
+    trainingLink = buildTrainingLink(resolved.training.slug, token)
+  } else if (resolved.nextStepUrl) {
+    trainingLink = resolved.nextStepUrl
   }
 
-  const resolvedSched = step.schedulingConfigId
-    ? await resolveSchedulingUrl(step.schedulingConfigId, ws.workspaceId).catch(() => null)
+  const resolvedSched = resolved.schedulingConfigId
+    ? await resolveSchedulingUrl(resolved.schedulingConfigId, ws.workspaceId).catch(() => null)
     : null
-  const scheduleLink = step.nextStepType === 'scheduling'
-    ? (step.schedulingConfigId
-        ? buildScheduleRedirectUrl(session.id, resolvedSched?.configId || step.schedulingConfigId)
-        : (step.schedulingConfig?.schedulingUrl || ''))
+  const scheduleLink = resolved.nextStepType === 'scheduling'
+    ? (resolved.schedulingConfigId
+        ? buildScheduleRedirectUrl(session.id, resolvedSched?.configId || resolved.schedulingConfigId)
+        : (resolved.schedulingConfig?.schedulingUrl || ''))
     : ''
 
-  // Sub-tokens: {{training_link:<id>}} + {{schedule_link:<id>}} in the body.
   const subTokens = await resolveDynamicLinks({
-    text: rawBody,
+    text: resolved.rawBody,
     sessionId: session.id,
     workspaceId: ws.workspaceId,
-    sourceRefId: `preview-sms-test:${rule.id}`,
+    sourceRefId: `preview-sms-test:${resolved.ruleId ?? 'draft'}`,
   }).catch(() => ({} as Record<string, string>))
 
-  const workspaceTz = rule.workspace?.timezone || 'America/New_York'
+  const workspaceTz = resolved.workspaceTz || 'America/New_York'
   const meetingTime = meetingStart.toLocaleString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
     hour: 'numeric', minute: '2-digit', hour12: true,
@@ -199,7 +288,7 @@ export async function POST(request: NextRequest) {
 
   const variables: Record<string, string> = {
     candidate_name: `SMS test ${last4}`,
-    flow_name: rule.flow?.name || 'Test Flow',
+    flow_name: resolved.flowName || 'Test Flow',
     training_link: trainingLink,
     schedule_link: scheduleLink,
     meeting_time: meetingTime,
@@ -214,7 +303,7 @@ export async function POST(request: NextRequest) {
     ...subTokens,
   }
 
-  const renderedBody = renderTemplate(rawBody, variables)
+  const renderedBody = renderTemplate(resolved.rawBody, variables)
 
   return sendAndRespond({
     workspaceId: ws.workspaceId,

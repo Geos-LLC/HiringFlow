@@ -597,11 +597,26 @@ function AutomationsPageInner() {
     templateName: string
     ruleName: string
     stepOrder?: number
-    // Populated for saved-rule previews only (drafts have no persisted step);
+    // Populated for saved-rule previews only (from the table row);
     // the SMS test-send uses this pair to render with real merge tokens
     // instead of forwarding the sample-token body.
     ruleId?: string
     stepId?: string
+    // Populated when the preview comes from the create/edit modal —
+    // carries the live in-editor step config so the SMS test-send can
+    // mint a real training token for the currently-selected trainingId
+    // even before the rule is saved.
+    draftStep?: {
+      channel: 'email' | 'sms' | 'both'
+      smsTemplateId: string | null
+      smsBody: string | null
+      nextStepType: string | null
+      trainingId: string | null
+      schedulingConfigId: string | null
+      smsDestination: string
+      smsDestinationNumber: string | null
+    }
+    editingRuleId?: string
   } | null
   const [previewLoading, setPreviewLoading] = useState<string | null>(null)
   const [preview, setPreview] = useState<PreviewData>(null)
@@ -624,11 +639,14 @@ function AutomationsPageInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           phone: testSmsPhone,
-          // For saved rules the server re-renders with real training/schedule
-          // links keyed to a test session, so links inside the SMS actually
-          // open the training/booking page. Drafts fall back to fallbackBody.
+          // Table-row preview → ruleId + stepId (server loads step from DB).
           ruleId: preview.ruleId,
           stepId: preview.stepId,
+          // Editor preview → draftStep carries the live in-modal config so
+          // the server can mint real training/schedule links for whatever
+          // the recruiter has currently selected, saved or not.
+          draftStep: preview.draftStep,
+          editingRuleId: preview.editingRuleId,
           fallbackBody: preview.smsBody,
         }),
       })
@@ -694,7 +712,25 @@ function AutomationsPageInner() {
         return
       }
       const data = await res.json()
-      setPreview({ ...data, ruleName: name || '(unsaved rule)', stepOrder: idx })
+      setPreview({
+        ...data,
+        ruleName: name || '(unsaved rule)',
+        stepOrder: idx,
+        // Snapshot the draft config so the SMS test-send can re-render
+        // with real merge tokens (real training/schedule links) against
+        // this live editor state — no need to save the rule first.
+        draftStep: {
+          channel: step.channel,
+          smsTemplateId: step.smsTemplateId ?? null,
+          smsBody: step.smsBody ?? null,
+          nextStepType: step.nextStepType ?? null,
+          trainingId: step.trainingId ?? null,
+          schedulingConfigId: step.schedulingConfigId ?? null,
+          smsDestination: step.smsDestination ?? 'applicant',
+          smsDestinationNumber: step.smsDestinationNumber ?? null,
+        },
+        editingRuleId: editing?.id,
+      })
     } finally {
       setDraftPreviewLoading(false)
     }
