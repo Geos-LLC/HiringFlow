@@ -1578,15 +1578,14 @@ export default function FlowSchemaView({
         }
       }
 
-      // End arrows (every terminal reachable step)
+      // End arrows — iterate every source that was actually drawn
+      // (endArrowGeomByStep covers implicit terminals AND steps whose
+      // Continue button explicitly points to __end__).
       if (endMessage !== '') {
-        const ends = getEndStepIds()
         let result: { kind: 'end'; fromStepId: string } | null = null
-        ends.forEach((sid) => {
+        endArrowGeomByStep.forEach((g, sid) => {
           if (result) return
           if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-          const g = endArrowGeomByStep.get(sid)
-          if (!g) return
           if (tryMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)) result = { kind: 'end', fromStepId: sid }
         })
         if (result) return result
@@ -1663,15 +1662,13 @@ export default function FlowSchemaView({
         }
       }
 
-      // End arrows (implicit) — any terminal reachable step's arrow to End.
+      // End arrows — iterate every drawn source (implicit terminals AND
+      // steps whose Continue button explicitly points to __end__).
       if (endMessage !== '') {
-        const ends = getEndStepIds()
         let hovered: string | null = null
-        ends.forEach((sid) => {
+        endArrowGeomByStep.forEach((g, sid) => {
           if (hovered) return
           if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-          const g = endArrowGeomByStep.get(sid)
-          if (!g) return
           if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 12, g.laneY)) hovered = sid
         })
         if (hovered) return { kind: 'end', fromStepId: hovered }
@@ -1722,7 +1719,6 @@ export default function FlowSchemaView({
 
     const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
-    const implicitEndIds = getEndStepIds()
     const endPos = positions[END_ID]
 
     // DEBUG: log click info
@@ -1954,13 +1950,12 @@ export default function FlowSchemaView({
       }
     }
 
-    // Check End arrow click — pick whichever terminal step's End arrow is hit.
-    if (endPos && implicitEndIds.size > 0 && endMessage !== '') {
+    // Check End arrow click — pick whichever drawn End arrow is hit
+    // (covers implicit terminals AND explicit button-to-__end__ routes).
+    if (endPos && endArrowGeomByStep.size > 0 && endMessage !== '') {
       let hitStepId: string | null = null
-      implicitEndIds.forEach((sid) => {
+      endArrowGeomByStep.forEach((g, sid) => {
         if (hitStepId) return
-        const g = endArrowGeomByStep.get(sid)
-        if (!g) return
         if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 10, g.laneY)) hitStepId = sid
       })
       if (hitStepId) {
