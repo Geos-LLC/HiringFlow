@@ -600,6 +600,37 @@ function AutomationsPageInner() {
   } | null
   const [previewLoading, setPreviewLoading] = useState<string | null>(null)
   const [preview, setPreview] = useState<PreviewData>(null)
+  const [testSmsPhone, setTestSmsPhone] = useState('')
+  const [testSmsSending, setTestSmsSending] = useState(false)
+  const [testSmsResult, setTestSmsResult] = useState<{ ok: boolean; message: string } | null>(null)
+  useEffect(() => {
+    // Reset the test-send row whenever the preview target changes so a
+    // stale success/error banner from a previous rule doesn't leak into
+    // the next preview.
+    setTestSmsResult(null)
+  }, [preview?.ruleName, preview?.stepOrder, preview?.channel])
+  const sendTestSms = async () => {
+    if (!preview || preview.channel !== 'sms' || !preview.smsBody) return
+    setTestSmsSending(true)
+    setTestSmsResult(null)
+    try {
+      const res = await fetch('/api/automations/preview-sms-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: testSmsPhone, body: preview.smsBody }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setTestSmsResult({ ok: false, message: data.error || res.statusText || 'Send failed' })
+      } else {
+        setTestSmsResult({ ok: true, message: `Sent to ${data.sentTo || testSmsPhone}` })
+      }
+    } catch (err) {
+      setTestSmsResult({ ok: false, message: (err as Error).message || 'Send failed' })
+    } finally {
+      setTestSmsSending(false)
+    }
+  }
   const openPreview = async (r: Rule) => {
     setPreviewLoading(r.id)
     try {
@@ -1520,8 +1551,38 @@ function AutomationsPageInner() {
                 <div className="p-6 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: preview.html || '' }} />
               )}
             </div>
+            {preview.channel === 'sms' && (
+              <div className="px-6 py-3 border-t border-surface-border bg-white">
+                <div className="text-xs font-medium text-grey-20 mb-1.5">Send test SMS</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="tel"
+                    value={testSmsPhone}
+                    onChange={(e) => setTestSmsPhone(e.target.value)}
+                    placeholder="+15551234567"
+                    className="flex-1 px-3 py-2 border border-surface-border rounded-[8px] text-sm text-grey-15 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    disabled={testSmsSending}
+                  />
+                  <button
+                    onClick={sendTestSms}
+                    disabled={testSmsSending || testSmsPhone.trim().length < 7}
+                    className="px-3 py-2 rounded-[8px] bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {testSmsSending ? 'Sending…' : 'Send test'}
+                  </button>
+                </div>
+                {testSmsResult && (
+                  <div className={`text-xs mt-1.5 ${testSmsResult.ok ? 'text-green-700' : 'text-red-600'}`}>
+                    {testSmsResult.ok ? '✓ ' : '✗ '}{testSmsResult.message}
+                  </div>
+                )}
+                <p className="text-[11px] text-grey-40 mt-1.5">
+                  Sends the exact preview above (sample merge-token values) via your workspace sender. Standard SMS rates apply.
+                </p>
+              </div>
+            )}
             <div className="px-6 py-3 border-t border-surface-border bg-surface-light flex items-center justify-between text-xs text-grey-40">
-              <span>Sample values shown for merge tokens. No message sent.</span>
+              <span>Sample values shown for merge tokens. {preview.channel === 'sms' ? 'Use the field above to send a test.' : 'No message sent.'}</span>
               <button onClick={() => setPreview(null)} className="text-grey-15 hover:text-grey-40 font-medium">Close</button>
             </div>
           </div>
