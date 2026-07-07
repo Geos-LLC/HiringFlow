@@ -1616,16 +1616,6 @@ function CampaignsPageInner() {
                 <label className="block text-sm font-medium text-grey-20 mb-1.5">Body</label>
                 <textarea value={tplBody} onChange={(e) => setTplBody(e.target.value)} rows={5} className="w-full px-3 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-grey-20 mb-1.5">Requirements (optional)</label>
-                  <textarea value={tplRequirements} onChange={(e) => setTplRequirements(e.target.value)} rows={3} className="w-full px-3 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-grey-20 mb-1.5">Benefits (optional)</label>
-                  <textarea value={tplBenefits} onChange={(e) => setTplBenefits(e.target.value)} rows={3} className="w-full px-3 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
-                </div>
-              </div>
               <div>
                 <label className="block text-sm font-medium text-grey-20 mb-1.5">Call to Action</label>
                 <input type="text" value={tplCta} onChange={(e) => setTplCta(e.target.value)} className="w-full px-3 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
