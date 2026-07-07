@@ -2237,12 +2237,14 @@ export default function FlowSchemaView({
     if (mode.type === 'reconnecting_button') {
       const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
       let targetStep = hitTestInputPort(cx, cy)
-      if (!targetStep) {
-        const nodeId = hitTestNode(cx, cy)
-        if (nodeId && nodeId !== START_ID && nodeId !== END_ID) targetStep = nodeId
+      const droppedNode = targetStep ? null : hitTestNode(cx, cy)
+      if (!targetStep && droppedNode && droppedNode !== START_ID && droppedNode !== END_ID) {
+        targetStep = droppedNode
       }
       if (targetStep && targetStep !== mode.fromStepId) {
         onButtonConfigUpdate?.(mode.fromStepId, targetStep)
+      } else if (droppedNode === END_ID) {
+        onButtonConfigUpdate?.(mode.fromStepId, '__end__')
       }
       setSelectedArrow(null)
       setHoveredPort(null)
@@ -2295,13 +2297,19 @@ export default function FlowSchemaView({
     if (mode.type === 'connecting') {
       const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
       let targetStep = hitTestInputPort(cx, cy)
-      if (!targetStep) {
-        const nodeId = hitTestNode(cx, cy)
-        if (nodeId && nodeId !== START_ID && nodeId !== END_ID) targetStep = nodeId
+      const droppedNode = targetStep ? null : hitTestNode(cx, cy)
+      if (!targetStep && droppedNode && droppedNode !== START_ID && droppedNode !== END_ID) {
+        targetStep = droppedNode
       }
 
       if (targetStep && targetStep !== mode.fromStepId) {
         onConnectSteps?.(mode.fromStepId, targetStep)
+      } else if (droppedNode === END_ID) {
+        // Dropping the drag on the End node explicitly wires the source
+        // step's Continue button to End. There's no "option → End"
+        // representation in the UI (the option nextStep dropdown collapses
+        // __end__ to null), so buttonConfig is the only expressible route.
+        onButtonConfigUpdate?.(mode.fromStepId, '__end__')
       }
 
       setHoveredPort(null)
