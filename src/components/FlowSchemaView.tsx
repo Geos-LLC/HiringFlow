@@ -1210,7 +1210,6 @@ export default function FlowSchemaView({
     }
 
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
-    const implicitEndIds = getEndStepIds()
 
     // --- Draw connections ---
 
@@ -1308,16 +1307,13 @@ export default function FlowSchemaView({
       endArrowGeomByStep.forEach((g, stepId) => {
         drawConnection(ctx, g.fromX, g.fromY, g.toX, g.toY, '', false, '#FF9500', g.laneY)
 
-        if (!implicitEndIds.has(stepId)) return
         const isThisEndSelected =
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
         const [eMidX, eMidY] = bezierMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)
 
-        // No delete button here: the arrow is implicit (the source step has
-        // no forward route), so there's no stored connection to delete. The
-        // X used to clear the whole End screen, which was misleading. Users
-        // remove the arrow by routing the source step somewhere else or
-        // deleting the source step.
+        // No delete button here even for explicit button→End arrows —
+        // Delete on an End-selected arrow is suppressed globally to avoid
+        // clearing the End card by accident (see keyboard handler).
         if (isThisEndSelected) {
           drawDragHandle(ctx, g.fromX, g.fromY)
         } else {
