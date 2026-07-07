@@ -186,20 +186,27 @@ export default function FlowSchemaView({
         const tag = (e.target as HTMLElement)?.tagName
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
-        // Only delete if the step actually exists in the current steps array
-        if (selectedStepId && selectedStepId !== START_ID && selectedStepId !== END_ID) {
-          const stepExists = steps.some(s => s.id === selectedStepId)
-          if (!stepExists) return
-          e.preventDefault()
-          if (confirm('Delete this step?')) {
-            onDeleteStep?.(selectedStepId)
-          }
-        } else if (selectedArrow) {
-          // Implicit end arrows are not real connections — they're a hint that
-          // the source step has no forward route. Suppress Delete here so it
-          // doesn't accidentally clear the whole End card.
+        // Arrow selection wins over step selection — clicking an arrow
+        // doesn't clear the previously-selected step, so if we let step
+        // deletion take priority, users trying to delete a connection
+        // get asked about the unrelated step they'd clicked earlier.
+        if (selectedArrow) {
+          // kind:'end' covers two shapes: (a) implicit terminals — the
+          // arrow is a render-only hint, nothing stored to delete;
+          // (b) explicit button→__end__ — clear buttonConfig.nextStepId.
           if (selectedArrow.kind === 'end') {
+            const src = steps.find((s) => s.id === selectedArrow.stepId)
+            const isExplicitButtonToEnd =
+              (src as any)?.buttonConfig?.nextStepId === '__end__'
+            if (!isExplicitButtonToEnd) {
+              e.preventDefault()
+              return
+            }
             e.preventDefault()
+            if (confirm('Remove this connection?')) {
+              onButtonConfigUpdate?.(selectedArrow.stepId, null)
+              setSelectedArrow(null)
+            }
             return
           }
           e.preventDefault()
@@ -212,6 +219,14 @@ export default function FlowSchemaView({
               onOptionUpdate?.(selectedArrow.optionId, { nextStepId: null })
             }
             setSelectedArrow(null)
+          }
+        } else if (selectedStepId && selectedStepId !== START_ID && selectedStepId !== END_ID) {
+          // Only delete if the step actually exists in the current steps array
+          const stepExists = steps.some(s => s.id === selectedStepId)
+          if (!stepExists) return
+          e.preventDefault()
+          if (confirm('Delete this step?')) {
+            onDeleteStep?.(selectedStepId)
           }
         }
       }
