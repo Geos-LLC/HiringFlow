@@ -79,6 +79,26 @@ export async function validateAccessToken(token: string, trainingId: string) {
 }
 
 /**
+ * Read-only lookup for an existing enrollment. Used by the training landing
+ * page so that just opening the invitation link does NOT create an
+ * enrollment or fire `training_started`. Returns null if the candidate has
+ * not pressed the Start button yet.
+ */
+export async function findExistingEnrollment(opts: {
+  trainingId: string
+  accessTokenId: string
+}) {
+  return prisma.trainingEnrollment.findUnique({
+    where: {
+      trainingId_accessTokenId: {
+        trainingId: opts.trainingId,
+        accessTokenId: opts.accessTokenId,
+      },
+    },
+  })
+}
+
+/**
  * Get or create an enrollment when a candidate accesses training with a valid token.
  */
 export async function getOrCreateEnrollment(opts: {

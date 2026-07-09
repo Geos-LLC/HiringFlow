@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getVideoUrl } from '@/lib/storage'
-import { validateAccessToken, getOrCreateEnrollment } from '@/lib/training-access'
+import { validateAccessToken, findExistingEnrollment } from '@/lib/training-access'
 import { getWorkspaceSession } from '@/lib/auth'
 import { bumpSessionActivity } from '@/lib/session-activity'
 import { logger } from '@/lib/logger'
@@ -196,18 +196,18 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
       return NextResponse.json({ error: 'Access unavailable or expired', code: 'TOKEN_INVALID' }, { status: 403 })
     }
 
-    // Get or create enrollment for this candidate
-    const enrollment = await time('getOrCreateEnrollment', () => getOrCreateEnrollment({
+    // Look up an existing enrollment WITHOUT creating one. Opening the
+    // invitation link is a passive signal — we only want `training_started`
+    // to fire when the candidate presses Start. The POST /start endpoint is
+    // the write-side counterpart that creates the enrollment.
+    const enrollment = await time('findExistingEnrollment', () => findExistingEnrollment({
       trainingId: training.id,
       accessTokenId: accessToken.id,
-      sessionId: accessToken.candidateId,
-      userName: accessToken.candidate?.candidateName || null,
-      userEmail: accessToken.candidate?.candidateEmail || null,
     }), timings)
 
-    enrollmentId = enrollment.id
-    enrollmentStatus = enrollment.status
-    enrollmentProgress = enrollment.progress
+    enrollmentId = enrollment?.id ?? null
+    enrollmentStatus = enrollment?.status ?? null
+    enrollmentProgress = enrollment?.progress ?? null
     candidateName = accessToken.candidate?.candidateName || null
     candidateEmail = accessToken.candidate?.candidateEmail || null
 

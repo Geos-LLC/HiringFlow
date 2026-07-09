@@ -631,6 +631,29 @@ export default function TrainingPage() {
     setSectionIdx(si); setContentIdx(ci); setMode(initialMode)
     setQuizAnswers({}); setQuizResults(null)
     setStarted(true)
+
+    // The candidate pressed Start — this is the trigger that creates the
+    // enrollment and fires `training_started`. Opening the invitation link
+    // alone is no longer enough. Idempotent: subsequent clicks after the
+    // enrollment exists are no-ops server-side.
+    //
+    // Skipped when there's no token (public trainings without invitations)
+    // and for preview (the recruiter previewing their own training must not
+    // create candidate-facing enrollments).
+    if (token && !preview && !training?.enrollmentId) {
+      fetch(`/api/public/trainings/${slug}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+        .then(async r => (r.ok ? r.json() : null))
+        .then(d => {
+          if (d?.enrollmentId) {
+            setTraining(prev => (prev ? { ...prev, enrollmentId: d.enrollmentId, enrollmentStatus: d.status ?? prev.enrollmentStatus } : prev))
+          }
+        })
+        .catch(() => { /* silent — retried on next Start click */ })
+    }
   }
 
   // ===== NAVBAR (candidate context, no menu, no auth) =====
