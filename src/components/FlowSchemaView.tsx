@@ -705,30 +705,47 @@ export default function FlowSchemaView({
       }
     }
 
-    const sourcesSorted = Array.from(sourceIds)
-      .filter((id) => !!positions[id])
-      .sort((a, b) => {
-        const pa = positions[a]
-        const pb = positions[b]
-        if (pa.y !== pb.y) return pa.y - pb.y // topmost first
-        return pa.x - pb.x
-      })
-    const N = sourcesSorted.length
+    const sources = Array.from(sourceIds).filter((id) => !!positions[id])
+    const N = sources.length
     if (N === 0) return m
 
-    sourcesSorted.forEach((stepId, idx) => {
+    // Pass 1: compute each source's detour lane against a tentative
+    // shared entry Y (End's vertical center). This gives us the true
+    // laneY without biasing it by the entry Y we're still deciding.
+    const toX = endPos.x
+    const tentToY = endPos.y + SPECIAL_H / 2
+    type Pre = {
+      stepId: string; fromX: number; fromY: number; laneY?: number; midY: number
+    }
+    const pre: Pre[] = sources.map((stepId) => {
       const sp = positions[stepId]
       const fromX = sp.x + NODE_W
       const fromY = sp.y + NODE_H / 2
-      // Distribute entries top-to-bottom on End's left edge, matching
-      // source Y order. End is only SPECIAL_H tall (80 px), so tightly
-      // packed when N is large but each arrow still gets a unique Y.
-      const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
-      const toX = endPos.x
-      const toY = endPos.y + SPECIAL_H * fraction
+      const laneY = computeDetourLane(fromX, fromY, toX, tentToY, new Set([stepId]))
+      // Effective Y at t=0.5 of the bezier — dominates the curve's
+      // vertical position through most of its span. With a lane the
+      // laneY dominates (0.75 weight); without one, it's the from/to
+      // midpoint. Sorting by this puts deeply-detouring arrows lower
+      // in the fan-in than short direct ones, so their curves don't
+      // cross on the way into End's left edge.
+      const midY = laneY !== undefined
+        ? 0.125 * fromY + 0.75 * laneY + 0.125 * tentToY
+        : 0.5 * fromY + 0.5 * tentToY
+      return { stepId, fromX, fromY, laneY, midY }
+    })
 
-      const laneY = computeDetourLane(fromX, fromY, toX, toY, new Set([stepId]))
-      m.set(stepId, { fromX, fromY, toX, toY, laneY })
+    pre.sort((a, b) => {
+      if (a.midY !== b.midY) return a.midY - b.midY
+      return a.fromY - b.fromY
+    })
+
+    // Pass 2: assign entry Y on End's left edge in mid-Y sorted order.
+    pre.forEach((p, idx) => {
+      const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
+      const toY = endPos.y + SPECIAL_H * fraction
+      m.set(p.stepId, {
+        fromX: p.fromX, fromY: p.fromY, toX, toY, laneY: p.laneY,
+      })
     })
     return m
   }, [positions, steps, endMessage, getEndStepIds, computeDetourLane])
