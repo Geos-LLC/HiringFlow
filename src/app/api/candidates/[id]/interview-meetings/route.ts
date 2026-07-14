@@ -75,6 +75,16 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
         },
         orderBy: { driveCreatedTime: 'asc' },
       },
+      hosts: {
+        select: {
+          workspaceMember: {
+            select: {
+              id: true,
+              user: { select: { id: true, email: true, name: true } },
+            },
+          },
+        },
+      },
     },
   })
 
@@ -98,6 +108,12 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   const enriched = meetings.map((m) => ({
     ...m,
     cancelledAt: cancelledAtByMeetingId.get(m.id) ?? null,
+    hosts: m.hosts.map((h) => ({
+      memberId: h.workspaceMember.id,
+      userId: h.workspaceMember.user?.id ?? null,
+      email: h.workspaceMember.user?.email ?? null,
+      name: h.workspaceMember.user?.name ?? null,
+    })),
   }))
 
   return NextResponse.json({ meetings: enriched })

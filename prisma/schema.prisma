@@ -473,6 +473,15 @@ model InterviewMeeting {
   // be orphaned. The child rows preserve full history including the
   // meetSpaceName at the time of capture.
   artifacts                   InterviewMeetingArtifact[]
+  // Team members assigned to host this specific meeting. Seeded at booking
+  // time from the SchedulingConfig's assignedMemberIds; editable per-meeting
+  // after (add someone who isn't in the config default, or drop a member
+  // who's out). Each host is added to the Google Calendar event as an
+  // attendee AND receives HF's own recruiter notifications for this meeting
+  // (confirm/cancel replies, no-show alerts). Meet space uses
+  // accessType='RESTRICTED', so being on the guest list is what actually
+  // gets them into the room.
+  hosts                       InterviewMeetingHost[]
   // Set when the candidate replies YES/CONFIRM to a before_meeting SMS
   // reminder (or any future channel that lands on this row). Null until
   // confirmation. Surfaced on the candidate detail page as a green pill.
@@ -551,6 +560,24 @@ model InterviewMeetingArtifact {
   @@map("interview_meeting_artifacts")
 }
 
+// Team members assigned as hosts on a specific InterviewMeeting. Populated at
+// booking time from SchedulingConfig.assignedMemberIds, editable per meeting
+// after. See InterviewMeeting.hosts for the semantics — attendee on the
+// Google Calendar event + recipient for HF's recruiter notifications for
+// this meeting.
+model InterviewMeetingHost {
+  id                 String           @id @default(uuid())
+  interviewMeetingId String           @map("interview_meeting_id")
+  meeting            InterviewMeeting @relation(fields: [interviewMeetingId], references: [id], onDelete: Cascade)
+  workspaceMemberId  String           @map("workspace_member_id")
+  workspaceMember    WorkspaceMember  @relation(fields: [workspaceMemberId], references: [id], onDelete: Cascade)
+  createdAt          DateTime         @default(now()) @map("created_at")
+
+  @@unique([interviewMeetingId, workspaceMemberId])
+  @@index([workspaceMemberId])
+  @@map("interview_meeting_hosts")
+}
+
 // Idempotency ledger for Pub/Sub-delivered Workspace Events. Each processed
 // CloudEvent is recorded once; duplicate deliveries are ack'd without
 // reprocessing.
@@ -574,6 +601,8 @@ model WorkspaceMember {
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   role        String    @default("owner") // 'owner' | 'admin' | 'member'
   joinedAt    DateTime  @default(now()) @map("joined_at")
+  // Meetings this member is assigned to host (see InterviewMeetingHost).
+  interviewMeetingHosts InterviewMeetingHost[]
 
   @@unique([userId, workspaceId])
   @@map("workspace_members")
@@ -1665,6 +1694,13 @@ model SchedulingConfig {
   // Optional override of GoogleIntegration.calendarId for FreeBusy/insert.
   // Defaults (null) to the integration's calendar.
   calendarId          String?           @map("calendar_id")
+  // WorkspaceMember ids that should be added as calendar attendees + get
+  // recruiter notifications for meetings booked through this config. When
+  // a meeting is booked, these ids are copied into per-meeting
+  // InterviewMeetingHost rows (which are then editable per meeting). Empty
+  // array = only the connected Google account is on the invite (legacy
+  // behavior).
+  assignedMemberIds   String[]          @default([]) @map("assigned_member_ids")
   isDefault           Boolean           @default(false) @map("is_default")
   isActive            Boolean           @default(true) @map("is_active")
   createdAt           DateTime          @default(now()) @map("created_at")

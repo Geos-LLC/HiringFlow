@@ -114,7 +114,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   let space: Awaited<ReturnType<typeof createSpace>> | undefined
   try {
     space = await createSpace(client, {
-      accessType: 'TRUSTED',
+      accessType: 'RESTRICTED',
       entryPointAccess: 'ALL',
       autoRecording: selection.recordingEnabled ? 'ON' : 'OFF',
       autoTranscription: transcriptionEnabledFinal ? 'ON' : 'OFF',

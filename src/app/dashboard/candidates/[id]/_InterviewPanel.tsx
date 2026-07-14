@@ -45,7 +45,14 @@ interface InterviewMeeting {
   participants: Array<{ email?: string; displayName?: string; joinTime?: string; leaveTime?: string }> | null
   confirmedAt: string | null
   cancelledAt: string | null
+  hosts: Array<{ memberId: string; userId: string | null; email: string | null; name: string | null }>
   createdAt: string
+}
+
+interface WorkspaceMemberOption {
+  id: string
+  role: string
+  user: { id: string; email: string; name: string | null } | null
 }
 
 function stateLabel(m: InterviewMeeting): { text: string; tone: 'blue' | 'green' | 'gray' | 'amber' | 'red' } {
@@ -82,6 +89,8 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
   const [cancelModal, setCancelModal] = useState<null | { meetingId: string }>(null)
   const [stages, setStages] = useState<FunnelStage[]>(DEFAULT_FUNNEL_STAGES)
   const [currentPipelineStatus, setCurrentPipelineStatus] = useState<string | null>(null)
+  const [hostPickerFor, setHostPickerFor] = useState<InterviewMeeting | null>(null)
+  const [workspaceMembers, setWorkspaceMembers] = useState<WorkspaceMemberOption[]>([])
 
   // Load this candidate's pipeline stages + current stage. The candidate
   // endpoint serializes `pipeline.stages` resolved from the candidate's flow
@@ -214,6 +223,13 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
     load()
   }, [load])
 
+  useEffect(() => {
+    fetch('/api/workspace/members')
+      .then((r) => (r.ok ? r.json() : { members: [] }))
+      .then((d) => setWorkspaceMembers(Array.isArray(d?.members) ? d.members : []))
+      .catch(() => setWorkspaceMembers([]))
+  }, [])
+
   if (featureOn === false) return null
   if (meetings === null) return null
 
@@ -300,6 +316,36 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                   )}
                   {m.transcriptState !== 'disabled' && (
                     <div>Transcript: <span className="text-grey-15">{m.transcriptState}</span></div>
+                  )}
+                </div>
+
+                {/* Host team members — chips + "Manage" opens the picker.
+                    Empty state prompts assigning someone. The connected
+                    Google account (calendar owner) is always host of the
+                    Meet space; this row is the additional team members
+                    Google will notify and RESTRICTED-mode will admit. */}
+                <div className="mt-3 flex items-center gap-2 flex-wrap text-xs">
+                  <span className="text-grey-40">Hosts:</span>
+                  {m.hosts.length === 0 ? (
+                    <span className="text-grey-50 italic">None assigned</span>
+                  ) : (
+                    m.hosts.map((h) => (
+                      <span
+                        key={h.memberId}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-light border border-surface-border text-grey-15"
+                        title={h.email || ''}
+                      >
+                        {h.name || h.email || 'Unknown'}
+                      </span>
+                    ))
+                  )}
+                  {!m.cancelledAt && (
+                    <button
+                      onClick={() => setHostPickerFor(m)}
+                      className="text-primary hover:underline"
+                    >
+                      Manage
+                    </button>
                   )}
                 </div>
 
@@ -489,6 +535,136 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
           onConfirm={(targetStageId) => confirmCancel(cancelModal.meetingId, targetStageId)}
         />
       )}
+
+      {hostPickerFor && (
+        <HostPickerModal
+          meeting={hostPickerFor}
+          members={workspaceMembers}
+          onClose={() => setHostPickerFor(null)}
+          onSaved={() => { setHostPickerFor(null); load() }}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Modal for editing which workspace members are assigned as hosts on a
+ * specific meeting. Full-replace semantics on save — the desired set is
+ * sent to the API, which adds/removes calendar attendees to match.
+ */
+function HostPickerModal({
+  meeting,
+  members,
+  onClose,
+  onSaved,
+}: {
+  meeting: InterviewMeeting
+  members: WorkspaceMemberOption[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [selected, setSelected] = useState<string[]>(() =>
+    meeting.hosts.map((h) => h.memberId),
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const toggle = (id: string) => {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id],
+    )
+  }
+
+  const save = async () => {
+    setSaving(true); setError(null)
+    try {
+      const res = await fetch(`/api/interview-meetings/${meeting.id}/hosts`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memberIds: selected }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setError(body?.message || body?.error || 'Save failed')
+        return
+      }
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) onClose() }}
+    >
+      <div className="w-full max-w-[480px] rounded-[14px] bg-white shadow-xl border border-surface-border">
+        <div className="px-6 pt-5 pb-3 border-b border-surface-divider">
+          <h3 className="text-base font-semibold text-ink mb-1">Meeting hosts</h3>
+          <p className="text-[12px] text-grey-40">
+            Add or remove team members from this specific meeting. They'll be added to the calendar invite and notified when the candidate confirms or cancels.
+          </p>
+        </div>
+        <div className="px-6 py-3 max-h-[360px] overflow-y-auto">
+          {members.length === 0 ? (
+            <div className="text-[12px] text-grey-40 border border-dashed border-surface-border rounded-[8px] px-3 py-2">
+              No team members yet. Invite one from <a href="/dashboard/settings" className="underline text-primary">Settings</a>.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {members.map((m) => {
+                const checked = selected.includes(m.id)
+                const label = m.user?.name || m.user?.email || '(unknown)'
+                const sub = m.user?.name && m.user?.email ? m.user.email : null
+                return (
+                  <label
+                    key={m.id}
+                    className={`flex items-start gap-2 px-2 py-1.5 rounded-[6px] cursor-pointer ${
+                      checked ? 'bg-brand-50' : 'hover:bg-surface-light'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={checked}
+                      onChange={() => toggle(m.id)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] text-ink truncate">{label}</div>
+                      {sub && <div className="text-[11px] text-grey-40 truncate">{sub}</div>}
+                    </div>
+                    <span className="text-[10px] font-mono uppercase text-grey-40 mt-0.5">{m.role}</span>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        {error && (
+          <div className="mx-6 mb-2 p-2 rounded-[8px] bg-red-50 text-xs text-red-700">{error}</div>
+        )}
+        <div className="px-6 py-4 flex justify-end gap-2 border-t border-surface-divider">
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="text-sm px-4 py-2 rounded-[8px] text-grey-40 hover:text-grey-15 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="text-sm px-4 py-2 rounded-[8px] bg-primary text-white hover:opacity-90 font-medium disabled:opacity-50"
+            style={{ background: 'var(--brand-primary)' }}
+          >
+            {saving ? 'Saving…' : 'Save hosts'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

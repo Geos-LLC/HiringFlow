@@ -41,6 +41,7 @@ import { scheduleBot, RecallApiError } from '../recall/client'
 import { logger } from '../logger'
 import { notifyRecallOutOfCredits } from '../alerts/recall-credits'
 import { sendMeetingConfirmation } from './meeting-confirmation'
+import { resolveHostMembers, hostsAsCalendarAttendees } from './meeting-hosts'
 
 export type BookingSource = 'operator' | 'public'
 
@@ -154,10 +155,17 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   }
 
   // 5. Create Meet space (with recording-403 fallback)
+  //
+  // accessType='RESTRICTED' — anyone on the calendar guest list can join,
+  // no Google-org constraint. 'TRUSTED' (the prior default) required
+  // attendees to be in the connected account's Workspace org, which broke
+  // outside-org team members. RESTRICTED with a curated attendee list is
+  // stricter than 'OPEN' (anyone-with-link) and matches the "assigned team
+  // members can host, no one else" model.
   let space: Awaited<ReturnType<typeof createSpace>> | undefined
   try {
     space = await createSpace(client, {
-      accessType: 'TRUSTED',
+      accessType: 'RESTRICTED',
       entryPointAccess: 'ALL',
       autoRecording: selection.recordingEnabled ? 'ON' : 'OFF',
       autoTranscription: transcriptionEnabledFinal ? 'ON' : 'OFF',
@@ -175,7 +183,7 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
       }).catch(() => {})
       try {
         space = await createSpace(client, {
-          accessType: 'TRUSTED',
+          accessType: 'RESTRICTED',
           entryPointAccess: 'ALL',
           autoRecording: 'OFF',
           autoTranscription: transcriptionEnabledFinal ? 'ON' : 'OFF',
@@ -200,6 +208,27 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
     warnings.push(capabilityMessage('permission_denied_plan' as RecordingCapabilityReason))
   }
 
+  // 5b. Resolve schedulingConfigId (explicit > default for workspace > null)
+  // upfront so we can (a) seed the calendar event's attendee list with the
+  // config's assigned team members, and (b) create InterviewMeetingHost rows
+  // linked to the same config. Was step 8 previously — moved earlier because
+  // hosts have to be on the calendar invite at insert time (patching in
+  // attendees post-hoc means the recruiter's inbox misses the invite email
+  // Google sends on insert).
+  const configId = schedulingConfigId ?? (await prisma.schedulingConfig.findFirst({
+    where: { workspaceId, isActive: true, isDefault: true }, select: { id: true },
+  }))?.id ?? null
+
+  let assignedMemberIds: string[] = []
+  if (configId) {
+    const cfg = await prisma.schedulingConfig.findUnique({
+      where: { id: configId },
+      select: { assignedMemberIds: true },
+    })
+    assignedMemberIds = cfg?.assignedMemberIds ?? []
+  }
+  const hostMembers = await resolveHostMembers(workspaceId, assignedMemberIds)
+
   // 6. Create Calendar event
   const calendar = google.calendar({ version: 'v3', auth: client })
   const descriptionParts: string[] = [
@@ -217,7 +246,12 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
         description: descriptionParts.join(''),
         start: { dateTime: start.toISOString() },
         end: { dateTime: end.toISOString() },
-        attendees: attendeeEmail ? [{ email: attendeeEmail }] : undefined,
+        // Candidate + assigned host team members. Google sends invite +
+        // reminder emails to every non-self attendee automatically — no
+        // separate HF-side email needed to alert the recruiter about the
+        // meeting itself (HF's fanout is only for meeting-lifecycle events
+        // like candidate confirm/cancel).
+        attendees: hostsAsCalendarAttendees(hostMembers, attendeeEmail),
         conferenceData: {
           conferenceSolution: { key: { type: 'hangoutsMeet' } },
           entryPoints: [{ entryPointType: 'video', uri: space.meetingUri, meetingCode: space.meetingCode }],
@@ -249,11 +283,6 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
     }
   }
 
-  // 8. Resolve schedulingConfigId (explicit > default for workspace > null)
-  const configId = schedulingConfigId ?? (await prisma.schedulingConfig.findFirst({
-    where: { workspaceId, isActive: true, isDefault: true }, select: { id: true },
-  }))?.id ?? null
-
   // 9. Persist + fire automations
   const meeting = await prisma.interviewMeeting.create({
     data: {
@@ -272,6 +301,9 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
       transcriptState: persistedTranscription ? 'processing' : 'disabled',
       workspaceEventsSubName: subName,
       workspaceEventsSubExpiresAt: subExpires,
+      hosts: hostMembers.length
+        ? { create: hostMembers.map((h) => ({ workspaceMemberId: h.memberId })) }
+        : undefined,
     },
   })
 

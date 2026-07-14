@@ -17,7 +17,14 @@ interface SchedulingConfig {
   isDefault: boolean; isActive: boolean; createdAt: string; updatedAt: string
   useBuiltInScheduler: boolean
   bookingRules: unknown
+  assignedMemberIds: string[]
   _count: { events: number }
+}
+
+interface WorkspaceMemberOption {
+  id: string
+  role: string
+  user: { id: string; email: string; name: string | null } | null
 }
 interface Meeting {
   id: string; eventType: string; eventAt: string
@@ -69,10 +76,18 @@ export default function SchedulingPage() {
   const [isDefault, setIsDefault] = useState(false)
   const [useBuiltIn, setUseBuiltIn] = useState(false)
   const [bookingRules, setBookingRules] = useState<BookingRules>(defaultBookingRules())
+  const [assignedMemberIds, setAssignedMemberIds] = useState<string[]>([])
+  const [members, setMembers] = useState<WorkspaceMemberOption[]>([])
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => { refresh() }, [])
+  useEffect(() => {
+    fetch('/api/workspace/members')
+      .then((r) => (r.ok ? r.json() : { members: [] }))
+      .then((d) => setMembers(Array.isArray(d?.members) ? d.members : []))
+      .catch(() => setMembers([]))
+  }, [])
 
   const refresh = async () => {
     const [rc, rm] = await Promise.all([
@@ -87,12 +102,14 @@ export default function SchedulingPage() {
   const openCreate = () => {
     setEditing(null); setName(''); setUrl(''); setIsDefault(configs.length === 0)
     setUseBuiltIn(false); setBookingRules(defaultBookingRules()); setSaveError(null)
+    setAssignedMemberIds([])
     setShowModal(true)
   }
   const openEdit = (c: SchedulingConfig) => {
     setEditing(c); setName(c.name); setUrl(c.schedulingUrl); setIsDefault(c.isDefault)
     setUseBuiltIn(!!c.useBuiltInScheduler)
     setBookingRules(parseBookingRulesOrDefault(c.bookingRules))
+    setAssignedMemberIds(Array.isArray(c.assignedMemberIds) ? c.assignedMemberIds : [])
     setSaveError(null)
     setShowModal(true)
   }
@@ -106,6 +123,7 @@ export default function SchedulingPage() {
       schedulingUrl: useBuiltIn ? '' : url,
       isDefault,
       useBuiltInScheduler: useBuiltIn,
+      assignedMemberIds,
     }
     if (useBuiltIn) body.bookingRules = bookingRules
     const r = editing
@@ -482,6 +500,52 @@ export default function SchedulingPage() {
                 </button>
                 <span className="text-[13px] text-ink">Set as default scheduling link</span>
               </label>
+
+              <div>
+                <div className="eyebrow mb-1.5">Assigned team members</div>
+                <p className="text-[12px] text-grey-40 mb-2">
+                  These teammates will be added to every calendar invite and receive notifications when the candidate confirms or cancels. They can be overridden per meeting.
+                </p>
+                {members.length === 0 ? (
+                  <div className="text-[12px] text-grey-40 border border-dashed border-surface-border rounded-[8px] px-3 py-2">
+                    No team members yet. Invite one from <a href="/dashboard/settings" className="underline text-primary">Settings</a>.
+                  </div>
+                ) : (
+                  <div className="space-y-1 max-h-[220px] overflow-y-auto rounded-[8px] border border-surface-border p-2">
+                    {members.map((m) => {
+                      const checked = assignedMemberIds.includes(m.id)
+                      const label = m.user?.name || m.user?.email || '(unknown)'
+                      const sub = m.user?.name && m.user?.email ? m.user.email : null
+                      return (
+                        <label
+                          key={m.id}
+                          className={`flex items-start gap-2 px-2 py-1.5 rounded-[6px] cursor-pointer ${
+                            checked ? 'bg-brand-50' : 'hover:bg-surface-light'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={checked}
+                            onChange={(e) => {
+                              setAssignedMemberIds((prev) =>
+                                e.target.checked
+                                  ? Array.from(new Set([...prev, m.id]))
+                                  : prev.filter((id) => id !== m.id),
+                              )
+                            }}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[13px] text-ink truncate">{label}</div>
+                            {sub && <div className="text-[11px] text-grey-40 truncate">{sub}</div>}
+                          </div>
+                          <span className="text-[10px] font-mono uppercase text-grey-40 mt-0.5">{m.role}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
             {saveError && <div className="mt-3 text-[12px] text-[color:var(--danger-fg)]">{saveError}</div>}
             <div className="flex gap-2 mt-6 justify-end">

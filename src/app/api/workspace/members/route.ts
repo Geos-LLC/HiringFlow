@@ -4,6 +4,26 @@ import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcryptjs'
 import { nanoid } from 'nanoid'
 
+// List workspace members. Used by the SchedulingConfig editor and the
+// per-meeting host picker on the candidate page.
+export async function GET() {
+  const ws = await getWorkspaceSession()
+  if (!ws) return unauthorized()
+
+  const members = await prisma.workspaceMember.findMany({
+    where: { workspaceId: ws.workspaceId },
+    orderBy: { joinedAt: 'asc' },
+    select: {
+      id: true,
+      role: true,
+      joinedAt: true,
+      user: { select: { id: true, email: true, name: true } },
+    },
+  })
+
+  return NextResponse.json({ members })
+}
+
 // Invite a new team member (creates user if needed + membership)
 export async function POST(request: NextRequest) {
   const ws = await getWorkspaceSession()

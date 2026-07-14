@@ -9,6 +9,7 @@
  */
 
 import type { calendar_v3 } from 'googleapis'
+import { google } from 'googleapis'
 import { prisma } from './prisma'
 import { logSchedulingEvent, updatePipelineStatus } from './scheduling'
 import { fireMeetingScheduledAutomations, fireMeetingRescheduledAutomations, cancelBeforeMeetingReminders, cancelMeetingDependentFollowups, rescheduleBeforeMeetingReminders } from './automation'
@@ -18,6 +19,7 @@ import { getSpaceByMeetingCode, parseMeetingCodeFromUrl, updateSpaceSettings } f
 import { subscribeSpace, deleteSubscription } from './meet/workspace-events'
 import { archivePrimaryArtifacts } from './meet/artifacts'
 import { getAuthedClientForWorkspace, hasMeetScopes } from './google'
+import { resolveHostMembers } from './scheduling/meeting-hosts'
 
 export interface ProcessEventResult {
   matched: boolean
@@ -235,26 +237,83 @@ async function adoptExternalMeet(
   }
 
   // Calendly / direct calendar invites create the Meet space without recording
-  // configured. Patch the space to ON when the workspace can record so the
-  // adopted meeting auto-records the same way an in-app scheduled one would.
-  // Space settings are mutable until a participant joins, so this works as
-  // long as the calendar event lands more than a moment before the meeting.
+  // configured, and with Google's default accessType (usually OPEN or TRUSTED
+  // depending on the account). Patch the space to:
+  //   - recording ON when the workspace can record (matches in-app behavior)
+  //   - accessType RESTRICTED so ONLY invited attendees can join without
+  //     knocking. This lets outside-org team member hosts we're about to add
+  //     as attendees join without the connected account having to admit them
+  //     from the lobby.
+  // Space settings are mutable until the first participant joins, so this
+  // works as long as the calendar event lands ahead of meeting time.
   let recordingTurnedOn = space.config?.artifactConfig?.recordingConfig?.autoRecordingGeneration === 'ON'
   let transcriptionTurnedOn = space.config?.artifactConfig?.transcriptionConfig?.autoTranscriptionGeneration === 'ON'
-  if (authed.integration.recordingCapable && !recordingTurnedOn) {
+  const wantAccessRestricted = space.config?.accessType !== 'RESTRICTED'
+  const wantRecordingOn = authed.integration.recordingCapable && !recordingTurnedOn
+  if (wantAccessRestricted || wantRecordingOn) {
     try {
       const updated = await updateSpaceSettings(authed.client, space.name, {
-        autoRecording: 'ON',
-        autoTranscription: 'ON',
+        ...(wantAccessRestricted ? { accessType: 'RESTRICTED' as const } : {}),
+        ...(wantRecordingOn ? { autoRecording: 'ON' as const, autoTranscription: 'ON' as const } : {}),
       })
       recordingTurnedOn = updated.config?.artifactConfig?.recordingConfig?.autoRecordingGeneration === 'ON'
       transcriptionTurnedOn = updated.config?.artifactConfig?.transcriptionConfig?.autoTranscriptionGeneration === 'ON'
-      console.log('[AdoptMeet] enabled auto-recording on adopted space', space.name)
+      console.log('[AdoptMeet] patched adopted space', space.name, {
+        accessType: updated.config?.accessType,
+        recording: recordingTurnedOn,
+      })
     } catch (err) {
       // Non-fatal: meeting may already be in progress, or the API rejected
       // the patch. Fall through and persist with whatever settings the space
       // currently has.
       console.warn('[AdoptMeet] updateSpaceSettings failed:', (err as Error).message)
+    }
+  }
+
+  // Resolve host team members from the workspace's default SchedulingConfig.
+  // Calendly-created events don't carry a HF configId, so we fall back to
+  // the workspace default. Empty when the workspace hasn't assigned anyone.
+  let hostMembers: Awaited<ReturnType<typeof resolveHostMembers>> = []
+  try {
+    const defaultConfig = await prisma.schedulingConfig.findFirst({
+      where: { workspaceId, isActive: true, isDefault: true },
+      select: { assignedMemberIds: true },
+    })
+    if (defaultConfig?.assignedMemberIds?.length) {
+      hostMembers = await resolveHostMembers(workspaceId, defaultConfig.assignedMemberIds)
+    }
+  } catch (err) {
+    console.warn('[AdoptMeet] host lookup failed (non-fatal):', (err as Error).message)
+  }
+
+  // Patch the calendar event to include host team members as attendees so
+  // Google fires them native invites/reminders and RESTRICTED lets them into
+  // the Meet room. Preserve any attendees Calendly already put on the event
+  // (the candidate, the Calendly organizer, etc.); de-dupe by email so we
+  // don't double-invite.
+  if (hostMembers.length > 0) {
+    const existingAttendees = event.attendees ?? []
+    const existingEmails = new Set(
+      existingAttendees.map((a) => (a.email ?? '').toLowerCase()).filter(Boolean),
+    )
+    const additions = hostMembers
+      .filter((h) => !existingEmails.has(h.email.toLowerCase()))
+      .map((h) => ({ email: h.email, displayName: h.name ?? undefined }))
+    if (additions.length > 0) {
+      try {
+        const calendar = google.calendar({ version: 'v3', auth: authed.client })
+        await calendar.events.patch({
+          calendarId: authed.integration.calendarId,
+          eventId: event.id,
+          sendUpdates: 'all',
+          requestBody: {
+            attendees: [...existingAttendees, ...additions],
+          },
+        })
+        console.log('[AdoptMeet] added', additions.length, 'host attendees to', event.id)
+      } catch (err) {
+        console.warn('[AdoptMeet] events.patch(attendees) failed (non-fatal):', (err as Error).message)
+      }
     }
   }
 
@@ -284,6 +343,9 @@ async function adoptExternalMeet(
       transcriptState: transcriptionTurnedOn ? 'processing' : 'disabled',
       workspaceEventsSubName: subName,
       workspaceEventsSubExpiresAt: subExpires,
+      hosts: hostMembers.length
+        ? { create: hostMembers.map((h) => ({ workspaceMemberId: h.memberId })) }
+        : undefined,
     },
   }).catch((err) => {
     console.log('[AdoptMeet] insert skipped (likely race):', (err as Error).message)

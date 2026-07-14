@@ -77,6 +77,7 @@ import { deleteCalendarEvent } from '@/lib/google'
 import { sendSms, normalizeToE164 } from '@/lib/sms'
 import { sendEmail } from '@/lib/email'
 import { verifySigcoreSignature, isFreshSigcoreTimestamp } from '@/lib/sigcore-signature'
+import { getMeetingHosts } from '@/lib/scheduling/meeting-hosts'
 
 type Intent = 'confirm' | 'cancel' | 'unknown'
 
@@ -515,13 +516,18 @@ async function sendAck(sessionId: string, workspaceId: string, to: string, body:
 }
 
 /**
- * Email the workspace's senderEmail when a candidate confirms or cancels.
- * The kanban already reflects the change visually — this is the recruiter's
- * push-style heads-up so they don't have to be looking at the dashboard.
+ * Email the workspace's senderEmail AND every assigned host team member when
+ * a candidate confirms or cancels. The kanban already reflects the change
+ * visually — this is the recruiter's push-style heads-up so they don't have
+ * to be looking at the dashboard.
  *
- * No-op when the workspace has no senderEmail configured (the email-sending
- * flow needs a from-address anyway, so a missing senderEmail means email
- * isn't set up for this workspace yet).
+ * Recipients:
+ *   - workspace.senderEmail (default recruiter mailbox) when configured
+ *   - every WorkspaceMember assigned as a host on this meeting
+ * De-duped by email so a recruiter who's also assigned as a host gets one
+ * copy, not two.
+ *
+ * When neither senderEmail nor any host is configured, no-op.
  */
 async function notifyRecruiter(
   target: Target,
@@ -532,10 +538,21 @@ async function notifyRecruiter(
     where: { id: target.workspaceId },
     select: { senderEmail: true, senderName: true, senderDomain: true, senderDomainValidatedAt: true, senderVerifiedAt: true, timezone: true, name: true },
   })
-  if (!ws?.senderEmail) {
-    console.log(`[sms-inbound] no senderEmail on workspace ${target.workspaceId}, skipping recruiter notification`)
+
+  const hosts = await getMeetingHosts(target.meeting.id).catch((err) => {
+    console.warn('[sms-inbound] getMeetingHosts failed (non-fatal):', (err as Error).message)
+    return [] as Awaited<ReturnType<typeof getMeetingHosts>>
+  })
+
+  const recipientSet = new Set<string>()
+  if (ws?.senderEmail) recipientSet.add(ws.senderEmail.toLowerCase())
+  for (const h of hosts) recipientSet.add(h.email.toLowerCase())
+  const recipients = Array.from(recipientSet)
+  if (recipients.length === 0) {
+    console.log(`[sms-inbound] no recipients (no senderEmail + no hosts) for workspace ${target.workspaceId}, skipping recruiter notification`)
     return
   }
+  if (!ws) return
 
   const tz = ws.timezone || 'America/New_York'
   const meetingTime = target.meeting.scheduledStart.toLocaleString('en-US', {
@@ -576,17 +593,21 @@ async function notifyRecruiter(
 
   // Match the executeStep email-from selection logic so we only send if the
   // workspace's sender is actually authorized to send mail.
-  const domainOk = !!(ws.senderDomainValidatedAt && ws.senderDomain && ws.senderEmail.toLowerCase().endsWith('@' + ws.senderDomain.toLowerCase()))
+  const domainOk = !!(ws.senderDomainValidatedAt && ws.senderDomain && ws.senderEmail && ws.senderEmail.toLowerCase().endsWith('@' + ws.senderDomain.toLowerCase()))
   const singleOk = !!ws.senderVerifiedAt
-  const from = (domainOk || singleOk) && ws.senderName
+  const from = (domainOk || singleOk) && ws.senderName && ws.senderEmail
     ? { email: ws.senderEmail, name: ws.senderName }
     : null
 
-  await sendEmail({
-    to: ws.senderEmail,
-    subject,
-    html,
-    text: `${candidateLabel} ${action} the interview at ${meetingTime}. View: ${candidateLink}`,
-    from,
-  })
+  // Fan out to every recipient in parallel; a failure to one address doesn't
+  // block the others. sendEmail already logs its own errors.
+  await Promise.all(recipients.map((to) =>
+    sendEmail({
+      to,
+      subject,
+      html,
+      text: `${candidateLabel} ${action} the interview at ${meetingTime}. View: ${candidateLink}`,
+      from,
+    }).catch((err) => console.error('[sms-inbound] recruiter email to', to, 'failed:', (err as Error).message)),
+  ))
 }

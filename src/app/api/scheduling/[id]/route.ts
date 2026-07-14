@@ -32,6 +32,20 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     }
   }
 
+  // Cross-check assigned member ids belong to this workspace. Silent-drop
+  // stale ids so a save doesn't fail if a member was removed between page
+  // load and save.
+  let assignedMemberIdsUpdate: string[] | undefined
+  if (Array.isArray(body.assignedMemberIds)) {
+    const clean = body.assignedMemberIds.filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
+    const rows = await prisma.workspaceMember.findMany({
+      where: { workspaceId: ws.workspaceId, id: { in: Array.from(new Set(clean)) as string[] } },
+      select: { id: true },
+    })
+    const valid = new Set(rows.map((r) => r.id))
+    assignedMemberIdsUpdate = clean.filter((id: string) => valid.has(id))
+  }
+
   const updated = await prisma.schedulingConfig.update({
     where: { id: params.id },
     data: {
@@ -42,6 +56,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       ...(body.useBuiltInScheduler !== undefined && { useBuiltInScheduler: !!body.useBuiltInScheduler }),
       ...(bookingRulesUpdate !== undefined && { bookingRules: bookingRulesUpdate }),
       ...(body.calendarId !== undefined && { calendarId: body.calendarId || null }),
+      ...(assignedMemberIdsUpdate !== undefined && { assignedMemberIds: assignedMemberIdsUpdate }),
     },
   })
 
