@@ -790,6 +790,11 @@ model FlowStep {
   // evolve fields without per-column migrations; never trust raw JSON outside
   // of the validator.
   captureConfig    Json?                 @map("capture_config")
+  // Only meaningful when stepType='training'. SetNull so deleting a Training
+  // leaves the step in place (recruiter sees a "training missing" prompt in
+  // the editor rather than losing the whole step).
+  trainingId       String?               @map("training_id")
+  training         Training?             @relation("FlowStepTraining", fields: [trainingId], references: [id], onDelete: SetNull)
   createdAt        DateTime              @default(now()) @map("created_at")
   options          StepOption[]          @relation("StepOptions")
   incomingOptions  StepOption[]          @relation("NextStep")
@@ -1032,6 +1037,7 @@ model Training {
   accessTokens    TrainingAccessToken[]
   automationRules AutomationRule[]
   automationSteps AutomationStep[]      @relation("StepTraining")
+  flowSteps       FlowStep[]            @relation("FlowStepTraining")
   hiringProcesses HiringProcess[]
 
   @@map("trainings")

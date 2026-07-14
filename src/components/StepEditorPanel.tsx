@@ -134,7 +134,15 @@ interface Step {
   infoContent?: string | null
   captionsEnabled?: boolean
   captionStyle?: CaptionStyle | null
+  trainingId?: string | null
   options: Option[]
+}
+
+interface Training {
+  id: string
+  title: string
+  slug: string
+  isPublished: boolean
 }
 
 const DEFAULT_FORM_CONFIG: FormConfig = {
@@ -186,6 +194,19 @@ export default function StepEditorPanel({
   const [captionStyle, setCaptionStyleState] = useState<CaptionStyle>(
     (step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE
   )
+  const [trainings, setTrainings] = useState<Training[]>([])
+  useEffect(() => {
+    // Only fetch when the training panel actually needs the list; avoids
+    // hitting /api/trainings for every video/question step edit.
+    if (step.stepType !== 'training') return
+    let cancelled = false
+    fetch('/api/trainings').then(async (r) => {
+      if (!r.ok || cancelled) return
+      const data = await r.json()
+      if (!cancelled) setTrainings(data)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [step.stepType])
 
   // Load segments from video record on mount
   const videoSegments = step.video?.segments as Segment[] | null | undefined
@@ -925,6 +946,7 @@ export default function StepEditorPanel({
                   <option value="form">Form Step (Collect Information)</option>
                   <option value="submission">Video Step (Watch + Continue)</option>
                   <option value="info">Info Step (Instructions/Notice)</option>
+                  <option value="training">Training Step (Complete Training)</option>
                 </select>
               </div>
 
@@ -979,6 +1001,38 @@ export default function StepEditorPanel({
                   <h4 className="font-medium text-brand-800 mb-2">Video Step</h4>
                   <p className="text-sm text-brand-700">
                     Candidate watches the video then clicks Continue to proceed.
+                  </p>
+                </div>
+              )}
+
+              {/* Training Step — pick the training the candidate must
+                  finish. The flow answer route hard-blocks advance until
+                  TrainingEnrollment.completedAt is set for this session +
+                  trainingId pair. If the picker shows "missing", the
+                  underlying training was deleted (schema is SetNull) and
+                  the recruiter needs to pick a new one. */}
+              {step.stepType === 'training' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Training</label>
+                  {step.trainingId && !trainings.find(t => t.id === step.trainingId) && trainings.length > 0 && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 mb-2 text-xs text-amber-800">
+                      The training this step referenced was deleted. Pick a new one.
+                    </div>
+                  )}
+                  <select
+                    value={step.trainingId || ''}
+                    onChange={(e) => onUpdateStep(step.id, { trainingId: e.target.value || null } as Partial<Step>)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  >
+                    <option value="">Select a training…</option>
+                    {trainings.filter(t => t.isPublished || t.id === step.trainingId).map(t => (
+                      <option key={t.id} value={t.id}>
+                        {t.title}{!t.isPublished ? ' (draft)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Candidate must finish this training before the flow advances. Progress is tracked automatically.
                   </p>
                 </div>
               )}

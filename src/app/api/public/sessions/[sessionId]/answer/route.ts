@@ -111,6 +111,32 @@ export async function POST(
       return advance()
     }
 
+    // Training steps hard-gate on completion. The candidate can hit Continue
+    // (or the client-side poller can fire an advance) at any time, but we
+    // won't move past this step until TrainingEnrollment.completedAt is
+    // written by /api/public/trainings/[slug]/progress. This is the sole
+    // enforcement point — the client never bypasses it.
+    if (step.stepType === 'training') {
+      const stepTrainingId = (step as unknown as { trainingId?: string | null }).trainingId ?? null
+      if (!stepTrainingId) {
+        // Misconfigured step (no training picked). Don't strand the candidate;
+        // just advance past it. Recruiter will see the empty picker in the
+        // editor and can fix or delete the step.
+        return advance()
+      }
+      const enrollment = await prisma.trainingEnrollment.findFirst({
+        where: { sessionId: params.sessionId, trainingId: stepTrainingId },
+        select: { completedAt: true },
+      })
+      if (!enrollment?.completedAt) {
+        return NextResponse.json(
+          { error: 'Training not completed yet', trainingIncomplete: true },
+          { status: 409 }
+        )
+      }
+      return advance()
+    }
+
     // For text answer questions, save as submission
     if (step.questionType === 'text' && textAnswer) {
       await prisma.candidateSubmission.upsert({

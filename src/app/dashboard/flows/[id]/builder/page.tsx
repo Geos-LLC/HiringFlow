@@ -44,7 +44,15 @@ interface Step {
   captionsEnabled?: boolean
   captionStyle?: any
   captureConfig?: unknown
+  trainingId?: string | null
   options: Option[]
+}
+
+interface Training {
+  id: string
+  title: string
+  slug: string
+  isPublished: boolean
 }
 
 interface Flow {
@@ -72,6 +80,7 @@ export default function FlowBuilderPage() {
 
   const [flow, setFlow] = useState<Flow | null>(null)
   const [videos, setVideos] = useState<Video[]>([])
+  const [trainings, setTrainings] = useState<Training[]>([])
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -140,6 +149,7 @@ export default function FlowBuilderPage() {
   useEffect(() => {
     fetchFlow()
     fetchVideos()
+    fetchTrainings()
   }, [flowId])
 
   // Mirror the Media library's display preference so video pickers/labels
@@ -175,6 +185,14 @@ export default function FlowBuilderPage() {
     if (res.ok) {
       const data = await res.json()
       setVideos(data)
+    }
+  }
+
+  const fetchTrainings = async () => {
+    const res = await fetch('/api/trainings')
+    if (res.ok) {
+      const data = await res.json()
+      setTrainings(data)
     }
   }
 
@@ -236,6 +254,9 @@ export default function FlowBuilderPage() {
   const [addStepCaptureAllowRetake, setAddStepCaptureAllowRetake] = useState(true)
   const [addStepCaptureMaxRetakes, setAddStepCaptureMaxRetakes] = useState<string>('2')
   const [addStepCaptureError, setAddStepCaptureError] = useState<string | null>(null)
+  // Training step config — recruiter picks an existing Training in Phase 2.
+  // Only published trainings are eligible; the picker filters them.
+  const [addStepTrainingId, setAddStepTrainingId] = useState<string>('')
   const [addStepButtonEnabled, setAddStepButtonEnabled] = useState(false)
   const [addStepButtonText, setAddStepButtonText] = useState('Continue')
   // Action-button "next step" target. null = auto, '__end__' = End, else stepId.
@@ -306,6 +327,10 @@ export default function FlowBuilderPage() {
           transcriptionEnabled: false,
           aiAnalysisEnabled: false,
         },
+      },
+      training: {
+        title: `Training ${stepNum}`,
+        stepType: 'training',
       },
     }
     const body = { ...defaults[stepType], ...config }
@@ -453,6 +478,7 @@ export default function FlowBuilderPage() {
       { id: 'email', label: 'Email', type: 'email', required: true, enabled: true, isBuiltIn: true },
       { id: 'phone', label: 'Phone', type: 'phone', required: false, enabled: true, isBuiltIn: true },
     ])
+    setAddStepTrainingId('')
     setShowAddStepModal(true)
   }
 
@@ -600,6 +626,9 @@ export default function FlowBuilderPage() {
     } else if (addStepType === 'capture') {
       const promptSnippet = addStepCapturePrompt.trim() ? addStepCapturePrompt.trim().slice(0, 50) : ''
       finalTitle = addStepTitle.trim() || promptSnippet || 'Audio answer'
+    } else if (addStepType === 'training') {
+      const picked = trainings.find(t => t.id === addStepTrainingId)
+      finalTitle = addStepTitle.trim() || picked?.title || 'Training'
     }
     finalTitle = makeUnique(finalTitle)
     setTitleWarning(false)
@@ -656,6 +685,11 @@ export default function FlowBuilderPage() {
       setAddStepCaptureError(null)
       config.title = finalTitle
       config.captureConfig = parsed.value
+    } else if (addStepType === 'training') {
+      if (!addStepTrainingId) return
+      config.title = finalTitle
+      config.trainingId = addStepTrainingId
+      if (addStepButtonEnabled) config.buttonConfig = buttonConfigBase()
     }
     createStep(addStepType, config)
   }
@@ -2251,7 +2285,7 @@ export default function FlowBuilderPage() {
                   <button onClick={() => setAddStepType(null)} className="text-grey-40 hover:text-grey-15">&larr;</button>
                 )}
                 <h2 className="text-xl font-semibold text-grey-15">
-                  {!addStepType ? 'Add Step' : addStepType === 'submission' ? 'Video Step' : addStepType === 'question' ? 'Question Step' : addStepType === 'form' ? 'Form Step' : addStepType === 'capture' ? 'Audio Answer Step' : 'Screen Step'}
+                  {!addStepType ? 'Add Step' : addStepType === 'submission' ? 'Video Step' : addStepType === 'question' ? 'Question Step' : addStepType === 'form' ? 'Form Step' : addStepType === 'capture' ? 'Audio Answer Step' : addStepType === 'training' ? 'Training Step' : 'Screen Step'}
                 </h2>
               </div>
               <button onClick={() => { setShowAddStepModal(false); setPendingArrowInsertion(null) }} className="text-grey-40 hover:text-grey-15 text-xl">&times;</button>
@@ -2291,6 +2325,15 @@ export default function FlowBuilderPage() {
                       // just can't add new ones while the gate is closed.
                       ...(flow.captureStepsEnabled
                         ? [{ type: 'capture', label: 'Audio Answer', desc: 'Candidate records spoken answer', color: 'brand', icon: 'M19 11a7 7 0 01-14 0m7 7v3m-4 0h8M12 4a3 3 0 00-3 3v4a3 3 0 006 0V7a3 3 0 00-3-3z' }]
+                        : []),
+                      // Training tile — gated by "is there at least one
+                      // training in this workspace?" Recruiter with zero
+                      // trainings would land in Phase 2 with an empty
+                      // picker and no way to proceed, so we hide the tile
+                      // rather than surface a dead-end. Empty state (link
+                      // to /dashboard/trainings) could be added later.
+                      ...(trainings.length > 0
+                        ? [{ type: 'training', label: 'Training', desc: 'Candidate must complete a training', color: 'brand', icon: 'M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14zm-4 6v-7.5l4-2.222' }]
                         : []),
                     ].map(({ type, label, desc, color, icon }) => (
                       <button
@@ -2826,6 +2869,67 @@ export default function FlowBuilderPage() {
                         </button>
                       )
                     })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Phase 2: Training config — pick an existing Training. Only
+                  published trainings are eligible to prevent a candidate
+                  hitting a draft training with no sections yet.
+                  Completion is enforced server-side in /api/public/sessions/
+                  [sessionId]/answer — the flow cannot advance until the
+                  candidate has a TrainingEnrollment.completedAt for this
+                  training. */}
+              {addStepType === 'training' && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-grey-20 mb-1.5">Step Title</label>
+                    <input
+                      type="text"
+                      value={addStepTitle}
+                      onChange={(e) => { setAddStepTitle(e.target.value); if (titleWarning) setTitleWarning(false) }}
+                      placeholder="e.g., Complete onboarding training"
+                      className={`w-full px-3 py-2 border rounded-[8px] focus:outline-none focus:ring-2 focus:ring-brand-500/40 text-sm ${
+                        titleWarning ? 'border-red-400' : 'border-surface-border'
+                      }`}
+                    />
+                    {titleWarning && (
+                      <p className="text-xs text-red-600 mt-1">Title is required</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-grey-20 mb-1.5">Training</label>
+                    {trainings.filter(t => t.isPublished).length === 0 ? (
+                      <div className="rounded-[8px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        You don&apos;t have any published trainings yet.{' '}
+                        <Link href="/dashboard/trainings" className="underline">
+                          Create one first
+                        </Link>
+                        .
+                      </div>
+                    ) : (
+                      <select
+                        value={addStepTrainingId}
+                        onChange={(e) => setAddStepTrainingId(e.target.value)}
+                        className="w-full px-3 py-2 border border-surface-border rounded-[8px] focus:outline-none focus:ring-2 focus:ring-brand-500/40 text-sm"
+                      >
+                        <option value="">Select a training…</option>
+                        {trainings.filter(t => t.isPublished).map(t => (
+                          <option key={t.id} value={t.id}>{t.title}</option>
+                        ))}
+                      </select>
+                    )}
+                    <p className="text-xs text-grey-40 mt-1">Candidate must finish this training before the flow can advance.</p>
+                  </div>
+                  <div className="flex gap-3 pt-2">
+                    <button onClick={() => { setShowAddStepModal(false); setPendingArrowInsertion(null) }} className="btn-secondary flex-1">Cancel</button>
+                    <button
+                      onClick={submitAddStep}
+                      disabled={!addStepTrainingId}
+                      className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Add Training Step
+                    </button>
                   </div>
                 </div>
               )}

@@ -55,6 +55,15 @@ interface CombinedStepData {
   options: StepOption[]
 }
 
+interface TrainingStepData {
+  id: string
+  title: string
+  slug: string
+  description: string | null
+  url: string
+  completed: boolean
+}
+
 interface StepData {
   stepId: string
   title: string
@@ -75,6 +84,7 @@ interface StepData {
   // workspace.settings.captureStepsEnabled. The candidate page never reads
   // env or workspace settings on the client; this boolean is the only signal.
   captureStepsEnabled?: boolean
+  training?: TrainingStepData | null
   combinedStep?: CombinedStepData | null
   options: StepOption[]
   finished?: boolean
@@ -113,6 +123,28 @@ export default function SessionPlayerPage() {
   useEffect(() => {
     fetchStep()
   }, [sessionId])
+
+  // Poll for training completion while a training step is active. The
+  // candidate opens the training in a new tab; when they finish it the
+  // server writes TrainingEnrollment.completedAt. We refetch /step every
+  // 5s so the client picks up completion and swaps the CTA to "Continue".
+  // The user can also just click Continue themselves — the answer route
+  // enforces the same gate.
+  useEffect(() => {
+    if (!step || step.stepType !== 'training') return
+    if (step.training?.completed) return
+    const interval = setInterval(() => {
+      fetch(`/api/public/sessions/${sessionId}/step`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data && !data.finished && data.stepId === step.stepId && data.training?.completed) {
+            setStep(data)
+          }
+        })
+        .catch(() => {})
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [step?.stepId, step?.stepType, step?.training?.completed, sessionId])
 
   const fetchStep = async () => {
     setLoading(true)
@@ -558,6 +590,72 @@ export default function SessionPlayerPage() {
             >
               {submitting ? 'Continuing...' : 'Continue'}
             </button>
+          </div>
+        )}
+
+        {/* Training Step — candidate must finish the linked training in a
+            separate tab. Continue is disabled until the enrollment is
+            marked complete server-side; the effect above polls /step so
+            the button flips to enabled without a manual refresh. */}
+        {step.stepType === 'training' && (
+          <div className={overlay ? '' : 'max-w-md mx-auto'}>
+            {step.training ? (
+              <div className="space-y-4">
+                <div className={`rounded-xl border p-4 ${overlay ? 'border-white/30 bg-white/5' : 'border-surface-border bg-white'}`}>
+                  <div className={`text-sm font-semibold mb-1 ${textColorClass}`}>{step.training.title}</div>
+                  {step.training.description && (
+                    <p className={`text-xs ${overlay ? 'text-white/70' : 'text-grey-40'} whitespace-pre-wrap`}>
+                      {step.training.description}
+                    </p>
+                  )}
+                </div>
+                <a
+                  href={step.training.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`block w-full py-3 rounded-xl text-center font-medium text-sm transition-all ${
+                    overlay
+                      ? 'border-2 border-white/40 hover:bg-white/10 text-white'
+                      : 'border-2 border-brand-500 bg-brand-50 text-brand-700 hover:bg-brand-100'
+                  }`}
+                >
+                  {step.training.completed ? 'Review training' : 'Open training'}
+                </a>
+                <button
+                  onClick={async () => {
+                    setSubmitting(true)
+                    const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ stepId: step.stepId }),
+                    })
+                    if (res.ok) {
+                      const data = await res.json()
+                      if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
+                      else fetchStep()
+                    }
+                    setSubmitting(false)
+                  }}
+                  disabled={submitting || !step.training.completed}
+                  className="w-full py-3 bg-brand-500 text-white rounded-xl font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-brand-600 transition-colors"
+                >
+                  {submitting
+                    ? 'Loading...'
+                    : step.training.completed
+                    ? 'Continue'
+                    : 'Finish training to continue'}
+                </button>
+                {!step.training.completed && (
+                  <p className={`text-xs text-center ${overlay ? 'text-white/50' : 'text-grey-40'}`}>
+                    We&apos;ll unlock the Continue button as soon as you finish the training.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className={`rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800`}>
+                This training step isn&apos;t configured yet. Please contact the hiring team.
+              </div>
+            )}
           </div>
         )}
 

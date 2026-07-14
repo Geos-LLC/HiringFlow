@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getVideoUrl } from '@/lib/storage'
 import { tryParseCaptureConfig } from '@/lib/capture/capture-config'
 import { isCaptureStepsEnabledForWorkspace } from '@/lib/capture/capture-feature-flag'
+import { createAccessToken, buildTrainingLink } from '@/lib/training-access'
 
 export async function GET(
   request: NextRequest,
@@ -127,6 +128,44 @@ export async function GET(
     workspaceSettings: session.workspace?.settings,
   })
 
+  // Training step: resolve the linked training, mint (or reuse) a per-
+  // candidate access token, and surface completion status so the client
+  // can poll for completion + auto-advance.
+  let training: {
+    id: string
+    title: string
+    slug: string
+    description: string | null
+    url: string
+    completed: boolean
+  } | null = null
+  const stepTrainingId = (step as unknown as { trainingId?: string | null }).trainingId ?? null
+  if (step.stepType === 'training' && stepTrainingId) {
+    const t = await prisma.training.findUnique({
+      where: { id: stepTrainingId },
+      select: { id: true, title: true, slug: true, description: true },
+    })
+    if (t) {
+      const { token } = await createAccessToken({
+        sessionId: session.id,
+        trainingId: t.id,
+        sourceRefId: step.id,
+      })
+      const enrollment = await prisma.trainingEnrollment.findFirst({
+        where: { sessionId: session.id, trainingId: t.id },
+        select: { completedAt: true },
+      })
+      training = {
+        id: t.id,
+        title: t.title,
+        slug: t.slug,
+        description: t.description,
+        url: buildTrainingLink(t.slug, token),
+        completed: !!enrollment?.completedAt,
+      }
+    }
+  }
+
   return NextResponse.json({
     stepId: step.id,
     title: step.title,
@@ -142,6 +181,7 @@ export async function GET(
     formConfig: step.formConfig,
     captureConfig,
     captureStepsEnabled,
+    training,
     progress: { current: currentStepOrder + 1, total: totalSteps },
     stepIds: allSteps.map(s => s.id),
     combinedStep,

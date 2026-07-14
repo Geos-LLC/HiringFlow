@@ -24,7 +24,7 @@ export async function PATCH(
 
   try {
     const body = await request.json()
-    const { title, videoId, questionText, stepOrder, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, combinedWithId, captionsEnabled, captionStyle, captureConfig } = body
+    const { title, videoId, questionText, stepOrder, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, combinedWithId, captionsEnabled, captionStyle, captureConfig, trainingId } = body
 
     // Validate captureConfig before write. Allow null to explicitly clear.
     let captureConfigPatch: { captureConfig: unknown } | null = null
@@ -40,6 +40,18 @@ export async function PATCH(
           )
         }
         captureConfigPatch = { captureConfig: parsed.value }
+      }
+    }
+
+    // Validate trainingId belongs to caller's workspace. Allow null to
+    // explicitly clear (recruiter unlinks the training from the step).
+    if (trainingId !== undefined && trainingId !== null) {
+      const training = await prisma.training.findFirst({
+        where: { id: trainingId, workspaceId: ws.workspaceId },
+        select: { id: true },
+      })
+      if (!training) {
+        return NextResponse.json({ error: 'Training not found' }, { status: 404 })
       }
     }
 
@@ -60,6 +72,7 @@ export async function PATCH(
         ...(captionsEnabled !== undefined && { captionsEnabled }),
         ...(captionStyle !== undefined && { captionStyle }),
         ...(captureConfigPatch !== null && { captureConfig: captureConfigPatch.captureConfig as any }),
+        ...(trainingId !== undefined && { trainingId: trainingId || null }),
       },
       include: {
         video: true,

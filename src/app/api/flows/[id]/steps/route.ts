@@ -23,7 +23,7 @@ export async function POST(
 
   try {
     const body = await request.json()
-    const { title, videoId, questionText, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, captureConfig, options } = body
+    const { title, videoId, questionText, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, captureConfig, trainingId, options } = body
 
     // Validate captureConfig through the Zod schema before persisting. This
     // is the only path that writes the column; the schema's tryParseCaptureConfig
@@ -39,6 +39,18 @@ export async function POST(
         )
       }
       validatedCaptureConfig = parsed.value
+    }
+
+    // Validate trainingId belongs to caller's workspace before persisting so
+    // a recruiter can't reference a training from another tenant.
+    if (trainingId !== undefined && trainingId !== null) {
+      const training = await prisma.training.findFirst({
+        where: { id: trainingId, workspaceId: ws.workspaceId },
+        select: { id: true },
+      })
+      if (!training) {
+        return NextResponse.json({ error: 'Training not found' }, { status: 404 })
+      }
     }
 
     // Get current max step order
@@ -61,6 +73,7 @@ export async function POST(
         ...(infoContent !== undefined && { infoContent }),
         ...(buttonConfig !== undefined && { buttonConfig }),
         ...(validatedCaptureConfig !== undefined && { captureConfig: validatedCaptureConfig as any }),
+        ...(trainingId !== undefined && { trainingId: trainingId || null }),
         // Create answer options if provided
         ...(options && Array.isArray(options) && options.length > 0 && {
           options: {
