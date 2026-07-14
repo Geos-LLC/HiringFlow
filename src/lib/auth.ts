@@ -121,6 +121,22 @@ export function unauthorized() {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 }
 
-export function forbidden() {
-  return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+export function forbidden(message?: string) {
+  return NextResponse.json({ error: 'Forbidden', message }, { status: 403 })
+}
+
+/**
+ * Role hierarchy: owner > admin > member. `owner` and `admin` share the
+ * same set of privileged capabilities in this codebase (both can invite,
+ * change roles, remove members, manage billing). `owner` gets one extra
+ * capability that `admin` does not: deleting the workspace itself.
+ *
+ * Super admins bypass every role check.
+ */
+export function isAdminOrOwner(role: string, isSuperAdmin = false): boolean {
+  return isSuperAdmin || role === 'owner' || role === 'admin'
+}
+
+export function isOwner(role: string, isSuperAdmin = false): boolean {
+  return isSuperAdmin || role === 'owner'
 }

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useSession } from 'next-auth/react'
 import { GoogleIntegrationCard } from './_GoogleIntegrationCard'
 import { CertnIntegrationCard } from './_CertnIntegrationCard'
 import { TelegramIntegrationCard } from './_TelegramIntegrationCard'
@@ -24,6 +25,16 @@ const TIMEZONES = [
 ]
 
 export default function SettingsPage() {
+  const { data: session } = useSession()
+  // Role from the JWT session. Owner + admin get privileged team actions
+  // (invite, change role, remove, resend). Owner-only gets Delete Workspace.
+  // These flags gate UI visibility only — the API is the authoritative
+  // check, so a member with a tampered client still can't invoke the
+  // privileged endpoints.
+  const myRole = ((session?.user as { role?: string } | undefined)?.role) || 'member'
+  const isSuperAdmin = !!((session?.user as { isSuperAdmin?: boolean } | undefined)?.isSuperAdmin)
+  const isAdminOrOwner = isSuperAdmin || myRole === 'owner' || myRole === 'admin'
+  const isOwner = isSuperAdmin || myRole === 'owner'
   const [data, setData] = useState<WorkspaceData | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -216,21 +227,28 @@ export default function SettingsPage() {
       {/* TEAM TAB */}
       {tab === 'team' && (
         <div className="max-w-2xl">
-          {/* Invite */}
-          <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
-            <h3 className="text-lg font-semibold text-grey-15 mb-4">Invite Team Member</h3>
-            <div className="flex gap-3">
-              <input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="Email address" className="flex-1 px-4 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
-              <input type="text" value={inviteName} onChange={(e) => setInviteName(e.target.value)} placeholder="Name (optional)" className="w-40 px-4 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
-              <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} className="px-3 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm">
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-              </select>
-              <button onClick={inviteMember} disabled={inviting || !inviteEmail} className="btn-primary text-sm px-5 disabled:opacity-50">
-                {inviting ? '...' : 'Invite'}
-              </button>
+          {/* Invite — only admins + owners see this. Members see a hint. */}
+          {isAdminOrOwner ? (
+            <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+              <h3 className="text-lg font-semibold text-grey-15 mb-4">Invite Team Member</h3>
+              <div className="flex gap-3">
+                <input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="Email address" className="flex-1 px-4 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                <input type="text" value={inviteName} onChange={(e) => setInviteName(e.target.value)} placeholder="Name (optional)" className="w-40 px-4 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} className="px-3 py-2.5 border border-surface-border rounded-[8px] text-grey-15 text-sm">
+                  <option value="member">Member</option>
+                  <option value="admin">Admin</option>
+                  {isOwner && <option value="owner">Owner</option>}
+                </select>
+                <button onClick={inviteMember} disabled={inviting || !inviteEmail} className="btn-primary text-sm px-5 disabled:opacity-50">
+                  {inviting ? '...' : 'Invite'}
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="bg-surface-light rounded-[12px] border border-surface-border p-4 mb-6 text-[13px] text-grey-40">
+              Only workspace admins and owners can invite team members or change roles.
+            </div>
+          )}
 
           {/* Role capabilities — a small honest reference so admins picking
               a role for a new invite know what member vs. admin actually
@@ -254,9 +272,14 @@ export default function SettingsPage() {
               </thead>
               <tbody>
                 {([
+                  { label: 'Invite team members & resend invites', member: false, admin: true, owner: true },
+                  { label: "Change other members' roles (except owner)", member: false, admin: true, owner: true },
+                  { label: 'Remove team members', member: false, admin: true, owner: true },
                   { label: 'Manage subscription & billing', member: false, admin: true, owner: true },
                   { label: "Edit or delete another user's notes on a candidate", member: false, admin: true, owner: true },
                   { label: 'Force re-run pipeline-stage automations for a candidate', member: false, admin: true, owner: true },
+                  { label: 'Promote to Owner or change an Owner\'s role', member: false, admin: false, owner: true },
+                  { label: 'Delete the workspace (irreversible)', member: false, admin: false, owner: true },
                 ]).map((row) => (
                   <tr key={row.label} className="border-b border-surface-border last:border-0">
                     <td className="py-2.5 pr-2 text-grey-15">{row.label}</td>
@@ -284,37 +307,58 @@ export default function SettingsPage() {
               <h3 className="text-lg font-semibold text-grey-15">Team Members ({data.members.length})</h3>
             </div>
             <div className="divide-y divide-surface-border">
-              {data.members.map(m => (
+              {data.members.map(m => {
+                // Admins can't touch an existing owner (change role, remove).
+                // Only owners (or super admins) can. Members see role as a
+                // read-only badge with no action buttons.
+                const canEditThisMember = isAdminOrOwner && (isOwner || m.role !== 'owner')
+                const isSelf = m.userId === (session?.user as { id?: string } | undefined)?.id
+                return (
                 <div key={m.id} className="px-6 py-4 flex items-center justify-between">
                   <div>
                     <div className="text-sm font-medium text-grey-15">{m.name || m.email}</div>
                     <div className="text-xs text-grey-40">{m.email}</div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <select
-                      value={m.role}
-                      onChange={(e) => updateRole(m.id, e.target.value)}
-                      className="text-xs px-2 py-1 border border-surface-border rounded-[6px] text-grey-35"
-                    >
-                      <option value="owner">Owner</option>
-                      <option value="admin">Admin</option>
-                      <option value="member">Member</option>
-                    </select>
+                    {canEditThisMember && !isSelf ? (
+                      <select
+                        value={m.role}
+                        onChange={(e) => updateRole(m.id, e.target.value)}
+                        className="text-xs px-2 py-1 border border-surface-border rounded-[6px] text-grey-35"
+                      >
+                        {isOwner && <option value="owner">Owner</option>}
+                        <option value="admin">Admin</option>
+                        <option value="member">Member</option>
+                      </select>
+                    ) : (
+                      <span className="text-xs px-2 py-1 rounded-[6px] bg-surface-light text-grey-35 capitalize">{m.role}</span>
+                    )}
                     <span className="text-xs text-grey-50">{new Date(m.joinedAt).toLocaleDateString()}</span>
-                    <button
-                      onClick={() => resendInvite(m.id, m.email)}
-                      disabled={resendingId === m.id}
-                      className="text-xs text-grey-40 hover:text-grey-15 disabled:opacity-50"
-                      title="Resend the invite email with a fresh set-password link (7-day expiry)"
-                    >
-                      {resendingId === m.id ? 'Sending…' : 'Resend invite'}
-                    </button>
-                    <button onClick={() => removeMember(m.id)} className="text-xs text-red-400 hover:text-red-600">Remove</button>
+                    {isAdminOrOwner && (
+                      <button
+                        onClick={() => resendInvite(m.id, m.email)}
+                        disabled={resendingId === m.id}
+                        className="text-xs text-grey-40 hover:text-grey-15 disabled:opacity-50"
+                        title="Resend the invite email with a fresh set-password link (7-day expiry)"
+                      >
+                        {resendingId === m.id ? 'Sending…' : 'Resend invite'}
+                      </button>
+                    )}
+                    {canEditThisMember && !isSelf && (
+                      <button onClick={() => removeMember(m.id)} className="text-xs text-red-400 hover:text-red-600">Remove</button>
+                    )}
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
           </div>
+
+          {/* Danger zone — Delete Workspace. Owner-only. Type-to-confirm
+              guard so a stray click doesn't nuke the workspace and every
+              candidate/flow/meeting under it. */}
+          {isOwner && (
+            <DangerZone workspaceId={data.id} workspaceName={data.name} />
+          )}
         </div>
       )}
 
@@ -392,6 +436,74 @@ export default function SettingsPage() {
         </div>
       )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Delete-workspace section, gated to owner. Requires the user to type the
+ * workspace name to confirm; server re-validates. On success, signs out
+ * (the JWT session's workspaceId no longer exists so every subsequent
+ * request would 401 anyway).
+ */
+function DangerZone({ workspaceId, workspaceName }: { workspaceId: string; workspaceName: string }) {
+  const [confirmName, setConfirmName] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const matches = confirmName.trim().toLowerCase() === workspaceName.toLowerCase()
+
+  const doDelete = async () => {
+    if (!matches) return
+    if (!confirm(`Permanently delete "${workspaceName}"? This deletes all candidates, flows, meetings, integrations, and team memberships in this workspace. There is no undo.`)) return
+    setDeleting(true); setError(null)
+    try {
+      const res = await fetch('/api/workspace', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmName: confirmName.trim() }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setError(body?.message || body?.error || 'Failed to delete workspace')
+        return
+      }
+      // Session's workspaceId is now dangling — sign the user out cleanly.
+      const { signOut } = await import('next-auth/react')
+      await signOut({ callbackUrl: '/login' })
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="mt-8 bg-white rounded-[12px] border-2 border-red-200 p-6">
+      <h3 className="text-sm font-semibold text-red-700 mb-1">Danger zone — Delete workspace</h3>
+      <p className="text-xs text-grey-40 mb-4">
+        Deletes <strong>{workspaceName}</strong> along with every candidate, flow, training, meeting, automation, integration, and team membership scoped to it. Cannot be undone. Only the workspace owner can do this.
+      </p>
+      <label className="block text-xs text-grey-15 mb-1.5">
+        Type <span className="font-mono font-semibold">{workspaceName}</span> to confirm:
+      </label>
+      <input
+        type="text"
+        value={confirmName}
+        onChange={(e) => setConfirmName(e.target.value)}
+        placeholder={workspaceName}
+        className="w-full px-3 py-2 border border-surface-border rounded-[8px] text-grey-15 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 mb-3"
+      />
+      {error && <div className="mb-3 text-xs text-red-700">{error}</div>}
+      <button
+        onClick={doDelete}
+        disabled={!matches || deleting}
+        className="text-sm px-4 py-2 rounded-[8px] bg-red-600 text-white font-medium hover:bg-red-700 disabled:bg-grey-200 disabled:text-grey-40 disabled:cursor-not-allowed"
+      >
+        {deleting ? 'Deleting…' : `Delete "${workspaceName}"`}
+      </button>
+      {/* Preserved for future reference — the workspace id is opaque to
+          the recruiter but useful in a support ticket if the delete fails. */}
+      <div className="mt-2 text-[10px] text-grey-50 font-mono">workspace_id: {workspaceId}</div>
     </div>
   )
 }

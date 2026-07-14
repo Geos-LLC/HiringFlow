@@ -12,13 +12,16 @@
  */
 
 import { NextResponse } from 'next/server'
-import { getWorkspaceSession, unauthorized } from '@/lib/auth'
+import { getWorkspaceSession, unauthorized, forbidden, isAdminOrOwner } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { sendWorkspaceInviteEmail } from '@/lib/workspace-invite'
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
+  if (!isAdminOrOwner(ws.role, ws.isSuperAdmin)) {
+    return forbidden('Only workspace admins and owners can resend invites')
+  }
 
   const member = await prisma.workspaceMember.findFirst({
     where: { id: params.id, workspaceId: ws.workspaceId },

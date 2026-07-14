@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getWorkspaceSession, unauthorized } from '@/lib/auth'
+import { getWorkspaceSession, unauthorized, forbidden, isAdminOrOwner } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { sendWorkspaceInviteEmail } from '@/lib/workspace-invite'
 import bcrypt from 'bcryptjs'
@@ -29,6 +29,9 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
+  if (!isAdminOrOwner(ws.role, ws.isSuperAdmin)) {
+    return forbidden('Only workspace admins and owners can invite team members')
+  }
 
   const { email, name, role } = await request.json()
   if (!email || typeof email !== 'string') {
