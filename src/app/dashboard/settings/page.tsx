@@ -232,6 +232,52 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* Role capabilities — a small honest reference so admins picking
+              a role for a new invite know what member vs. admin actually
+              unlocks. Only lists differences that are enforced in code
+              today (billing, note moderation, force-rerun automations);
+              standard workspace actions like viewing candidates and
+              editing flows are available to all roles including member. */}
+          <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+            <h3 className="text-sm font-semibold text-grey-15 mb-1">What each role can do</h3>
+            <p className="text-xs text-grey-40 mb-4">
+              All roles can view candidates, host interviews, and edit flows, trainings, and automations. These are the extra privileges that come with each role:
+            </p>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-surface-border text-left">
+                  <th className="py-2 pr-2 font-medium text-grey-15">Capability</th>
+                  <th className="py-2 px-2 font-medium text-grey-40 text-center w-20">Member</th>
+                  <th className="py-2 px-2 font-medium text-grey-40 text-center w-20">Admin</th>
+                  <th className="py-2 pl-2 font-medium text-grey-40 text-center w-20">Owner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {([
+                  { label: 'Manage subscription & billing', member: false, admin: true, owner: true },
+                  { label: "Edit or delete another user's notes on a candidate", member: false, admin: true, owner: true },
+                  { label: 'Force re-run pipeline-stage automations for a candidate', member: false, admin: true, owner: true },
+                ]).map((row) => (
+                  <tr key={row.label} className="border-b border-surface-border last:border-0">
+                    <td className="py-2.5 pr-2 text-grey-15">{row.label}</td>
+                    <td className="py-2.5 px-2 text-center">
+                      {row.member ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
+                    </td>
+                    <td className="py-2.5 px-2 text-center">
+                      {row.admin ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
+                    </td>
+                    <td className="py-2.5 pl-2 text-center">
+                      {row.owner ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-[11px] text-grey-40 mt-3">
+              Owner and Admin share the same capabilities in code today; Owner is conventionally the workspace creator.
+            </p>
+          </div>
+
           {/* Members list */}
           <div className="bg-white rounded-[12px] border border-surface-border overflow-hidden">
             <div className="px-6 py-4 border-b border-surface-border">
