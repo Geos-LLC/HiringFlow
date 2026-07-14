@@ -716,13 +716,19 @@ export default function FlowSchemaView({
     const N = sourcesSorted.length
     if (N === 0) return m
 
-    sourcesSorted.forEach((stepId, idx) => {
+    // Every End-arrow terminates at the same point (End's left-edge
+    // center). Distinct fan-out entry Ys look nice for 2–3 sources but
+    // guarantee crossings once beziers span very different X/Y — see
+    // 61fd3b9 for the geometry proof. Converging to a single hub is
+    // the simplest way to eliminate the visual crossings; the "+"
+    // insert/drag-handle affordance still lives on each arrow's own
+    // midpoint, so per-arrow interaction is preserved.
+    const toX = endPos.x
+    const toY = endPos.y + SPECIAL_H / 2
+    sourcesSorted.forEach((stepId) => {
       const sp = positions[stepId]
       const fromX = sp.x + NODE_W
       const fromY = sp.y + NODE_H / 2
-      const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
-      const toX = endPos.x
-      const toY = endPos.y + SPECIAL_H * fraction
       const title = steps.find((s) => s.id === stepId)?.title ?? stepId.slice(0, 8)
       const laneY = computeDetourLane(
         fromX, fromY, toX, toY, new Set([stepId]),
