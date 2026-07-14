@@ -137,6 +137,32 @@ export async function POST(
       return advance()
     }
 
+    // Scheduling steps: same shape as training. Advance requires an
+    // InterviewMeeting row for this session + config with cancelledAt=null.
+    // Cancelled meetings shouldn't count (matches the FreeBusy fix from
+    // 2026-05-30). Missing config = misconfigured, don't strand the candidate.
+    if (step.stepType === 'scheduling') {
+      const stepSchedulingConfigId = (step as unknown as { schedulingConfigId?: string | null }).schedulingConfigId ?? null
+      if (!stepSchedulingConfigId) {
+        return advance()
+      }
+      const meeting = await prisma.interviewMeeting.findFirst({
+        where: {
+          sessionId: params.sessionId,
+          schedulingConfigId: stepSchedulingConfigId,
+          cancelledAt: null,
+        },
+        select: { id: true },
+      })
+      if (!meeting) {
+        return NextResponse.json(
+          { error: 'Meeting not booked yet', schedulingIncomplete: true },
+          { status: 409 }
+        )
+      }
+      return advance()
+    }
+
     // For text answer questions, save as submission
     if (step.questionType === 'text' && textAnswer) {
       await prisma.candidateSubmission.upsert({

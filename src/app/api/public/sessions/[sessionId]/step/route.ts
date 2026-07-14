@@ -4,6 +4,8 @@ import { getVideoUrl } from '@/lib/storage'
 import { tryParseCaptureConfig } from '@/lib/capture/capture-config'
 import { isCaptureStepsEnabledForWorkspace } from '@/lib/capture/capture-feature-flag'
 import { createAccessToken, buildTrainingLink } from '@/lib/training-access'
+import { issueBookingToken } from '@/lib/scheduling/booking-links'
+import { getAppUrl } from '@/lib/google'
 
 export async function GET(
   request: NextRequest,
@@ -166,6 +168,102 @@ export async function GET(
     }
   }
 
+  // Scheduling step: resolve the linked config, mint a signed booking
+  // token, look up any existing (non-cancelled) meeting, and hand back a
+  // single actionUrl the client can just window.open on click. Reschedule
+  // is only supported for the built-in scheduler; external providers own
+  // reschedule themselves.
+  let scheduling: {
+    id: string
+    name: string
+    useBuiltInScheduler: boolean
+    actionUrl: string
+    existingMeeting: {
+      id: string
+      scheduledStart: string
+      scheduledEnd: string
+      meetingUri: string | null
+      confirmed: boolean
+    } | null
+    booked: boolean
+  } | null = null
+  const stepSchedulingConfigId = (step as unknown as { schedulingConfigId?: string | null }).schedulingConfigId ?? null
+  if (step.stepType === 'scheduling' && stepSchedulingConfigId) {
+    const config = await prisma.schedulingConfig.findUnique({
+      where: { id: stepSchedulingConfigId },
+      select: { id: true, name: true, isActive: true, useBuiltInScheduler: true, schedulingUrl: true },
+    })
+    if (config && config.isActive) {
+      const meeting = await prisma.interviewMeeting.findFirst({
+        where: {
+          sessionId: session.id,
+          schedulingConfigId: config.id,
+          cancelledAt: null,
+        },
+        orderBy: { scheduledStart: 'desc' },
+        select: { id: true, scheduledStart: true, scheduledEnd: true, meetingUri: true, confirmedAt: true },
+      })
+
+      // Book URL — signed token for built-in, prefilled external URL
+      // otherwise. Same shape /api/public/schedule/redirect produces,
+      // but built directly so the client doesn't need an extra roundtrip
+      // (which would also log a fake `link_clicked` event every render).
+      const buildBookUrl = () => {
+        if (config.useBuiltInScheduler) {
+          const token = issueBookingToken({
+            sessionId: session.id,
+            configId: config.id,
+            purpose: 'book',
+            daysFromNow: 30,
+          })
+          return `${getAppUrl()}/book/${config.id}?t=${encodeURIComponent(token)}`
+        }
+        // External provider — prefill name/email + tag utm_content with
+        // sessionId so webhooks / Calendar sync can attribute the booking.
+        try {
+          const url = new URL(config.schedulingUrl)
+          if (session.candidateName) url.searchParams.set('name', session.candidateName)
+          if (session.candidateEmail) url.searchParams.set('email', session.candidateEmail)
+          url.searchParams.set('utm_content', session.id)
+          url.searchParams.set('utm_source', 'hirefunnel')
+          return url.toString()
+        } catch {
+          return config.schedulingUrl
+        }
+      }
+
+      let actionUrl: string
+      if (meeting && config.useBuiltInScheduler) {
+        const token = issueBookingToken({
+          sessionId: session.id,
+          configId: config.id,
+          purpose: 'reschedule',
+          daysFromNow: 30,
+        })
+        actionUrl = `${getAppUrl()}/book/${config.id}/reschedule?t=${encodeURIComponent(token)}`
+      } else {
+        actionUrl = buildBookUrl()
+      }
+
+      scheduling = {
+        id: config.id,
+        name: config.name,
+        useBuiltInScheduler: config.useBuiltInScheduler,
+        actionUrl,
+        existingMeeting: meeting
+          ? {
+              id: meeting.id,
+              scheduledStart: meeting.scheduledStart.toISOString(),
+              scheduledEnd: meeting.scheduledEnd.toISOString(),
+              meetingUri: meeting.meetingUri,
+              confirmed: !!meeting.confirmedAt,
+            }
+          : null,
+        booked: !!meeting,
+      }
+    }
+  }
+
   return NextResponse.json({
     stepId: step.id,
     title: step.title,
@@ -182,6 +280,7 @@ export async function GET(
     captureConfig,
     captureStepsEnabled,
     training,
+    scheduling,
     progress: { current: currentStepOrder + 1, total: totalSteps },
     stepIds: allSteps.map(s => s.id),
     combinedStep,

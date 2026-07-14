@@ -64,6 +64,21 @@ interface TrainingStepData {
   completed: boolean
 }
 
+interface SchedulingStepData {
+  id: string
+  name: string
+  useBuiltInScheduler: boolean
+  actionUrl: string
+  existingMeeting: {
+    id: string
+    scheduledStart: string
+    scheduledEnd: string
+    meetingUri: string | null
+    confirmed: boolean
+  } | null
+  booked: boolean
+}
+
 interface StepData {
   stepId: string
   title: string
@@ -85,6 +100,7 @@ interface StepData {
   // env or workspace settings on the client; this boolean is the only signal.
   captureStepsEnabled?: boolean
   training?: TrainingStepData | null
+  scheduling?: SchedulingStepData | null
   combinedStep?: CombinedStepData | null
   options: StepOption[]
   finished?: boolean
@@ -145,6 +161,26 @@ export default function SessionPlayerPage() {
     }, 5000)
     return () => clearInterval(interval)
   }, [step?.stepId, step?.stepType, step?.training?.completed, sessionId])
+
+  // Same polling pattern for scheduling steps — the candidate books in a
+  // separate tab (or reschedules an existing booking), which writes an
+  // InterviewMeeting row. Refetching /step surfaces the new booking so
+  // the CTA flips from "Book" to "Continue".
+  useEffect(() => {
+    if (!step || step.stepType !== 'scheduling') return
+    if (step.scheduling?.booked) return
+    const interval = setInterval(() => {
+      fetch(`/api/public/sessions/${sessionId}/step`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data && !data.finished && data.stepId === step.stepId && data.scheduling?.booked) {
+            setStep(data)
+          }
+        })
+        .catch(() => {})
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [step?.stepId, step?.stepType, step?.scheduling?.booked, sessionId])
 
   const fetchStep = async () => {
     setLoading(true)
@@ -654,6 +690,92 @@ export default function SessionPlayerPage() {
             ) : (
               <div className={`rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800`}>
                 This training step isn&apos;t configured yet. Please contact the hiring team.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Scheduling Step — same pattern as training. Candidate opens
+            booking in a new tab; when the meeting is created server-side
+            (via /book/[id] or an external Calendly-style webhook) the
+            5s poller flips scheduling.booked and unlocks Continue. */}
+        {step.stepType === 'scheduling' && (
+          <div className={overlay ? '' : 'max-w-md mx-auto'}>
+            {step.scheduling ? (
+              <div className="space-y-4">
+                {step.scheduling.existingMeeting && (
+                  <div className={`rounded-xl border p-4 ${overlay ? 'border-white/30 bg-white/5' : 'border-surface-border bg-white'}`}>
+                    <div className={`font-mono text-[10px] uppercase mb-1 ${overlay ? 'text-white/60' : 'text-grey-40'}`} style={{ letterSpacing: '0.12em' }}>
+                      Your booking
+                    </div>
+                    <div className={`text-sm font-semibold mb-1 ${textColorClass}`}>
+                      {new Date(step.scheduling.existingMeeting.scheduledStart).toLocaleString(undefined, {
+                        weekday: 'short',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })}
+                    </div>
+                    {step.scheduling.existingMeeting.meetingUri && (
+                      <a
+                        href={step.scheduling.existingMeeting.meetingUri}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`text-xs ${overlay ? 'text-brand-200 hover:text-brand-100' : 'text-brand-600 hover:text-brand-800'} underline`}
+                      >
+                        Meeting link
+                      </a>
+                    )}
+                  </div>
+                )}
+                <a
+                  href={step.scheduling.actionUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`block w-full py-3 rounded-xl text-center font-medium text-sm transition-all ${
+                    overlay
+                      ? 'border-2 border-white/40 hover:bg-white/10 text-white'
+                      : 'border-2 border-brand-500 bg-brand-50 text-brand-700 hover:bg-brand-100'
+                  }`}
+                >
+                  {step.scheduling.existingMeeting
+                    ? step.scheduling.useBuiltInScheduler ? 'Reschedule' : 'Manage booking'
+                    : 'Book a time'}
+                </a>
+                <button
+                  onClick={async () => {
+                    setSubmitting(true)
+                    const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ stepId: step.stepId }),
+                    })
+                    if (res.ok) {
+                      const data = await res.json()
+                      if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
+                      else fetchStep()
+                    }
+                    setSubmitting(false)
+                  }}
+                  disabled={submitting || !step.scheduling.booked}
+                  className="w-full py-3 bg-brand-500 text-white rounded-xl font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-brand-600 transition-colors"
+                >
+                  {submitting
+                    ? 'Loading...'
+                    : step.scheduling.booked
+                    ? 'Continue'
+                    : 'Book a time to continue'}
+                </button>
+                {!step.scheduling.booked && (
+                  <p className={`text-xs text-center ${overlay ? 'text-white/50' : 'text-grey-40'}`}>
+                    We&apos;ll unlock the Continue button as soon as your booking is confirmed.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                This scheduling step isn&apos;t configured yet. Please contact the hiring team.
               </div>
             )}
           </div>

@@ -795,6 +795,11 @@ model FlowStep {
   // the editor rather than losing the whole step).
   trainingId       String?               @map("training_id")
   training         Training?             @relation("FlowStepTraining", fields: [trainingId], references: [id], onDelete: SetNull)
+  // Only meaningful when stepType='scheduling'. Same SetNull semantics as
+  // trainingId — deleting a SchedulingConfig leaves the step visible so the
+  // recruiter can re-pick rather than losing it.
+  schedulingConfigId String?             @map("scheduling_config_id")
+  schedulingConfig SchedulingConfig?     @relation("FlowStepScheduling", fields: [schedulingConfigId], references: [id], onDelete: SetNull)
   createdAt        DateTime              @default(now()) @map("created_at")
   options          StepOption[]          @relation("StepOptions")
   incomingOptions  StepOption[]          @relation("NextStep")
@@ -1715,6 +1720,7 @@ model SchedulingConfig {
   automationSteps     AutomationStep[]  @relation("StepSchedulingConfig")
   events              SchedulingEvent[]
   hiringProcesses     HiringProcess[]
+  flowSteps           FlowStep[]        @relation("FlowStepScheduling")
 
   @@map("scheduling_configs")
 }

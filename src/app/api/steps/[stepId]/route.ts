@@ -24,7 +24,7 @@ export async function PATCH(
 
   try {
     const body = await request.json()
-    const { title, videoId, questionText, stepOrder, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, combinedWithId, captionsEnabled, captionStyle, captureConfig, trainingId } = body
+    const { title, videoId, questionText, stepOrder, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, combinedWithId, captionsEnabled, captionStyle, captureConfig, trainingId, schedulingConfigId } = body
 
     // Validate captureConfig before write. Allow null to explicitly clear.
     let captureConfigPatch: { captureConfig: unknown } | null = null
@@ -55,6 +55,17 @@ export async function PATCH(
       }
     }
 
+    // Same workspace-scope check for schedulingConfigId.
+    if (schedulingConfigId !== undefined && schedulingConfigId !== null) {
+      const config = await prisma.schedulingConfig.findFirst({
+        where: { id: schedulingConfigId, workspaceId: ws.workspaceId },
+        select: { id: true },
+      })
+      if (!config) {
+        return NextResponse.json({ error: 'Scheduling config not found' }, { status: 404 })
+      }
+    }
+
     const updated = await prisma.flowStep.update({
       where: { id: params.stepId },
       data: {
@@ -73,6 +84,7 @@ export async function PATCH(
         ...(captionStyle !== undefined && { captionStyle }),
         ...(captureConfigPatch !== null && { captureConfig: captureConfigPatch.captureConfig as any }),
         ...(trainingId !== undefined && { trainingId: trainingId || null }),
+        ...(schedulingConfigId !== undefined && { schedulingConfigId: schedulingConfigId || null }),
       },
       include: {
         video: true,

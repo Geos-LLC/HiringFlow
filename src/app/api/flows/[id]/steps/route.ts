@@ -23,7 +23,7 @@ export async function POST(
 
   try {
     const body = await request.json()
-    const { title, videoId, questionText, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, captureConfig, trainingId, options } = body
+    const { title, videoId, questionText, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, captureConfig, trainingId, schedulingConfigId, options } = body
 
     // Validate captureConfig through the Zod schema before persisting. This
     // is the only path that writes the column; the schema's tryParseCaptureConfig
@@ -53,6 +53,17 @@ export async function POST(
       }
     }
 
+    // Same workspace-scope check for schedulingConfigId.
+    if (schedulingConfigId !== undefined && schedulingConfigId !== null) {
+      const config = await prisma.schedulingConfig.findFirst({
+        where: { id: schedulingConfigId, workspaceId: ws.workspaceId },
+        select: { id: true },
+      })
+      if (!config) {
+        return NextResponse.json({ error: 'Scheduling config not found' }, { status: 404 })
+      }
+    }
+
     // Get current max step order
     const maxOrder = await prisma.flowStep.aggregate({
       where: { flowId: params.id },
@@ -74,6 +85,7 @@ export async function POST(
         ...(buttonConfig !== undefined && { buttonConfig }),
         ...(validatedCaptureConfig !== undefined && { captureConfig: validatedCaptureConfig as any }),
         ...(trainingId !== undefined && { trainingId: trainingId || null }),
+        ...(schedulingConfigId !== undefined && { schedulingConfigId: schedulingConfigId || null }),
         // Create answer options if provided
         ...(options && Array.isArray(options) && options.length > 0 && {
           options: {

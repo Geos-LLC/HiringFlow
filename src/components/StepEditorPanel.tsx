@@ -135,6 +135,7 @@ interface Step {
   captionsEnabled?: boolean
   captionStyle?: CaptionStyle | null
   trainingId?: string | null
+  schedulingConfigId?: string | null
   options: Option[]
 }
 
@@ -143,6 +144,14 @@ interface Training {
   title: string
   slug: string
   isPublished: boolean
+}
+
+interface SchedulingConfigLite {
+  id: string
+  name: string
+  isActive: boolean
+  isDefault: boolean
+  useBuiltInScheduler: boolean
 }
 
 const DEFAULT_FORM_CONFIG: FormConfig = {
@@ -204,6 +213,19 @@ export default function StepEditorPanel({
       if (!r.ok || cancelled) return
       const data = await r.json()
       if (!cancelled) setTrainings(data)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [step.stepType])
+  const [schedulingConfigs, setSchedulingConfigs] = useState<SchedulingConfigLite[]>([])
+  useEffect(() => {
+    // Same lazy-fetch pattern as trainings: only load configs when this
+    // step actually needs them.
+    if (step.stepType !== 'scheduling') return
+    let cancelled = false
+    fetch('/api/scheduling').then(async (r) => {
+      if (!r.ok || cancelled) return
+      const data = await r.json()
+      if (!cancelled) setSchedulingConfigs(data)
     }).catch(() => {})
     return () => { cancelled = true }
   }, [step.stepType])
@@ -947,6 +969,7 @@ export default function StepEditorPanel({
                   <option value="submission">Video Step (Watch + Continue)</option>
                   <option value="info">Info Step (Instructions/Notice)</option>
                   <option value="training">Training Step (Complete Training)</option>
+                  <option value="scheduling">Scheduling Step (Book Meeting)</option>
                 </select>
               </div>
 
@@ -1001,6 +1024,38 @@ export default function StepEditorPanel({
                   <h4 className="font-medium text-brand-800 mb-2">Video Step</h4>
                   <p className="text-sm text-brand-700">
                     Candidate watches the video then clicks Continue to proceed.
+                  </p>
+                </div>
+              )}
+
+              {/* Scheduling Step — pick the SchedulingConfig the
+                  candidate must book against. The answer route hard-
+                  blocks advance until an InterviewMeeting exists for
+                  this session + config (cancelledAt=null). Reschedule
+                  goes through the standard /book/[id]/reschedule flow —
+                  no duplicate UI here. */}
+              {step.stepType === 'scheduling' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Scheduling config</label>
+                  {step.schedulingConfigId && !schedulingConfigs.find(c => c.id === step.schedulingConfigId) && schedulingConfigs.length > 0 && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 mb-2 text-xs text-amber-800">
+                      The scheduling config this step referenced was deleted. Pick a new one.
+                    </div>
+                  )}
+                  <select
+                    value={step.schedulingConfigId || ''}
+                    onChange={(e) => onUpdateStep(step.id, { schedulingConfigId: e.target.value || null } as Partial<Step>)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  >
+                    <option value="">Select a scheduling config…</option>
+                    {schedulingConfigs.filter(c => c.isActive || c.id === step.schedulingConfigId).map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}{!c.isActive ? ' (inactive)' : c.isDefault ? ' (default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Candidate must book a meeting before the flow advances. Reschedule uses the standard booking flow.
                   </p>
                 </div>
               )}
