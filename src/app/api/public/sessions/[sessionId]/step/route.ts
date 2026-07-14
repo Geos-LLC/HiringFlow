@@ -138,7 +138,11 @@ export async function GET(
     title: string
     slug: string
     description: string | null
+    // Full standalone URL — retained for the eventual "open in a new tab"
+    // fallback and for share/log surfaces. The embedded viewer uses
+    // { slug, accessToken } instead so it doesn't have to parse the URL.
     url: string
+    accessToken: string
     completed: boolean
   } | null = null
   const stepTrainingId = (step as unknown as { trainingId?: string | null }).trainingId ?? null
@@ -163,6 +167,7 @@ export async function GET(
         slug: t.slug,
         description: t.description,
         url: buildTrainingLink(t.slug, token),
+        accessToken: token,
         completed: !!enrollment?.completedAt,
       }
     }
