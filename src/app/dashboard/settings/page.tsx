@@ -102,6 +102,22 @@ export default function SettingsPage() {
     fetchSettings()
   }
 
+  const [resendingId, setResendingId] = useState<string | null>(null)
+  const resendInvite = async (memberId: string, email: string) => {
+    setResendingId(memberId)
+    try {
+      const r = await fetch(`/api/workspace/members/${memberId}/resend-invite`, { method: 'POST' })
+      if (r.ok) {
+        alert(`Invite email re-sent to ${email}.`)
+      } else {
+        const err = await r.json().catch(() => ({}))
+        alert(err.message || err.error || 'Failed to resend invite')
+      }
+    } finally {
+      setResendingId(null)
+    }
+  }
+
   if (loading) return <div className="py-14 text-center font-mono text-[11px] uppercase text-grey-35" style={{ letterSpacing: '0.1em' }}>Loading…</div>
   if (!data) return <div className="py-14 text-center text-[13px] text-[color:var(--danger-fg)]">Error loading settings</div>
 
@@ -239,6 +255,14 @@ export default function SettingsPage() {
                       <option value="member">Member</option>
                     </select>
                     <span className="text-xs text-grey-50">{new Date(m.joinedAt).toLocaleDateString()}</span>
+                    <button
+                      onClick={() => resendInvite(m.id, m.email)}
+                      disabled={resendingId === m.id}
+                      className="text-xs text-grey-40 hover:text-grey-15 disabled:opacity-50"
+                      title="Resend the invite email with a fresh set-password link (7-day expiry)"
+                    >
+                      {resendingId === m.id ? 'Sending…' : 'Resend invite'}
+                    </button>
                     <button onClick={() => removeMember(m.id)} className="text-xs text-red-400 hover:text-red-600">Remove</button>
                   </div>
                 </div>
