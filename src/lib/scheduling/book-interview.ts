@@ -41,7 +41,7 @@ import { scheduleBot, RecallApiError } from '../recall/client'
 import { logger } from '../logger'
 import { notifyRecallOutOfCredits } from '../alerts/recall-credits'
 import { sendMeetingConfirmation } from './meeting-confirmation'
-import { resolveHostMembers, hostsAsCalendarAttendees } from './meeting-hosts'
+import { resolveHostMembers, hostsAsCalendarAttendees, sendHostAssignmentInvites } from './meeting-hosts'
 
 export type BookingSource = 'operator' | 'public'
 
@@ -397,6 +397,17 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   await sendMeetingConfirmation(meeting.id).catch((err) => {
     console.error('[bookInterview] sendMeetingConfirmation failed:', err)
   })
+
+  // Notify assigned host team members. Google Calendar's own invite is
+  // unreliable when the calendar owner is on personal Gmail (invite emails
+  // frequently skipped or spam-filtered), so we send an HF-controlled
+  // "you've been assigned" email via SendGrid too. Best-effort — never
+  // blocks the booking response.
+  if (hostMembers.length > 0) {
+    await sendHostAssignmentInvites(meeting.id, hostMembers).catch((err) => {
+      console.error('[bookInterview] sendHostAssignmentInvites failed:', err)
+    })
+  }
 
   await updatePipelineStatus(session.id, 'scheduled').catch(() => {})
   await emitAutomationEvent({

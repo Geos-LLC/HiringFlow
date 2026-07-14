@@ -19,7 +19,7 @@ import { getSpaceByMeetingCode, parseMeetingCodeFromUrl, updateSpaceSettings } f
 import { subscribeSpace, deleteSubscription } from './meet/workspace-events'
 import { archivePrimaryArtifacts } from './meet/artifacts'
 import { getAuthedClientForWorkspace, hasMeetScopes } from './google'
-import { resolveHostMembers } from './scheduling/meeting-hosts'
+import { resolveHostMembers, sendHostAssignmentInvites } from './scheduling/meeting-hosts'
 
 export interface ProcessEventResult {
   matched: boolean
@@ -351,6 +351,15 @@ async function adoptExternalMeet(
     console.log('[AdoptMeet] insert skipped (likely race):', (err as Error).message)
     return null as { id: string; meetingUri: string; scheduledStart: Date } | null
   })
+
+  // HF-side host assignment notification (belt-and-suspenders alongside
+  // Google's native calendar invite — Google's invite delivery is unreliable
+  // when the calendar owner is on personal Gmail). Best-effort, non-fatal.
+  if (created && created.id && hostMembers.length > 0) {
+    await sendHostAssignmentInvites(created.id, hostMembers).catch((err) => {
+      console.error('[AdoptMeet] sendHostAssignmentInvites failed:', (err as Error).message)
+    })
+  }
 
   // Recall.ai bot for adopted (Calendly-flavored) meetings — same gating as
   // bookInterview. Skips silently if the create above lost a race.

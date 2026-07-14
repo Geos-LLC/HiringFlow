@@ -25,7 +25,7 @@ import { google } from 'googleapis'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { getAuthedClientForWorkspace } from '@/lib/google'
-import { resolveHostMembers } from '@/lib/scheduling/meeting-hosts'
+import { resolveHostMembers, sendHostAssignmentInvites } from '@/lib/scheduling/meeting-hosts'
 
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
@@ -86,6 +86,19 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         ]
       : []),
   ])
+
+  // Send the HF-controlled "you've been assigned" email to newly-added
+  // hosts only (skip existing hosts on repeat saves so they don't get
+  // spammed). Runs before the Calendar reconcile — even if Google's API
+  // hiccups, the host still knows they're on the meeting.
+  if (additions.length > 0) {
+    const newHosts = await resolveHostMembers(ws.workspaceId, additions)
+    if (newHosts.length > 0) {
+      await sendHostAssignmentInvites(meeting.id, newHosts).catch((err) => {
+        console.error('[meeting-hosts] sendHostAssignmentInvites failed:', (err as Error).message)
+      })
+    }
+  }
 
   // Reconcile Google Calendar event attendees. Failures are non-fatal — the
   // HF host list is what drives notifications regardless; the calendar sync

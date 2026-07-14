@@ -18,6 +18,7 @@
  */
 
 import { prisma } from '../prisma'
+import { sendEmail } from '../email'
 
 export interface HostMemberInfo {
   memberId: string
@@ -118,4 +119,131 @@ export function hostsAsCalendarAttendees(
     attendees.push({ email: h.email, ...(h.name ? { displayName: h.name } : {}) })
   }
   return attendees.length ? attendees : undefined
+}
+
+/**
+ * Send an HF-controlled "you've been assigned to an interview" email to each
+ * host. Belt-and-suspenders alongside Google Calendar's native invite:
+ *   - Google Calendar's `sendUpdates:'all'` reliably sends invites when the
+ *     calendar owner is a Google Workspace account. Personal `@gmail.com`
+ *     calendar owners frequently get the invite delivery skipped or spam-
+ *     filtered — we ran into exactly that gap on 2026-07-14.
+ *   - This HF-side email goes through SendGrid (clean deliverability
+ *     reputation) and always lands, so the host reliably knows they're on
+ *     the meeting even if Google's invite never shows up.
+ *
+ * Signature is meeting-scoped so we can pull the workspace, session, and
+ * meeting fields once and reuse them for every host.
+ */
+export async function sendHostAssignmentInvites(
+  meetingId: string,
+  hosts: HostMemberInfo[],
+): Promise<void> {
+  if (hosts.length === 0) return
+
+  const meeting = await prisma.interviewMeeting.findUnique({
+    where: { id: meetingId },
+    select: {
+      id: true,
+      meetingUri: true,
+      scheduledStart: true,
+      scheduledEnd: true,
+      workspace: {
+        select: {
+          id: true,
+          name: true,
+          timezone: true,
+          senderName: true,
+          senderEmail: true,
+          senderDomain: true,
+          senderDomainValidatedAt: true,
+          senderVerifiedAt: true,
+        },
+      },
+      session: {
+        select: {
+          id: true,
+          candidateName: true,
+          candidateEmail: true,
+        },
+      },
+    },
+  })
+  if (!meeting) return
+
+  const ws = meeting.workspace
+  const tz = ws.timezone || 'America/New_York'
+  const meetingTime = meeting.scheduledStart.toLocaleString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    timeZone: tz, timeZoneName: 'short',
+  })
+
+  const candidateLabel = meeting.session.candidateName
+    ? `${meeting.session.candidateName}${meeting.session.candidateEmail ? ` <${meeting.session.candidateEmail}>` : ''}`
+    : (meeting.session.candidateEmail || 'A candidate')
+
+  const appUrl = process.env.APP_URL
+    || process.env.NEXT_PUBLIC_APP_URL
+    || process.env.NEXTAUTH_URL
+    || 'https://www.hirefunnel.app'
+  const candidateLink = `${appUrl}/dashboard/candidates/${meeting.session.id}`
+  const brandName = ws.senderName || ws.name || 'HireFunnel'
+
+  // Match executeStep from-selection: only use the workspace sender when it's
+  // actually authorized. Otherwise fall through to the platform default so
+  // SendGrid still delivers.
+  const domainOk = !!(ws.senderDomainValidatedAt && ws.senderDomain && ws.senderEmail && ws.senderEmail.toLowerCase().endsWith('@' + ws.senderDomain.toLowerCase()))
+  const singleOk = !!ws.senderVerifiedAt
+  const from = (domainOk || singleOk) && ws.senderName && ws.senderEmail
+    ? { email: ws.senderEmail, name: ws.senderName }
+    : null
+
+  await Promise.all(hosts.map(async (h) => {
+    const firstName = (h.name || h.email).split(/[\s@]/)[0]
+    const subject = `You've been added to an interview — ${meeting.session.candidateName || 'candidate'} on ${meetingTime}`
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #15171a; max-width: 560px; padding: 24px;">
+        <p style="margin: 0 0 12px 0;">Hi ${escapeHtml(firstName)},</p>
+        <p style="margin: 0 0 16px 0;">You've been assigned to host an interview with <strong>${escapeHtml(candidateLabel)}</strong>.</p>
+        <div style="margin: 0 0 20px 0; padding: 16px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+          <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; margin-bottom: 6px;">When</div>
+          <div style="font-size: 15px; margin-bottom: 14px;">${escapeHtml(meetingTime)}</div>
+          <a href="${meeting.meetingUri}" style="display: inline-block; padding: 10px 18px; background: #2563eb; color: white; text-decoration: none; border-radius: 6px; font-weight: 500;">Join Google Meet</a>
+        </div>
+        <p style="margin: 0 0 8px 0;">
+          <a href="${candidateLink}" style="color: #FF9500; text-decoration: none; font-weight: 500;">Open candidate in HireFunnel →</a>
+        </p>
+        <p style="margin: 24px 0 0 0; color: #94a3b8; font-size: 12px;">You'll also get Google's calendar invite. This email is HireFunnel's own reminder — some Google accounts skip calendar-invite emails for external attendees, so we send this too.</p>
+      </div>
+    `.trim()
+    const text = [
+      `Hi ${firstName},`,
+      '',
+      `You've been assigned to host an interview with ${candidateLabel}.`,
+      '',
+      `When: ${meetingTime}`,
+      `Join: ${meeting.meetingUri}`,
+      '',
+      `Candidate in HireFunnel: ${candidateLink}`,
+    ].join('\n')
+
+    await sendEmail({
+      to: h.email,
+      subject,
+      html,
+      text,
+      from,
+      workspaceId: ws.id,
+    }).catch((err) => console.error('[meeting-hosts] host invite to', h.email, 'failed:', (err as Error).message))
+  }))
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
