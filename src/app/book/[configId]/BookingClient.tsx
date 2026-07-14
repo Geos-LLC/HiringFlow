@@ -152,8 +152,16 @@ export function BookingClient(props: Props) {
         // Prefer `message` (human-readable text written by the server for the
         // candidate) over `error` (machine key like `free_busy_failed` that
         // means nothing to the candidate). Fall back to the key only if no
-        // message was sent.
-        throw new Error(data.message || data.error || 'Booking failed')
+        // message was sent. `data.detail` is the raw exception text — only
+        // useful for debugging when the human message is generic. We append
+        // it as a small technical hint so the recruiter can copy-paste it
+        // when reporting a problem, without dominating the UI. Skip when
+        // detail === message (avoids doubling up on non-generic errors).
+        const human = data.message || data.error || 'Booking failed'
+        const detail = data.detail && data.detail !== data.error && data.detail !== human
+          ? String(data.detail).slice(0, 300)
+          : null
+        throw new Error(detail ? `${human} (${detail})` : human)
       }
       setConfirmedMeetingUri(data.meetingUri || null)
       setConfirmedRescheduleToken(data.rescheduleToken || null)

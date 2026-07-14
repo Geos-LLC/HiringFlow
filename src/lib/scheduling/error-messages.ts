@@ -35,6 +35,13 @@ export type BookingErrorCode =
   | 'google_not_connected'
   | 'reconnect_required'
   | 'calendar_patch_failed'
+  // ── bookInterview error codes (previously fell through to the generic
+  //    "Something went wrong" default and gave candidates no useful hint) ──
+  | 'meet_disabled'
+  | 'session_not_found'
+  | 'invalid_time'
+  | 'meet_space_failed'
+  | 'calendar_event_failed'
   | 'internal'
 
 interface MessageOpts {
@@ -94,6 +101,22 @@ export function bookingErrorMessage(code: BookingErrorCode | string, opts: Messa
       return `We couldn't save your change. Please try again in a few minutes.${contactLine(c, 'persistent')}`
     case 'internal':
       return `Something went wrong on our end. Please try again.${contactLine(c, 'persistent')}`
+
+    // ── bookInterview server errors — terminal for the candidate, they
+    //    need to reach out because the recruiter's Meet/Calendar
+    //    integration is misconfigured or Google's API is down. ──
+    case 'meet_disabled':
+      return c
+        ? `Meeting scheduling isn't set up for this workspace. Please email ${c} to book directly.`
+        : 'Meeting scheduling isn\'t set up for this workspace. Please contact your hiring team.'
+    case 'session_not_found':
+      return `We couldn't find your session. Please refresh the page and try again.${contactLine(c, 'persistent')}`
+    case 'invalid_time':
+      return 'Please pick a valid time and try again.'
+    case 'meet_space_failed':
+      return `We couldn't create the Google Meet room right now. Please try again in a few minutes.${contactLine(c, 'persistent')}`
+    case 'calendar_event_failed':
+      return `We couldn't add this to the calendar right now. Please try again in a few minutes.${contactLine(c, 'persistent')}`
 
     // ── Self-fixable: don't pollute with contact info ──
     case 'slot_unavailable':

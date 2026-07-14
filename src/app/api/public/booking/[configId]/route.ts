@@ -21,6 +21,7 @@ import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
 import { bookInterview, BookInterviewError } from '@/lib/scheduling/book-interview'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
 import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
+import { logger } from '@/lib/logger'
 
 export async function POST(request: NextRequest, { params }: { params: { configId: string } }) {
   const body = await request.json().catch(() => ({})) as {
@@ -191,7 +192,14 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       bustCache: true,
     })
   } catch (err) {
-    console.error('[booking] freeBusy failed:', err)
+    logger.error('booking.free_busy_failed', {
+      route: '/api/public/booking/[configId]',
+      workspaceId: config.workspaceId,
+      configId: config.id,
+      sessionId,
+      detail: (err as Error).message,
+      stack: (err as Error).stack,
+    })
     void notifyTenantOfBookingFailure(config.workspaceId, 'free_busy_failed', { err })
     return NextResponse.json({
       error: 'free_busy_failed',
@@ -272,6 +280,16 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       // bookInterview throws when Google Meet space creation / Calendar
       // insert fails. The notifier inspects the underlying message to pick
       // oauth_revoked vs integration_down.
+      logger.error('booking.bookInterview_failed', {
+        route: '/api/public/booking/[configId]',
+        workspaceId: config.workspaceId,
+        configId: config.id,
+        sessionId,
+        code: err.code,
+        status: err.status,
+        detail: err.message,
+        stack: err.stack,
+      })
       void notifyTenantOfBookingFailure(config.workspaceId, err.code || 'free_busy_failed', { err })
       return NextResponse.json({
         error: err.code,
@@ -279,7 +297,14 @@ export async function POST(request: NextRequest, { params }: { params: { configI
         detail: err.message,
       }, { status: err.status })
     }
-    console.error('[booking] unexpected error:', err)
+    logger.error('booking.unexpected_error', {
+      route: '/api/public/booking/[configId]',
+      workspaceId: config.workspaceId,
+      configId: config.id,
+      sessionId,
+      detail: (err as Error).message,
+      stack: (err as Error).stack,
+    })
     void notifyTenantOfBookingFailure(config.workspaceId, 'internal', { err })
     return NextResponse.json({
       error: 'internal',
