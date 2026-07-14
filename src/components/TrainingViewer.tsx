@@ -537,18 +537,23 @@ export function TrainingViewer({
   // reason as on saveProgress — the backend treats this as a privileged
   // operation that fires downstream automations and refuses callers that
   // can't prove they have the candidate's invitation link.
+  //
+  // Preview mode never creates an enrollment (startAtSection guards on
+  // !preview), so we can't POST /progress. But we still MUST fire
+  // onComplete so the host (flow player) can advance — otherwise the
+  // recruiter is stranded on "Training complete — loading next step…"
+  // forever. onComplete is the client-side signal, independent of the
+  // server-side enrollment write.
   const markCompleted = useCallback(async () => {
-    if (!training?.enrollmentId) return
-    try {
-      await fetch(`/api/public/trainings/${slug}/progress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enrollmentId: training.enrollmentId, accessToken: token }),
-      })
-    } catch { /* silent */ }
-    // Notify the host (flow player etc.) so it can advance without waiting
-    // on the /step poller. Fire-and-forget — never let a callback throw kill
-    // the completion flow.
+    if (training?.enrollmentId) {
+      try {
+        await fetch(`/api/public/trainings/${slug}/progress`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enrollmentId: training.enrollmentId, accessToken: token }),
+        })
+      } catch { /* silent */ }
+    }
     try { onComplete?.() } catch { /* silent */ }
   }, [training?.enrollmentId, slug, token, onComplete])
 

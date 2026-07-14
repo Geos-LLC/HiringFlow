@@ -116,19 +116,29 @@ export async function POST(
     // won't move past this step until TrainingEnrollment.completedAt is
     // written by /api/public/trainings/[slug]/progress. This is the sole
     // enforcement point — the client never bypasses it.
+    //
+    // Distinguish two "no completedAt" cases:
+    //   1. Enrollment exists, completedAt is null → real candidate in
+    //      progress. 409 gates advance until they finish.
+    //   2. No enrollment row at all → preview mode (startAtSection skips
+    //      enrollment creation when preview=true) or a broken state.
+    //      Preview stranding was the "Training complete — loading next
+    //      step…" bug: markCompleted fires onComplete which POSTs here,
+    //      and we'd 409 forever because there's nothing to complete.
+    //      Advance in this case so the recruiter can walk through the
+    //      flow. Real candidates always have an enrollment by the time
+    //      they hit Complete (Start button creates it), so this branch
+    //      never strands a real candidate.
     if (step.stepType === 'training') {
       const stepTrainingId = (step as unknown as { trainingId?: string | null }).trainingId ?? null
       if (!stepTrainingId) {
-        // Misconfigured step (no training picked). Don't strand the candidate;
-        // just advance past it. Recruiter will see the empty picker in the
-        // editor and can fix or delete the step.
         return advance()
       }
       const enrollment = await prisma.trainingEnrollment.findFirst({
         where: { sessionId: params.sessionId, trainingId: stepTrainingId },
         select: { completedAt: true },
       })
-      if (!enrollment?.completedAt) {
+      if (enrollment && !enrollment.completedAt) {
         return NextResponse.json(
           { error: 'Training not completed yet', trainingIncomplete: true },
           { status: 409 }
