@@ -716,6 +716,14 @@ export default function FlowSchemaView({
     const N = sourcesSorted.length
     if (N === 0) return m
 
+    // First pass: geometry + a natural (per-source) detour lane. If any
+    // source needs a lane, we upgrade to STACKED lanes for every source
+    // below (see second pass). Mixed natural/detour arrows cross each
+    // other visually — the detour dips down while natural stays at
+    // source Y, so a shorter arrow ends up crossing a longer one.
+    type Geom = { fromX: number; fromY: number; toX: number; toY: number; laneY?: number }
+    const first: Geom[] = []
+    let anyNeedsLane = false
     sourcesSorted.forEach((stepId, idx) => {
       const sp = positions[stepId]
       const fromX = sp.x + NODE_W
@@ -726,9 +734,31 @@ export default function FlowSchemaView({
       const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
       const toX = endPos.x
       const toY = endPos.y + SPECIAL_H * fraction
-
       const laneY = computeDetourLane(fromX, fromY, toX, toY, new Set([stepId]))
-      m.set(stepId, { fromX, fromY, toX, toY, laneY })
+      if (laneY !== undefined) anyNeedsLane = true
+      first.push({ fromX, fromY, toX, toY, laneY })
+    })
+
+    if (!anyNeedsLane) {
+      sourcesSorted.forEach((stepId, i) => m.set(stepId, first[i]))
+      return m
+    }
+
+    // At least one End-arrow has to detour around a card. Stack ALL
+    // End-arrow lanes below the deepest card, top-source shallowest,
+    // so curves stay parallel and can't cross. Topmost source keeps
+    // the smallest dip (its natural path is likely already highest).
+    let maxBot = 0
+    for (const id of Object.keys(positions)) {
+      const p = positions[id]
+      const h = id === START_ID || id === END_ID ? SPECIAL_H : NODE_H
+      const bot = p.y + h
+      if (bot > maxBot) maxBot = bot
+    }
+    const laneBase = maxBot + 60
+    const laneSpacing = 40
+    sourcesSorted.forEach((stepId, i) => {
+      m.set(stepId, { ...first[i], laneY: laneBase + i * laneSpacing })
     })
     return m
   }, [positions, steps, endMessage, getEndStepIds, computeDetourLane])
