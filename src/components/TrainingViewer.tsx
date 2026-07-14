@@ -1019,13 +1019,19 @@ export function TrainingViewer({
                       poster={content.videoPosterUrl || training.coverImage || undefined}
                       slug={slug}
                       contentId={content.id}
-                      requiredWatch={content.requiredWatch}
+                      // Preview mode is for recruiters reviewing their own
+                      // training — they need to scrub, jump around, and
+                      // playback-rate through videos. Forcing requiredWatch
+                      // (no-seek, no-fast-forward) on them turns preview
+                      // into a hostage situation. Enrolled candidates still
+                      // get the full requiredWatch enforcement.
+                      requiredWatch={!preview && content.requiredWatch}
                       autoPlay={content.autoplayNext}
                       onEnded={() => setVideoEnded(true)}
                       className="w-full rounded-[8px]"
                     />
                   )}
-                  {!videoEnded && <p className="text-sm mt-3 text-center text-[#59595A]">{content.requiredWatch ? 'Watch the video to continue (skipping ahead is disabled)' : 'Watch the video to continue'}</p>}
+                  {!videoEnded && <p className="text-sm mt-3 text-center text-[#59595A]">{preview ? 'Preview mode — scrubbing enabled' : content.requiredWatch ? 'Watch the video to continue (skipping ahead is disabled)' : 'Watch the video to continue'}</p>}
                 </div>
               ) : content.type === 'text' && content.textContent ? (
                 <div className="prose prose-lg max-w-none text-[#262626] whitespace-pre-wrap mb-6">{content.textContent}</div>
