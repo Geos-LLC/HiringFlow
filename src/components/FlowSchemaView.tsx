@@ -721,7 +721,11 @@ export default function FlowSchemaView({
       const sp = positions[stepId]
       const fromX = sp.x + NODE_W
       const fromY = sp.y + NODE_H / 2
-      const laneY = computeDetourLane(fromX, fromY, toX, tentToY, new Set([stepId]))
+      const title = steps.find((s) => s.id === stepId)?.title ?? stepId.slice(0, 8)
+      const laneY = computeDetourLane(
+        fromX, fromY, toX, tentToY, new Set([stepId]),
+        debugConnections ? `END:${title}` : undefined,
+      )
       // Effective Y at t=0.5 of the bezier — dominates the curve's
       // vertical position through most of its span. With a lane the
       // laneY dominates (0.75 weight); without one, it's the from/to
@@ -747,8 +751,20 @@ export default function FlowSchemaView({
         fromX: p.fromX, fromY: p.fromY, toX, toY, laneY: p.laneY,
       })
     })
+
+    if (debugConnections) {
+      // eslint-disable-next-line no-console
+      console.log('[END fan-in]', pre.map((p, idx) => ({
+        title: steps.find((s) => s.id === p.stepId)?.title ?? p.stepId.slice(0, 8),
+        idx,
+        fromXY: `(${Math.round(p.fromX)}, ${Math.round(p.fromY)})`,
+        laneY: p.laneY !== undefined ? Math.round(p.laneY) : null,
+        midY: Math.round(p.midY),
+        entryY: Math.round(endPos.y + SPECIAL_H * ((idx + 0.5) / N)),
+      })))
+    }
     return m
-  }, [positions, steps, endMessage, getEndStepIds, computeDetourLane])
+  }, [positions, steps, endMessage, getEndStepIds, computeDetourLane, debugConnections])
 
   // Diagnostic log: dump every drawn connection with source/target titles
   // and coordinates whenever the toggle is on or the data changes.
