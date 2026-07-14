@@ -705,69 +705,31 @@ export default function FlowSchemaView({
       }
     }
 
-    const sources = Array.from(sourceIds).filter((id) => !!positions[id])
-    const N = sources.length
+    const sourcesSorted = Array.from(sourceIds)
+      .filter((id) => !!positions[id])
+      .sort((a, b) => {
+        const pa = positions[a]
+        const pb = positions[b]
+        if (pa.y !== pb.y) return pa.y - pb.y // topmost first
+        return pa.x - pb.x
+      })
+    const N = sourcesSorted.length
     if (N === 0) return m
 
-    // Pass 1: compute each source's detour lane against a tentative
-    // shared entry Y (End's vertical center). This gives us the true
-    // laneY without biasing it by the entry Y we're still deciding.
-    const toX = endPos.x
-    const tentToY = endPos.y + SPECIAL_H / 2
-    type Pre = { stepId: string; fromX: number; fromY: number; naturalLaneY?: number }
-    const pre: Pre[] = sources.map((stepId) => {
+    sourcesSorted.forEach((stepId, idx) => {
       const sp = positions[stepId]
       const fromX = sp.x + NODE_W
       const fromY = sp.y + NODE_H / 2
+      const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
+      const toX = endPos.x
+      const toY = endPos.y + SPECIAL_H * fraction
       const title = steps.find((s) => s.id === stepId)?.title ?? stepId.slice(0, 8)
-      const naturalLaneY = computeDetourLane(
-        fromX, fromY, toX, tentToY, new Set([stepId]),
+      const laneY = computeDetourLane(
+        fromX, fromY, toX, toY, new Set([stepId]),
         debugConnections ? `END:${title}` : undefined,
       )
-      return { stepId, fromX, fromY, naturalLaneY }
+      m.set(stepId, { fromX, fromY, toX, toY, laneY })
     })
-
-    // Find the deepest lane anyone needs. If any End-arrow needs to
-    // detour, force ALL of them to share this lane — otherwise mixed
-    // shallow/deep and natural/lane curves twist through each other's
-    // altitude on the way to End (a source-high, deep-diving arrow
-    // will cross any arrow that starts lower but stays shallower).
-    // With a shared lane, Y_A(t)-Y_B(t) = (1-t)^3*(fromY_A-fromY_B) +
-    // t^3*(toY_A-toY_B); same-sign both terms → zero crossings when
-    // entry-Y ordering matches fromY ordering.
-    let sharedLaneY: number | undefined
-    for (const p of pre) {
-      if (p.naturalLaneY !== undefined && (sharedLaneY === undefined || p.naturalLaneY > sharedLaneY)) {
-        sharedLaneY = p.naturalLaneY
-      }
-    }
-
-    pre.sort((a, b) => {
-      if (a.fromY !== b.fromY) return a.fromY - b.fromY
-      return a.fromX - b.fromX
-    })
-
-    pre.forEach((p, idx) => {
-      const fraction = N === 1 ? 0.5 : (idx + 0.5) / N
-      const toY = endPos.y + SPECIAL_H * fraction
-      m.set(p.stepId, {
-        fromX: p.fromX, fromY: p.fromY, toX, toY, laneY: sharedLaneY,
-      })
-    })
-
-    if (debugConnections) {
-      // eslint-disable-next-line no-console
-      console.log('[END fan-in]', {
-        sharedLaneY: sharedLaneY !== undefined ? Math.round(sharedLaneY) : null,
-        rows: pre.map((p, idx) => ({
-          title: steps.find((s) => s.id === p.stepId)?.title ?? p.stepId.slice(0, 8),
-          idx,
-          fromXY: `(${Math.round(p.fromX)}, ${Math.round(p.fromY)})`,
-          naturalLaneY: p.naturalLaneY !== undefined ? Math.round(p.naturalLaneY) : null,
-          entryY: Math.round(endPos.y + SPECIAL_H * ((idx + 0.5) / N)),
-        })),
-      })
-    }
     return m
   }, [positions, steps, endMessage, getEndStepIds, computeDetourLane, debugConnections])
 
