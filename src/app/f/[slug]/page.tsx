@@ -91,7 +91,12 @@ export default function FlowStartPage() {
     })
     if (res.ok) {
       const data = await res.json()
-      router.replace(`/f/${slug}/s/${data.id}`)
+      // Carry the preview flag onto the session URL so downstream
+      // surfaces (embedded TrainingViewer, etc.) can loosen candidate-
+      // facing lockdowns (video seek/scrub, etc.) for the recruiter.
+      // Preview mode isn't stored on Session, so the URL is the only
+      // carrier through the redirect.
+      router.replace(`/f/${slug}/s/${data.id}${isPreview ? '?preview=1' : ''}`)
     } else {
       const body = await res.json().catch(() => null)
       setError(body?.error || 'Failed to start session')

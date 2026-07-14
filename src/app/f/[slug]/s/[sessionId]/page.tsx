@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import VideoRecorder from '@/components/VideoRecorder'
 import CaptureRecorder from '@/components/CaptureRecorder'
 import CaptionedVideo, { type CaptionStyle, DEFAULT_CAPTION_STYLE } from '@/components/CaptionedVideo'
@@ -111,6 +111,11 @@ interface StepData {
 export default function SessionPlayerPage() {
   const params = useParams()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  // Preview flag is propagated from /f/[slug]?preview=true through the
+  // session redirect. Used to loosen candidate-facing lockdowns in the
+  // embedded TrainingViewer (video seek/scrub, playback rate, etc.).
+  const isPreview = searchParams.get('preview') === '1' || searchParams.get('preview') === 'true'
   const slug = params.slug as string
   const sessionId = params.sessionId as string
 
@@ -854,6 +859,11 @@ export default function SessionPlayerPage() {
               slug={step.training.slug}
               token={step.training.accessToken}
               variant="embedded"
+              // Propagate the flow's preview mode so the embedded viewer
+              // opens seek/scrub for the recruiter. '1' matches the
+              // TrainingViewer signature (a non-null string activates
+              // preview branches — same shape as the standalone /t page).
+              preview={isPreview ? '1' : null}
               onComplete={async () => {
                 const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
                   method: 'POST',
