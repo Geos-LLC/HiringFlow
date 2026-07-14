@@ -716,28 +716,21 @@ export default function FlowSchemaView({
     const N = sourcesSorted.length
     if (N === 0) return m
 
-    // Every End-arrow terminates at the same point (End's left-edge
-    // center). Distinct fan-out entry Ys look nice for 2–3 sources but
-    // guarantee crossings once beziers span very different X/Y — see
-    // 61fd3b9 for the geometry proof. Converging to a single hub is
-    // the simplest way to eliminate the visual crossings; the "+"
-    // insert/drag-handle affordance still lives on each arrow's own
-    // midpoint, so per-arrow interaction is preserved.
+    // End arrows are drawn as straight lines from source port to
+    // End's left-edge center. Two straight lines with a shared
+    // endpoint can only meet at that endpoint (two distinct lines
+    // share at most one point) — no lane routing needed, and no
+    // possibility of crossings before the hub.
     const toX = endPos.x
     const toY = endPos.y + SPECIAL_H / 2
     sourcesSorted.forEach((stepId) => {
       const sp = positions[stepId]
       const fromX = sp.x + NODE_W
       const fromY = sp.y + NODE_H / 2
-      const title = steps.find((s) => s.id === stepId)?.title ?? stepId.slice(0, 8)
-      const laneY = computeDetourLane(
-        fromX, fromY, toX, toY, new Set([stepId]),
-        debugConnections ? `END:${title}` : undefined,
-      )
-      m.set(stepId, { fromX, fromY, toX, toY, laneY })
+      m.set(stepId, { fromX, fromY, toX, toY })
     })
     return m
-  }, [positions, steps, endMessage, getEndStepIds, computeDetourLane, debugConnections])
+  }, [positions, steps, endMessage, getEndStepIds])
 
   // Diagnostic log: dump every drawn connection with source/target titles
   // and coordinates whenever the toggle is on or the data changes.
@@ -1326,11 +1319,28 @@ export default function FlowSchemaView({
     const endPos = positions[END_ID]
     if (endPos && endMessage !== '') {
       endArrowGeomByStep.forEach((g, stepId) => {
-        drawConnection(ctx, g.fromX, g.fromY, g.toX, g.toY, '', false, '#FF9500', g.laneY)
+        // Straight line, not a bezier: with a shared endpoint (End's
+        // center), two lines from different sources can meet only at
+        // that endpoint. Bezier attempts always weave (see 61fd3b9).
+        ctx.beginPath()
+        ctx.strokeStyle = '#FF9500'
+        ctx.lineWidth = 2
+        ctx.setLineDash([])
+        ctx.moveTo(g.fromX, g.fromY)
+        ctx.lineTo(g.toX, g.toY)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.arc(g.fromX, g.fromY, 5, 0, Math.PI * 2)
+        ctx.fillStyle = '#FF9500'
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(g.toX, g.toY, 5, 0, Math.PI * 2)
+        ctx.fill()
 
         const isThisEndSelected =
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
-        const [eMidX, eMidY] = bezierMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)
+        const eMidX = (g.fromX + g.toX) / 2
+        const eMidY = (g.fromY + g.toY) / 2
 
         // No delete button here even for explicit button→End arrows —
         // Delete on an End-selected arrow is suppressed globally to avoid
@@ -1597,13 +1607,16 @@ export default function FlowSchemaView({
 
       // End arrows — iterate every source that was actually drawn
       // (endArrowGeomByStep covers implicit terminals AND steps whose
-      // Continue button explicitly points to __end__).
+      // Continue button explicitly points to __end__). Straight-line
+      // midpoint since End arrows render as straight lines.
       if (endMessage !== '') {
         let result: { kind: 'end'; fromStepId: string } | null = null
         endArrowGeomByStep.forEach((g, sid) => {
           if (result) return
           if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-          if (tryMid(g.fromX, g.fromY, g.toX, g.toY, g.laneY)) result = { kind: 'end', fromStepId: sid }
+          const midX = (g.fromX + g.toX) / 2
+          const midY = (g.fromY + g.toY) / 2
+          if (dist(cx, cy, midX, midY) <= 12) result = { kind: 'end', fromStepId: sid }
         })
         if (result) return result
       }
@@ -1686,7 +1699,7 @@ export default function FlowSchemaView({
         endArrowGeomByStep.forEach((g, sid) => {
           if (hovered) return
           if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-          if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 12, g.laneY)) hovered = sid
+          if (distToSegment(cx, cy, g.fromX, g.fromY, g.toX, g.toY) <= 12) hovered = sid
         })
         if (hovered) return { kind: 'end', fromStepId: hovered }
       }
@@ -1973,7 +1986,7 @@ export default function FlowSchemaView({
       let hitStepId: string | null = null
       endArrowGeomByStep.forEach((g, sid) => {
         if (hitStepId) return
-        if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 10, g.laneY)) hitStepId = sid
+        if (distToSegment(cx, cy, g.fromX, g.fromY, g.toX, g.toY) <= 10) hitStepId = sid
       })
       if (hitStepId) {
         setSelectedArrow({ optionId: '__end_arrow__', stepId: hitStepId, kind: 'end' })
@@ -3063,6 +3076,24 @@ function isNearBezier(
     if (dist(px, py, bx, by) < threshold) return true
   }
   return false
+}
+
+// Perpendicular distance from (px,py) to the line segment from
+// (x1,y1) to (x2,y2). Used for straight-line hit testing on End
+// arrows, where beziers guarantee crossings but straight lines with
+// a shared endpoint cannot cross before that endpoint.
+function distToSegment(
+  px: number, py: number,
+  x1: number, y1: number,
+  x2: number, y2: number,
+): number {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len2 = dx * dx + dy * dy
+  if (len2 === 0) return dist(px, py, x1, y1)
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2
+  t = Math.max(0, Math.min(1, t))
+  return dist(px, py, x1 + t * dx, y1 + t * dy)
 }
 
 function drawPortCircle(
