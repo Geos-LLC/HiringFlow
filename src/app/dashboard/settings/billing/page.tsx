@@ -117,7 +117,10 @@ export default function BillingPage() {
     }
   }
 
-  const isOwnerOrAdmin = status?.role === 'owner' || status?.role === 'admin'
+  // Billing is owner-only. Admins can view the current plan but cannot
+  // upgrade/downgrade or open the Stripe portal. Kept the variable name
+  // for minimal churn against the existing render sites.
+  const isOwnerOrAdmin = status?.role === 'owner'
 
   const planTone: BadgeTone = useMemo(() => {
     if (!status) return 'neutral'
@@ -264,7 +267,7 @@ export default function BillingPage() {
                       ? 'bg-grey-95 text-grey-35 cursor-default'
                       : 'bg-[color:var(--brand-primary)] text-white hover:opacity-90'
                   } disabled:opacity-50`}
-                  title={!isOwnerOrAdmin ? 'Only workspace owners and admins can change billing.' : undefined}
+                  title={!isOwnerOrAdmin ? 'Only the workspace owner can change subscription plans.' : undefined}
                 >
                   {isCurrent
                     ? 'Current plan'
@@ -281,7 +284,7 @@ export default function BillingPage() {
 
         {!isOwnerOrAdmin && (
           <div className="text-[12px] text-grey-35 max-w-3xl">
-            Only workspace owners and admins can change billing. Ask your owner to upgrade.
+            Only the workspace owner can change subscription plans. Ask your owner to upgrade.
           </div>
         )}
       </div>

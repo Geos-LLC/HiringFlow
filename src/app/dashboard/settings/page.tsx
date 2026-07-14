@@ -250,16 +250,13 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Role capabilities — a small honest reference so admins picking
-              a role for a new invite know what member vs. admin actually
-              unlocks. Only lists differences that are enforced in code
-              today (billing, note moderation, force-rerun automations);
-              standard workspace actions like viewing candidates and
-              editing flows are available to all roles including member. */}
+          {/* Role capabilities — the full matrix (what each role can and
+              can't do), grouped by area. Reflects what's actually enforced
+              in code today; NOT aspirational. */}
           <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
             <h3 className="text-sm font-semibold text-grey-15 mb-1">What each role can do</h3>
             <p className="text-xs text-grey-40 mb-4">
-              All roles can view candidates, host interviews, and edit flows, trainings, and automations. These are the extra privileges that come with each role:
+              Everything a member can do, an admin and owner can do too. Admins add team + moderation powers; owners add billing and workspace deletion on top of that.
             </p>
             <table className="w-full text-xs">
               <thead>
@@ -272,33 +269,72 @@ export default function SettingsPage() {
               </thead>
               <tbody>
                 {([
-                  { label: 'Invite team members & resend invites', member: false, admin: true, owner: true },
-                  { label: "Change other members' roles (except owner)", member: false, admin: true, owner: true },
-                  { label: 'Remove team members', member: false, admin: true, owner: true },
-                  { label: 'Manage subscription & billing', member: false, admin: true, owner: true },
-                  { label: "Edit or delete another user's notes on a candidate", member: false, admin: true, owner: true },
-                  { label: 'Force re-run pipeline-stage automations for a candidate', member: false, admin: true, owner: true },
-                  { label: 'Promote to Owner or change an Owner\'s role', member: false, admin: false, owner: true },
-                  { label: 'Delete the workspace (irreversible)', member: false, admin: false, owner: true },
-                ]).map((row) => (
-                  <tr key={row.label} className="border-b border-surface-border last:border-0">
-                    <td className="py-2.5 pr-2 text-grey-15">{row.label}</td>
-                    <td className="py-2.5 px-2 text-center">
-                      {row.member ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
-                    </td>
-                    <td className="py-2.5 px-2 text-center">
-                      {row.admin ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
-                    </td>
-                    <td className="py-2.5 pl-2 text-center">
-                      {row.owner ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
-                    </td>
-                  </tr>
-                ))}
+                  // Standard workspace features — everyone including member.
+                  { group: 'Candidates & pipeline', label: 'View and search candidates', member: true, admin: true, owner: true },
+                  { group: 'Candidates & pipeline', label: 'Edit candidate details, status, disposition', member: true, admin: true, owner: true },
+                  { group: 'Candidates & pipeline', label: 'Delete a candidate', member: true, admin: true, owner: true },
+                  { group: 'Candidates & pipeline', label: 'Add notes on a candidate (own notes editable)', member: true, admin: true, owner: true },
+                  { group: 'Candidates & pipeline', label: 'Send email or SMS to a candidate (incl. bulk)', member: true, admin: true, owner: true },
+                  { group: 'Candidates & pipeline', label: 'Manage pipelines and stage transitions', member: true, admin: true, owner: true },
+                  { group: 'Interviews', label: 'Schedule / reschedule / cancel a Meet interview', member: true, admin: true, owner: true },
+                  { group: 'Interviews', label: 'Start an instant Meet interview', member: true, admin: true, owner: true },
+                  { group: 'Interviews', label: 'Manage host assignments on a meeting', member: true, admin: true, owner: true },
+                  { group: 'Interviews', label: 'View recordings, transcripts, Gemini notes', member: true, admin: true, owner: true },
+                  { group: 'Interviews', label: 'Mark a meeting as no-show', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Create / edit / delete flows, steps, videos', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Create / edit / delete trainings + quizzes', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Create / edit / delete automations', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Run automations against a candidate', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Create / edit / delete email + SMS templates', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Create / edit / delete scheduling / booking pages', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Assign default team members on a scheduling page', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Manage AI Calls agents + candidate links', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Order & view Certn background checks', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'Publish & manage Telegram ads', member: true, admin: true, owner: true },
+                  { group: 'Content', label: 'View analytics', member: true, admin: true, owner: true },
+                  { group: 'Workspace config', label: 'Edit workspace details (name, timezone, sender)', member: true, admin: true, owner: true },
+                  { group: 'Workspace config', label: 'Connect / disconnect Google, Certn, Telegram', member: true, admin: true, owner: true },
+                  // Admin + Owner (member locked out).
+                  { group: 'Team management', label: 'Invite team members & resend invites', member: false, admin: true, owner: true },
+                  { group: 'Team management', label: "Change other members' roles (except owner)", member: false, admin: true, owner: true },
+                  { group: 'Team management', label: 'Remove team members (except owners)', member: false, admin: true, owner: true },
+                  { group: 'Team management', label: "Edit or delete another user's notes on a candidate", member: false, admin: true, owner: true },
+                  { group: 'Team management', label: 'Force re-run pipeline-stage automations for a candidate', member: false, admin: true, owner: true },
+                  // Owner only.
+                  { group: 'Owner-only', label: 'Manage subscription & billing', member: false, admin: false, owner: true },
+                  { group: 'Owner-only', label: "Promote to Owner or change an Owner's role", member: false, admin: false, owner: true },
+                  { group: 'Owner-only', label: 'Remove another Owner', member: false, admin: false, owner: true },
+                  { group: 'Owner-only', label: 'Delete the workspace (irreversible)', member: false, admin: false, owner: true },
+                ]).reduce((acc: React.ReactNode[], row, i, arr) => {
+                  // Insert a group header row when the group name changes.
+                  const prevGroup = i > 0 ? arr[i - 1].group : null
+                  if (row.group !== prevGroup) {
+                    acc.push(
+                      <tr key={`h-${row.group}`}>
+                        <td colSpan={4} className="pt-4 pb-1 pr-2 font-mono text-[10px] uppercase text-grey-40" style={{ letterSpacing: '0.08em' }}>
+                          {row.group}
+                        </td>
+                      </tr>
+                    )
+                  }
+                  acc.push(
+                    <tr key={row.label} className="border-b border-surface-border last:border-0">
+                      <td className="py-2 pr-2 text-grey-15">{row.label}</td>
+                      <td className="py-2 px-2 text-center">
+                        {row.member ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
+                      </td>
+                      <td className="py-2 px-2 text-center">
+                        {row.admin ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
+                      </td>
+                      <td className="py-2 pl-2 text-center">
+                        {row.owner ? <span className="text-green-600">✓</span> : <span className="text-grey-40">—</span>}
+                      </td>
+                    </tr>
+                  )
+                  return acc
+                }, [])}
               </tbody>
             </table>
-            <p className="text-[11px] text-grey-40 mt-3">
-              Owner and Admin share the same capabilities in code today; Owner is conventionally the workspace creator.
-            </p>
           </div>
 
           {/* Members list */}

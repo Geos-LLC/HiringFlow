@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getWorkspaceSession, unauthorized, forbidden } from '@/lib/auth'
+import { getWorkspaceSession, unauthorized, forbidden, isOwner } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { getStripe } from '@/lib/stripe'
 import { priceIdFor, PLAN_CATALOG, BILLING_INTERVALS, type BillingInterval } from '@/lib/billing/plans'
@@ -9,8 +9,12 @@ const TRIAL_DAYS = 14
 export async function POST(req: NextRequest) {
   const session = await getWorkspaceSession()
   if (!session) return unauthorized()
-  // Only owners/admins can change billing.
-  if (session.role !== 'owner' && session.role !== 'admin') return forbidden()
+  // Billing changes are owner-only — the workspace owner is the party
+  // responsible for the subscription contract; admins manage the team
+  // and content but not the paying relationship with Stripe.
+  if (!isOwner(session.role, session.isSuperAdmin)) {
+    return forbidden('Only the workspace owner can change subscription plans')
+  }
 
   const body = await req.json().catch(() => ({}))
   const tier = body.tier as string | undefined
