@@ -1319,28 +1319,16 @@ export default function FlowSchemaView({
     const endPos = positions[END_ID]
     if (endPos && endMessage !== '') {
       endArrowGeomByStep.forEach((g, stepId) => {
-        // Straight line, not a bezier: with a shared endpoint (End's
-        // center), two lines from different sources can meet only at
-        // that endpoint. Bezier attempts always weave (see 61fd3b9).
-        ctx.beginPath()
-        ctx.strokeStyle = '#FF9500'
-        ctx.lineWidth = 2
-        ctx.setLineDash([])
-        ctx.moveTo(g.fromX, g.fromY)
-        ctx.lineTo(g.toX, g.toY)
-        ctx.stroke()
-        ctx.beginPath()
-        ctx.arc(g.fromX, g.fromY, 5, 0, Math.PI * 2)
-        ctx.fillStyle = '#FF9500'
-        ctx.fill()
-        ctx.beginPath()
-        ctx.arc(g.toX, g.toY, 5, 0, Math.PI * 2)
-        ctx.fill()
+        // Natural bezier (no lane) — horizontal tangents at both ends,
+        // shared endpoint (End's center). Gentler than lane-detour
+        // curves that plunged below all cards, so any residual crossings
+        // are subtle rather than dramatic. True non-crossing guarantee
+        // only exists with straight lines (see 5037c4d for the math).
+        drawConnection(ctx, g.fromX, g.fromY, g.toX, g.toY, '', false, '#FF9500')
 
         const isThisEndSelected =
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
-        const eMidX = (g.fromX + g.toX) / 2
-        const eMidY = (g.fromY + g.toY) / 2
+        const [eMidX, eMidY] = bezierMid(g.fromX, g.fromY, g.toX, g.toY)
 
         // No delete button here even for explicit button→End arrows —
         // Delete on an End-selected arrow is suppressed globally to avoid
@@ -1607,16 +1595,13 @@ export default function FlowSchemaView({
 
       // End arrows — iterate every source that was actually drawn
       // (endArrowGeomByStep covers implicit terminals AND steps whose
-      // Continue button explicitly points to __end__). Straight-line
-      // midpoint since End arrows render as straight lines.
+      // Continue button explicitly points to __end__).
       if (endMessage !== '') {
         let result: { kind: 'end'; fromStepId: string } | null = null
         endArrowGeomByStep.forEach((g, sid) => {
           if (result) return
           if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-          const midX = (g.fromX + g.toX) / 2
-          const midY = (g.fromY + g.toY) / 2
-          if (dist(cx, cy, midX, midY) <= 12) result = { kind: 'end', fromStepId: sid }
+          if (tryMid(g.fromX, g.fromY, g.toX, g.toY)) result = { kind: 'end', fromStepId: sid }
         })
         if (result) return result
       }
@@ -1699,7 +1684,7 @@ export default function FlowSchemaView({
         endArrowGeomByStep.forEach((g, sid) => {
           if (hovered) return
           if (selectedArrow?.kind === 'end' && selectedArrow.stepId === sid) return
-          if (distToSegment(cx, cy, g.fromX, g.fromY, g.toX, g.toY) <= 12) hovered = sid
+          if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 12)) hovered = sid
         })
         if (hovered) return { kind: 'end', fromStepId: hovered }
       }
@@ -1986,7 +1971,7 @@ export default function FlowSchemaView({
       let hitStepId: string | null = null
       endArrowGeomByStep.forEach((g, sid) => {
         if (hitStepId) return
-        if (distToSegment(cx, cy, g.fromX, g.fromY, g.toX, g.toY) <= 10) hitStepId = sid
+        if (isNearBezier(cx, cy, g.fromX, g.fromY, g.toX, g.toY, 10)) hitStepId = sid
       })
       if (hitStepId) {
         setSelectedArrow({ optionId: '__end_arrow__', stepId: hitStepId, kind: 'end' })
@@ -3078,23 +3063,6 @@ function isNearBezier(
   return false
 }
 
-// Perpendicular distance from (px,py) to the line segment from
-// (x1,y1) to (x2,y2). Used for straight-line hit testing on End
-// arrows, where beziers guarantee crossings but straight lines with
-// a shared endpoint cannot cross before that endpoint.
-function distToSegment(
-  px: number, py: number,
-  x1: number, y1: number,
-  x2: number, y2: number,
-): number {
-  const dx = x2 - x1
-  const dy = y2 - y1
-  const len2 = dx * dx + dy * dy
-  if (len2 === 0) return dist(px, py, x1, y1)
-  let t = ((px - x1) * dx + (py - y1) * dy) / len2
-  t = Math.max(0, Math.min(1, t))
-  return dist(px, py, x1 + t * dx, y1 + t * dy)
-}
 
 function drawPortCircle(
   ctx: CanvasRenderingContext2D,
