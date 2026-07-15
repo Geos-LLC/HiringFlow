@@ -100,6 +100,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Flow not found' }, { status: 404 })
     }
 
+    // Enforce start-screen required fields server-side. The client-side
+    // Start button gate is trivially bypassable (autofill, DevTools, direct
+    // POST), and without server enforcement we accumulate ghost sessions
+    // with no contact info that can never be reached by automation.
+    const startCfg = ((flow.branding as { startScreenConfig?: { nameRequired?: boolean; emailRequired?: boolean; showNameField?: boolean; showEmailField?: boolean } } | null)?.startScreenConfig) ?? {}
+    const showName = startCfg.showNameField ?? true
+    const showEmail = startCfg.showEmailField ?? false
+    if (showName && startCfg.nameRequired && !(typeof candidateName === 'string' && candidateName.trim())) {
+      return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+    }
+    if (showEmail && startCfg.emailRequired && !normalizedEmail) {
+      return NextResponse.json({ error: 'Email is required' }, { status: 400 })
+    }
+
     const startStepId = flow.steps[0]?.id || null
 
     // Auto-tag owner self-tests so they can't poison the real candidate
