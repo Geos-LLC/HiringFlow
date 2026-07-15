@@ -209,6 +209,20 @@ export async function GET(
         select: { id: true, scheduledStart: true, scheduledEnd: true, meetingUri: true, confirmedAt: true },
       })
 
+      // `next` param is picked up by BookingClient's success state to
+      // auto-redirect the candidate back into the flow after they book,
+      // instead of stranding them on the /book success screen in a
+      // separate tab. `advance=1` on the flow session URL is picked up
+      // by the flow player to fire /answer immediately, so the
+      // candidate lands on the NEXT step (usually the end screen)
+      // without any extra click.
+      // Same-origin only — BookingClient validates before redirecting.
+      // Skipped for external providers because Calendly/Cal.com don't
+      // respect our `next` param.
+      const flowReturnPath = session.flow?.slug
+        ? `/f/${session.flow.slug}/s/${session.id}?advance=1`
+        : null
+
       // Book URL — signed token for built-in, prefilled external URL
       // otherwise. Same shape /api/public/schedule/redirect produces,
       // but built directly so the client doesn't need an extra roundtrip
@@ -221,7 +235,8 @@ export async function GET(
             purpose: 'book',
             daysFromNow: 30,
           })
-          return `${getAppUrl()}/book/${config.id}?t=${encodeURIComponent(token)}`
+          const nextQs = flowReturnPath ? `&next=${encodeURIComponent(flowReturnPath)}` : ''
+          return `${getAppUrl()}/book/${config.id}?t=${encodeURIComponent(token)}${nextQs}`
         }
         // External provider — prefill name/email + tag utm_content with
         // sessionId so webhooks / Calendar sync can attribute the booking.
@@ -245,7 +260,8 @@ export async function GET(
           purpose: 'reschedule',
           daysFromNow: 30,
         })
-        actionUrl = `${getAppUrl()}/book/${config.id}/reschedule?t=${encodeURIComponent(token)}`
+        const nextQs = flowReturnPath ? `&next=${encodeURIComponent(flowReturnPath)}` : ''
+        actionUrl = `${getAppUrl()}/book/${config.id}/reschedule?t=${encodeURIComponent(token)}${nextQs}`
       } else {
         actionUrl = buildBookUrl()
       }

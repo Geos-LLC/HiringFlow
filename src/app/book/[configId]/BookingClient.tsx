@@ -28,9 +28,31 @@ interface Props {
 const DAYS_VISIBLE_DESKTOP = 3
 const COMMON_TIMEZONES = ['UTC', 'America/New_York', 'America/Los_Angeles', 'Europe/London', 'Europe/Dublin', 'Europe/Berlin', 'Asia/Tokyo', 'Australia/Sydney']
 
+// Same-origin path validator. Only accept absolute paths that stay on the
+// current origin — never full URLs, protocol-relative (//host), or paths
+// with backslashes. Prevents an attacker who controls the `next` query
+// param from redirecting the candidate to a phishing site.
+function isSafeReturnPath(v: string | null): v is string {
+  if (!v) return false
+  if (!v.startsWith('/')) return false
+  if (v.startsWith('//')) return false
+  if (v.startsWith('/\\')) return false
+  return true
+}
+
 export function BookingClient(props: Props) {
   const browserTz = useMemo(() => {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'UTC' }
+  }, [])
+  // Read `next` — set by /api/public/sessions/[sessionId]/step when the
+  // booking is launched from inside a flow scheduling step. When present,
+  // we auto-redirect back to the flow after booking so the candidate
+  // isn't stranded on the confirmation screen in a new tab. Anonymous
+  // global links have no `next` and keep the original UX.
+  const returnTo = useMemo(() => {
+    if (typeof window === 'undefined') return null
+    const raw = new URLSearchParams(window.location.search).get('next')
+    return isSafeReturnPath(raw) ? raw : null
   }, [])
   const [tz, setTz] = useState<string>(browserTz)
   const [availability, setAvailability] = useState<AvailabilityDto | null>(null)
@@ -50,6 +72,20 @@ export function BookingClient(props: Props) {
   const [confirmedMeetingUri, setConfirmedMeetingUri] = useState<string | null>(null)
   const [confirmedRescheduleToken, setConfirmedRescheduleToken] = useState<string | null>(null)
   const [confirmedCancelToken, setConfirmedCancelToken] = useState<string | null>(null)
+
+  // Flow-return auto-redirect: when the candidate just booked via a
+  // flow-embedded scheduling step, hop back to the flow after 1.5s so
+  // they see "You're booked" briefly for reassurance, then land at the
+  // next flow step (usually the end screen). Anonymous /book links
+  // don't set `next` and keep the current confirmation UX unchanged.
+  useEffect(() => {
+    if (view !== 'done') return
+    if (!returnTo) return
+    const t = setTimeout(() => {
+      window.location.href = returnTo
+    }, 1500)
+    return () => clearTimeout(t)
+  }, [view, returnTo])
 
   useEffect(() => {
     let cancelled = false

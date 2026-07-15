@@ -173,6 +173,47 @@ export default function SessionPlayerPage() {
     return () => clearInterval(interval)
   }, [step?.stepId, step?.stepType, step?.scheduling?.booked, sessionId])
 
+  // Auto-advance when the candidate returns from a same-tab booking flow.
+  // /step's scheduling.actionUrl bakes in `next=/f/.../s/.../?advance=1`;
+  // BookingClient auto-redirects there after "You're booked"; that URL
+  // is what triggers this effect. When we see ?advance=1 + a currently-
+  // booked scheduling step, fire /answer once so the candidate lands at
+  // the next step (usually the end screen) with zero extra clicks.
+  // Reschedule loop safety: strip advance=1 from the URL as soon as
+  // we've handled it so navigating back to this URL later doesn't
+  // re-fire.
+  const hasAdvanceFlag = searchParams.get('advance') === '1'
+  useEffect(() => {
+    if (!hasAdvanceFlag) return
+    if (!step || step.stepType !== 'scheduling') return
+    if (!step.scheduling?.booked) return
+    if (submitting) return
+    ;(async () => {
+      setSubmitting(true)
+      // Strip the flag first so a re-render (or React strict-mode double
+      // effect) can't fire /answer twice against the same step.
+      try {
+        const url = new URL(window.location.href)
+        url.searchParams.delete('advance')
+        window.history.replaceState({}, '', url.toString())
+      } catch { /* silent */ }
+      const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stepId: step.stepId }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
+        else fetchStep()
+      }
+      setSubmitting(false)
+    })()
+    // fetchStep + router + slug + sessionId + submitting are stable enough
+    // per-render that including them would spin the effect. Intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAdvanceFlag, step?.stepId, step?.stepType, step?.scheduling?.booked])
+
   const fetchStep = async () => {
     setLoading(true)
     setVideoEnded(false)
@@ -660,8 +701,16 @@ export default function SessionPlayerPage() {
                 )}
                 <a
                   href={step.scheduling.actionUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  // For the built-in scheduler we stay in the same tab.
+                  // The /step endpoint bakes a `next=/f/.../s/...?advance=1`
+                  // into the URL so BookingClient auto-redirects back
+                  // here after success, and the effect below auto-fires
+                  // /answer on ?advance=1 so the candidate lands at the
+                  // next flow step with no extra click. For external
+                  // providers (Calendly etc.) we can't guarantee return,
+                  // so keep them in a new tab and let the poller unlock
+                  // Continue when the meeting hits the DB.
+                  {...(!step.scheduling.useBuiltInScheduler && { target: '_blank', rel: 'noopener noreferrer' })}
                   className={`block w-full py-3 rounded-xl text-center font-medium text-sm transition-all ${
                     overlay
                       ? 'border-2 border-white/40 hover:bg-white/10 text-white'
