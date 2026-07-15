@@ -764,6 +764,50 @@ export default function FlowBuilderPage() {
     setSaving(false)
   }
 
+  // Swap this step with its neighbor in stepOrder. dir='up' moves earlier
+  // (smaller stepOrder), 'down' moves later. The candidate flow renders
+  // steps in stepOrder, so this is what the recruiter reaches for when
+  // "Application Form" ends up after "Scheduling" and they want it before.
+  // Optimistic UI + two PATCH calls; if either fails the fetchFlow will
+  // reconcile on next render.
+  const moveStep = async (stepId: string, dir: 'up' | 'down') => {
+    if (!flow) return
+    const sorted = [...flow.steps].sort((a, b) => a.stepOrder - b.stepOrder)
+    const idx = sorted.findIndex((s) => s.id === stepId)
+    if (idx < 0) return
+    const swapIdx = dir === 'up' ? idx - 1 : idx + 1
+    if (swapIdx < 0 || swapIdx >= sorted.length) return
+    const a = sorted[idx]
+    const b = sorted[swapIdx]
+    markChanged()
+    // Optimistic swap in local state so the list reorders instantly.
+    setFlow((f) => f ? {
+      ...f,
+      steps: f.steps.map((s) => {
+        if (s.id === a.id) return { ...s, stepOrder: b.stepOrder }
+        if (s.id === b.id) return { ...s, stepOrder: a.stepOrder }
+        return s
+      }),
+    } : null)
+    setSaving(true)
+    try {
+      await Promise.all([
+        fetch(`/api/steps/${a.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stepOrder: b.stepOrder }),
+        }),
+        fetch(`/api/steps/${b.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stepOrder: a.stepOrder }),
+        }),
+      ])
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const deleteStep = (stepId: string) => {
     markChanged()
 
@@ -2209,36 +2253,68 @@ export default function FlowBuilderPage() {
                   }
 
                   const stepNum = stepNumberById.get(step.id)
+                  const sortedForNav = [...(flow?.steps ?? [])].sort((a, b) => a.stepOrder - b.stepOrder)
+                  const navIdx = sortedForNav.findIndex((s) => s.id === step.id)
+                  const canMoveUp = navIdx > 0
+                  const canMoveDown = navIdx >= 0 && navIdx < sortedForNav.length - 1
                   return (
                     <div key={step.id} className="space-y-1">
-                      <button
-                        ref={(el) => { stepRowRefs.current.set(step.id, el) }}
-                        onClick={() => setSelectedStepId(step.id)}
-                        className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                      <div
+                        className={`w-full px-3 py-2 rounded-md text-sm transition-colors flex items-start gap-2 ${
                           selectedStepId === step.id
                             ? 'bg-brand-50 text-brand-700 border border-brand-200'
                             : 'hover:bg-gray-50 border border-transparent'
                         }`}
                       >
-                        <div className="font-medium flex items-center gap-2">
-                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[11px] font-semibold leading-none flex-shrink-0">
-                            {stepNum}
-                          </span>
-                          <span className="truncate">{step.title}</span>
+                        <button
+                          ref={(el) => { stepRowRefs.current.set(step.id, el) }}
+                          onClick={() => setSelectedStepId(step.id)}
+                          className="flex-1 text-left min-w-0"
+                        >
+                          <div className="font-medium flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[11px] font-semibold leading-none flex-shrink-0">
+                              {stepNum}
+                            </span>
+                            <span className="truncate">{step.title}</span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-0.5 pl-7">
+                            {step.stepType === 'submission' ? (
+                              <span className="text-purple-600">Submission</span>
+                            ) : step.stepType === 'capture' ? (
+                              <span className="text-brand-600">Audio answer</span>
+                            ) : (
+                              <>
+                                {step.options.length} option{step.options.length !== 1 && 's'}
+                                {step.questionType === 'multiselect' && ' (multi)'}
+                              </>
+                            )}
+                          </div>
+                        </button>
+                        {/* Reorder controls — up/down swaps stepOrder with
+                            the neighbor. Candidate flow renders steps in
+                            stepOrder; this is the only reorder handle in
+                            the builder for now. */}
+                        <div className="flex flex-col gap-0.5 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); moveStep(step.id, 'up') }}
+                            disabled={!canMoveUp}
+                            title="Move step up"
+                            className="w-5 h-4 flex items-center justify-center rounded text-grey-40 hover:text-grey-15 hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 15l7-7 7 7"/></svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); moveStep(step.id, 'down') }}
+                            disabled={!canMoveDown}
+                            title="Move step down"
+                            className="w-5 h-4 flex items-center justify-center rounded text-grey-40 hover:text-grey-15 hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7"/></svg>
+                          </button>
                         </div>
-                        <div className="text-xs text-gray-500 mt-0.5 pl-7">
-                          {step.stepType === 'submission' ? (
-                            <span className="text-purple-600">Submission</span>
-                          ) : step.stepType === 'capture' ? (
-                            <span className="text-brand-600">Audio answer</span>
-                          ) : (
-                            <>
-                              {step.options.length} option{step.options.length !== 1 && 's'}
-                              {step.questionType === 'multiselect' && ' (multi)'}
-                            </>
-                          )}
-                        </div>
-                      </button>
+                      </div>
                       {rows.length > 0 && (
                         <div className="pl-7 space-y-1">
                           {rows.map((r) => {

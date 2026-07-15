@@ -967,17 +967,19 @@ export default function SessionPlayerPage() {
                     captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}
                     autoPlay
                     onEnded={handleVideoEnd}
-                    // Container fills the entire card and locks its aspect
-                    // to the parent; the <video> element inside is
-                    // letterboxed via object-contain. Without a stable
-                    // frame, browsers (Chrome especially) resize the
-                    // video box when playback ends and swap the last-frame
-                    // canvas for the poster — the visible player jumps
-                    // width mid-frame. Fixed container + object-contain
-                    // keeps the black card the same size the whole time
-                    // and just centers the video in it.
+                    // Pin the <video> element to a 16:9 aspect ratio via
+                    // aspect-video so the box is a fixed shape from
+                    // mount — before HLS attaches, before metadata
+                    // loads, before playback ends. Without this the
+                    // element's rendered size follows the browser's
+                    // reported intrinsic size, which flips between the
+                    // startLevel HLS variant, the ready variant, and
+                    // the last-frame canvas at end. w-full lets it fill
+                    // the card width; max-h caps it in short windows so
+                    // it doesn't push controls off screen. object-contain
+                    // is the letterbox rule inside that fixed box.
                     className="rounded-[20px] w-full h-full flex items-center justify-center"
-                    videoClassName="max-h-[calc(100vh-120px)] max-w-full w-full h-full object-contain"
+                    videoClassName="aspect-video max-h-[calc(100vh-120px)] max-w-full w-full object-contain"
                   />
                 </div>
               )
