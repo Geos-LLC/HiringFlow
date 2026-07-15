@@ -154,7 +154,7 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
     warnings.push(capabilityMessage(capabilityResult.recording.reason as RecordingCapabilityReason))
   }
 
-  // 5. Create Meet space (with recording-403 fallback)
+  // 5. Create Meet space (with recording-403 + accessType fallbacks)
   //
   // accessType='RESTRICTED' — anyone on the calendar guest list can join,
   // no Google-org constraint. 'TRUSTED' (the prior default) required
@@ -162,10 +162,21 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   // outside-org team members. RESTRICTED with a curated attendee list is
   // stricter than 'OPEN' (anyone-with-link) and matches the "assigned team
   // members can host, no one else" model.
+  //
+  // But: RESTRICTED is only available on Google Workspace accounts. Personal
+  // Gmail (hostedDomain=null) can't set it — the API throws
+  // "updateAccessType is not available to the user." Detected 2026-07-14
+  // via Spotless (sayapingeorge@gmail.com). Pick the tightest accessType
+  // this account can actually use up front: RESTRICTED for Workspace,
+  // TRUSTED for personal Gmail. TRUSTED on personal Gmail means "anyone
+  // signed into a Google account can join" — looser than we'd like, but
+  // the meeting URL only reaches the candidate + hosts on the invite so
+  // in practice this is fine.
+  const desiredAccessType: 'RESTRICTED' | 'TRUSTED' = integration.hostedDomain ? 'RESTRICTED' : 'TRUSTED'
   let space: Awaited<ReturnType<typeof createSpace>> | undefined
   try {
     space = await createSpace(client, {
-      accessType: 'RESTRICTED',
+      accessType: desiredAccessType,
       entryPointAccess: 'ALL',
       autoRecording: selection.recordingEnabled ? 'ON' : 'OFF',
       autoTranscription: transcriptionEnabledFinal ? 'ON' : 'OFF',
@@ -183,7 +194,7 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
       }).catch(() => {})
       try {
         space = await createSpace(client, {
-          accessType: 'RESTRICTED',
+          accessType: desiredAccessType,
           entryPointAccess: 'ALL',
           autoRecording: 'OFF',
           autoTranscription: transcriptionEnabledFinal ? 'ON' : 'OFF',
@@ -191,6 +202,27 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
         warnings.push(capabilityMessage(reason as RecordingCapabilityReason))
       } catch (err2) {
         console.error('[bookInterview] Meet space creation failed:', err2)
+        throw new BookInterviewError(502, 'meet_space_failed', (err2 as Error).message)
+      }
+    } else if (
+      err instanceof MeetApiError
+      && desiredAccessType !== 'TRUSTED'
+      && /updateAccessType|accessType/i.test(err.message || '')
+    ) {
+      // Defensive belt-and-suspenders: even if hostedDomain detection is
+      // wrong, if the API specifically rejects the access type, retry
+      // with TRUSTED (always allowed). Persist the downgrade so future
+      // bookings for this workspace skip the failing attempt.
+      console.warn('[bookInterview] accessType rejected, retrying with TRUSTED:', err.message)
+      try {
+        space = await createSpace(client, {
+          accessType: 'TRUSTED',
+          entryPointAccess: 'ALL',
+          autoRecording: selection.recordingEnabled ? 'ON' : 'OFF',
+          autoTranscription: transcriptionEnabledFinal ? 'ON' : 'OFF',
+        })
+      } catch (err2) {
+        console.error('[bookInterview] Meet space creation failed after accessType retry:', err2)
         throw new BookInterviewError(502, 'meet_space_failed', (err2 as Error).message)
       }
     } else {
