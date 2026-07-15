@@ -580,13 +580,23 @@ function SlotColumns({
           const d = new Date(Date.UTC(ymd.year, ymd.month - 1, ymd.day, 12))
           const slots = slotsByDay.get(dk) || []
           const isSelected = idx === 0
+          // Mobile: show only the selected day. Multi-day peek is a
+          // desktop convenience — on a narrow viewport, stacking 3 days
+          // vertically buries the calendar + times pile up in a wall.
+          // Prev/next chevrons in the header still let the candidate
+          // shift the selected day forward/back.
+          const hideOnMobile = idx > 0
           return (
-            <div key={dk}>
+            <div key={dk} className={hideOnMobile ? 'hidden sm:block' : ''}>
               <div className={`text-center pb-2 mb-2 text-[11px] font-medium uppercase tracking-wider ${isSelected ? 'text-[#262626]' : 'text-[#888]'}`}>
                 <span>{d.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })}</span>
                 <span className={`ml-1.5 ${isSelected ? 'inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#FF9500] text-white text-[11px]' : 'text-[#888]'}`}>{ymd.day}</span>
               </div>
-              <div className="space-y-1.5 max-h-[480px] overflow-y-auto pr-1">
+              {/* Constrain height so the times scroll inside their own
+                  box on mobile — otherwise a busy day pushes the calendar
+                  off-screen and forces a whole-page scroll. Desktop keeps
+                  the taller 480px cap since screen real estate is bigger. */}
+              <div className="space-y-1.5 max-h-[60vh] sm:max-h-[480px] overflow-y-auto pr-1">
                 {slots.length === 0 && <div className="text-center text-[12px] text-[#BBB] pt-3">—</div>}
                 {slots.map((s) => {
                   const isSel = selectedSlotStartUtc === s.startUtc
