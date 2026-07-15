@@ -5,6 +5,7 @@ import { triggerVideoAnalysis } from '@/lib/upload-client'
 import { useUploads } from '@/app/dashboard/_components/UploadProvider'
 import CaptionedVideo, { type CaptionStyle, DEFAULT_CAPTION_STYLE } from './CaptionedVideo'
 import VideoRecorderModal from './VideoRecorderModal'
+import { VideoPickerModal } from './VideoPickerModal'
 
 // Debounced input that keeps cursor position stable
 function DebouncedInput({
@@ -99,6 +100,10 @@ interface Video {
   bulletPoints?: string[]
   transcript?: string | null
   segments?: Segment[] | null
+  // Same extended fields the flow-builder VideoPickerModal renders.
+  kind?: string
+  durationSeconds?: number | null
+  posterUrl?: string | null
 }
 
 interface Option {
@@ -311,6 +316,7 @@ export default function StepEditorPanel({
   }
 
   const [recorderOpen, setRecorderOpen] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const handleRecorded = async (file: File) => {
     setRecorderOpen(false)
     await processVideoFile(file)
@@ -473,27 +479,19 @@ export default function StepEditorPanel({
         <div className="lg:w-1/2 min-w-0">
           <label className="block text-sm font-medium text-gray-700 mb-1">Video</label>
           <div className="flex flex-wrap gap-2">
-            <select
-              value={step.videoId || ''}
-              onChange={(e) => {
-                const videoId = e.target.value || null
-                const selectedVideo = videos.find(v => v.id === videoId)
-                const updates: Partial<Step> = { videoId }
-                // Auto-set title from video displayName if step has default/empty title
-                if (selectedVideo?.displayName && (!step.title || step.title === 'New Step' || step.title === 'Untitled Step')) {
-                  updates.title = selectedVideo.displayName
-                }
-                onUpdateStep(step.id, updates)
-              }}
-              className="flex-1 min-w-[140px] px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              className="flex-1 min-w-[140px] px-3 py-2 text-sm border border-gray-300 rounded-md text-left flex items-center justify-between hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500"
             >
-              <option value="">No video selected</option>
-              {videos.map((video) => (
-                <option key={video.id} value={video.id}>
-                  {video.filename}
-                </option>
-              ))}
-            </select>
+              <span className={step.videoId ? 'text-gray-900 truncate' : 'text-gray-400'}>
+                {(() => {
+                  const sv = videos.find(v => v.id === step.videoId)
+                  return sv ? (sv.displayName || sv.filename) : 'Browse library…'
+                })()}
+              </span>
+              <svg className="w-4 h-4 text-gray-400 flex-shrink-0 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7"/></svg>
+            </button>
             <label className={`px-3 py-2 rounded-md text-sm font-medium cursor-pointer transition-colors whitespace-nowrap ${
               uploading
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
@@ -1265,6 +1263,21 @@ export default function StepEditorPanel({
         onClose={() => setRecorderOpen(false)}
         onAccept={handleRecorded}
         filenameStem={`step-${step.stepOrder + 1}-recording`}
+      />
+      <VideoPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        videos={videos}
+        selectedId={step.videoId}
+        onSelect={(v) => {
+          const updates: Partial<Step> = { videoId: v.id }
+          // Match the previous auto-title behavior — only overwrite when
+          // the step still has a placeholder title.
+          if (v.displayName && (!step.title || step.title === 'New Step' || step.title === 'Untitled Step')) {
+            updates.title = v.displayName
+          }
+          onUpdateStep(step.id, updates)
+        }}
       />
     </div>
   )

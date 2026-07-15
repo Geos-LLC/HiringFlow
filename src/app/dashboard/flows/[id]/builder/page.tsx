@@ -8,6 +8,7 @@ import StepEditorPanel from '@/components/StepEditorPanel'
 import StepPreviewModal from '@/components/StepPreviewModal'
 import BrandingEditor from '@/components/BrandingEditor'
 import VideoRecorderModal from '@/components/VideoRecorderModal'
+import { VideoPickerModal } from '@/components/VideoPickerModal'
 import { type BrandingConfig } from '@/lib/branding'
 import { validateCaptureConfig } from '@/lib/capture/capture-config'
 import CaptureStepConfigPanel from './_CaptureStepConfigPanel'
@@ -19,6 +20,13 @@ interface Video {
   filename: string
   url: string
   displayName?: string | null
+  // Extended fields surfaced by /api/videos so the cross-library picker
+  // modal can render thumbnails, duration, and kind badges. Optional so
+  // in-flight callers that only know the freshly-uploaded id still work.
+  kind?: string
+  durationSeconds?: number | null
+  posterUrl?: string | null
+  transcript?: string | null
 }
 
 interface Option {
@@ -192,7 +200,9 @@ export default function FlowBuilderPage() {
   }
 
   const fetchVideos = async () => {
-    const res = await fetch('/api/videos?kind=interview')
+    // No kind filter — the picker modal groups + filters by kind
+    // client-side so training videos are reachable from a video step.
+    const res = await fetch('/api/videos')
     if (res.ok) {
       const data = await res.json()
       setVideos(data)
@@ -301,6 +311,9 @@ export default function FlowBuilderPage() {
   // gets uploaded to. `add` = the "Add Step" Phase 2 modal, `edit:<id>` =
   // the popup editor for an existing step.
   const [recorderTarget, setRecorderTarget] = useState<null | 'add' | { kind: 'edit'; stepId: string }>(null)
+  // Cross-library video picker. `add` fills the Phase-2 add-step form;
+  // `edit:<id>` fills an existing video step via updateStep.
+  const [videoPickerTarget, setVideoPickerTarget] = useState<null | 'add' | { kind: 'edit'; stepId: string }>(null)
 
   // When the user clicks "+" on a connection, pre-populate the new step's
   // outgoing target with the current connection's destination so the modal
@@ -1475,6 +1488,30 @@ export default function FlowBuilderPage() {
         onAccept={handleRecordedVideo}
         filenameStem="step-recording"
       />
+      <VideoPickerModal
+        open={videoPickerTarget !== null}
+        onClose={() => setVideoPickerTarget(null)}
+        videos={videos}
+        selectedId={
+          videoPickerTarget === 'add'
+            ? addStepVideoId
+            : videoPickerTarget && videoPickerTarget.kind === 'edit'
+              ? flow?.steps.find(s => s.id === videoPickerTarget.stepId)?.videoId ?? null
+              : null
+        }
+        onSelect={(v) => {
+          if (videoPickerTarget === 'add') {
+            setAddStepVideoId(v.id)
+            // Auto-fill title from video name if the recruiter hasn't typed
+            // one yet — same convenience the upload path has.
+            if (!autoTitleEnabled && !addStepTitle) {
+              setAddStepTitle(v.displayName || v.filename?.replace(/\.[^.]+$/, '') || '')
+            }
+          } else if (videoPickerTarget && videoPickerTarget.kind === 'edit') {
+            updateStep(videoPickerTarget.stepId, { videoId: v.id })
+          }
+        }}
+      />
       {/* Header */}
       <div className="flex items-center justify-between mb-4 pb-4 border-b">
         <div className="flex items-center space-x-4">
@@ -1774,14 +1811,19 @@ export default function FlowBuilderPage() {
                         <div>
                           <label className="block text-sm font-medium text-grey-20 mb-1.5">Video</label>
                           <div className="flex gap-2">
-                            <select
-                              value={popupStep.videoId || ''}
-                              onChange={(e) => updateStep(popupStep.id, { videoId: e.target.value || null })}
-                              className="flex-1 px-4 py-2.5 text-sm border border-surface-border rounded-[8px] focus:outline-none focus:ring-2 focus:ring-brand-500"
+                            <button
+                              type="button"
+                              onClick={() => setVideoPickerTarget({ kind: 'edit', stepId: popupStep.id })}
+                              className="flex-1 px-4 py-2.5 text-sm border border-surface-border rounded-[8px] text-left flex items-center justify-between hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500"
                             >
-                              <option value="">Select video...</option>
-                              {videos.map(v => <option key={v.id} value={v.id}>{videoLabel(v)}</option>)}
-                            </select>
+                              <span className={popupStep.videoId ? 'text-grey-15' : 'text-grey-40'}>
+                                {(() => {
+                                  const sv = videos.find(v => v.id === popupStep.videoId)
+                                  return sv ? videoLabel(sv) : 'Browse library…'
+                                })()}
+                              </span>
+                              <svg className="w-4 h-4 text-grey-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7"/></svg>
+                            </button>
                             <label className="px-4 py-2.5 text-xs font-medium bg-brand-50 text-brand-600 border border-brand-200 rounded-[8px] hover:bg-brand-100 cursor-pointer">
                               Upload
                               <input type="file" accept="video/*" className="hidden" onChange={async (e) => {
@@ -2458,14 +2500,14 @@ export default function FlowBuilderPage() {
                     )}
                     {!uploadingStepVideo && (
                       <div className="mt-2">
-                        <select
-                          value={addStepVideoId}
-                          onChange={(e) => { setAddStepVideoId(e.target.value) }}
-                          className="w-full px-3 py-2 text-xs border border-surface-border rounded-[8px] text-grey-40 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                        <button
+                          type="button"
+                          onClick={() => setVideoPickerTarget('add')}
+                          className="w-full px-3 py-2 text-xs border border-surface-border rounded-[8px] text-grey-35 hover:border-brand-300 hover:text-grey-15 flex items-center justify-center gap-2"
                         >
-                          <option value="">Or select from library...</option>
-                          {videos.map(v => <option key={v.id} value={v.id}>{videoLabel(v)}</option>)}
-                        </select>
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                          Browse library (all videos)
+                        </button>
                       </div>
                     )}
                   </div>
