@@ -967,8 +967,17 @@ export default function SessionPlayerPage() {
                     captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}
                     autoPlay
                     onEnded={handleVideoEnd}
-                    className="rounded-[20px]"
-                    videoClassName="max-h-[calc(100vh-120px)] w-auto max-w-full"
+                    // Container fills the entire card and locks its aspect
+                    // to the parent; the <video> element inside is
+                    // letterboxed via object-contain. Without a stable
+                    // frame, browsers (Chrome especially) resize the
+                    // video box when playback ends and swap the last-frame
+                    // canvas for the poster — the visible player jumps
+                    // width mid-frame. Fixed container + object-contain
+                    // keeps the black card the same size the whole time
+                    // and just centers the video in it.
+                    className="rounded-[20px] w-full h-full flex items-center justify-center"
+                    videoClassName="max-h-[calc(100vh-120px)] max-w-full w-full h-full object-contain"
                   />
                 </div>
               )
