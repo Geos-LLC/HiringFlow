@@ -1254,7 +1254,7 @@ function ChoiceQuestionInput({
           let ring = 'border-[#F1F1F3]'
           if (showResult && isSelected && isRight) ring = 'border-green-500 ring-2 ring-green-200'
           else if (showResult && isSelected && !isRight) ring = 'border-red-500 ring-2 ring-red-200'
-          else if (showResult && isRight) ring = 'border-green-300'
+          else if (showResult && isRight) ring = 'border-amber-400 ring-2 ring-amber-100'
           else if (isSelected) ring = 'border-[#FF9500] ring-2 ring-[#FFEDD5]'
           return (
             <button
@@ -1288,7 +1288,7 @@ function ChoiceQuestionInput({
         let borderColor = '#F1F1F3', bgColor = 'transparent'
         if (showResult && isSelected && isRight) { borderColor = '#22c55e'; bgColor = '#f0fdf4' }
         else if (showResult && isSelected && !isRight) { borderColor = '#ef4444'; bgColor = '#fef2f2' }
-        else if (showResult && isRight) { borderColor = '#bbf7d0'; bgColor = '#f0fdf4' }
+        else if (showResult && isRight) { borderColor = '#f59e0b'; bgColor = '#fffbeb' }
         else if (isSelected) { borderColor = '#FF9500'; bgColor = '#FFF7ED' }
         const optionHint = showExplanation ? result?.hints?.[opt.index] : null
         return (
@@ -1304,6 +1304,7 @@ function ChoiceQuestionInput({
                 <span className="text-[#262626]">{opt.text}</span>
                 {showResult && isSelected && isRight && <span className="text-green-600 text-xs font-medium">✓ Correct</span>}
                 {showResult && isSelected && !isRight && <span className="text-red-600 text-xs font-medium">✗ Wrong</span>}
+                {showResult && !isSelected && isRight && <span className="text-amber-600 text-xs font-medium">Also correct — you missed this</span>}
               </div>
             </button>
             {optionHint && (
