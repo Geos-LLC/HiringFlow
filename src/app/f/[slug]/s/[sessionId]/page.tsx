@@ -45,6 +45,8 @@ interface CombinedStepData {
   stepId: string
   title: string
   videoUrl: string | null
+  videoHlsUrl?: string | null
+  videoStatus?: string | null
   questionText: string | null
   stepType: string
   infoContent?: string | null
@@ -85,6 +87,8 @@ interface StepData {
   stepId: string
   title: string
   videoUrl: string | null
+  videoHlsUrl?: string | null
+  videoStatus?: string | null
   questionText: string | null
   stepType: string
   infoContent?: string | null
@@ -946,6 +950,8 @@ export default function SessionPlayerPage() {
         >
           {(() => {
             const videoUrl = step.videoUrl || step.combinedStep?.videoUrl
+            const videoHlsUrl = step.videoUrl ? step.videoHlsUrl : step.combinedStep?.videoHlsUrl
+            const videoStatus = step.videoUrl ? step.videoStatus : step.combinedStep?.videoStatus
             const videoSegments = step.videoUrl ? step.segments : step.combinedStep?.segments
             const videoCaptionsEnabled = step.videoUrl ? step.captionsEnabled : step.combinedStep?.captionsEnabled
             if (videoUrl) {
@@ -954,6 +960,8 @@ export default function SessionPlayerPage() {
                   <CaptionedVideo
                     key={`desktop-${step.stepId}`}
                     src={videoUrl}
+                    hlsUrl={videoHlsUrl}
+                    status={videoStatus}
                     segments={videoSegments || []}
                     captionsEnabled={videoCaptionsEnabled || false}
                     captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}
@@ -1055,6 +1063,8 @@ export default function SessionPlayerPage() {
               <CaptionedVideo
                 key={`mobile-${step.stepId}`}
                 src={step.videoUrl}
+                hlsUrl={step.videoHlsUrl}
+                status={step.videoStatus}
                 segments={step.segments || []}
                 captionsEnabled={step.captionsEnabled || false}
                 captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}

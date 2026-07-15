@@ -72,6 +72,8 @@ export async function GET(
         stepId: partner.id,
         title: partner.title,
         videoUrl: partner.video ? getVideoUrl(partner.video.storageKey) : null,
+        videoHlsUrl: partner.video?.hlsManifestUrl ?? null,
+        videoStatus: partner.video?.status ?? null,
         questionText: partner.questionText,
         stepType: partner.stepType,
         questionType: partner.questionType,
@@ -100,6 +102,8 @@ export async function GET(
         stepId: reversePartner.id,
         title: reversePartner.title,
         videoUrl: reversePartner.video ? getVideoUrl(reversePartner.video.storageKey) : null,
+        videoHlsUrl: reversePartner.video?.hlsManifestUrl ?? null,
+        videoStatus: reversePartner.video?.status ?? null,
         questionText: reversePartner.questionText,
         stepType: reversePartner.stepType,
         questionType: reversePartner.questionType,
@@ -289,6 +293,15 @@ export async function GET(
     stepId: step.id,
     title: step.title,
     videoUrl: step.video ? getVideoUrl(step.video.storageKey) : null,
+    // HLS manifest + status: the candidate-side <CaptionedVideo /> only
+    // considers a video playable when hlsUrl is present (or when the
+    // status is 'ready' with a cached local blob). Previously we sent
+    // only videoUrl (the raw origin file), which made CaptionedVideo
+    // treat every step-video as "still processing" and never render the
+    // player. Sending hlsUrl + status lets it pick HLS when available
+    // and show a real processing / failed state otherwise.
+    videoHlsUrl: step.video?.hlsManifestUrl ?? null,
+    videoStatus: step.video?.status ?? null,
     questionText: step.questionText,
     stepType: step.stepType,
     questionType: step.questionType,
