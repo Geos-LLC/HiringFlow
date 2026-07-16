@@ -21,6 +21,7 @@ import { fireMeetingLifecycleAutomations } from '../automation'
 import { emitAutomationEvent, eventKeys } from '../automation-emit'
 import { bumpSessionProgress } from '../session-activity'
 import { recordArtifact } from '../meet/artifacts'
+import { reconcileFalseNoShow } from '../meet/reconcile-no-show'
 import { getBot, listBotParticipants, type RecallParticipant } from './client'
 
 /**
@@ -339,6 +340,13 @@ export async function handleBotDone(meetingId: string, botId: string, occurredAt
     meetSpaceName: `recall:${botId}`,
     driveCreatedTime: recording.completed_at ? new Date(recording.completed_at) : occurredAt,
   }).catch((err) => console.warn('[recall] recordArtifact failed:', (err as Error).message))
+
+  // A recording landing means the meeting actually happened. If bot.call_ended
+  // fired meeting_no_show earlier (Recall's participants list was empty or the
+  // duration fallback hadn't seen the recording yet), the candidate is stuck
+  // in a false rejected state — un-mark her here.
+  await reconcileFalseNoShow(meeting.id, 'recall_bot_done').catch((err) =>
+    console.error('[recall] reconcileFalseNoShow failed:', (err as Error).message))
 
   if (meeting.recordingState !== 'ready') {
     const meetingWithWs = await prisma.interviewMeeting.findUnique({

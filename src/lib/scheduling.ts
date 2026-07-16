@@ -58,6 +58,11 @@ export type SchedulingEventType =
   | 'meeting_started'
   | 'meeting_ended'
   | 'meeting_no_show'
+  // A prior meeting_no_show was overturned by the false-no-show reconciler.
+  // Fires when we later observe proof the meeting actually happened
+  // (recording landed, actualStart populated, etc.). Audit only — the
+  // reconciler also revives session status and emits meeting_ended.
+  | 'meeting_no_show_reverted'
   | 'recording_ready'
   | 'transcript_ready'
   // Recall.ai bot failed to record (fatal error or recording permission

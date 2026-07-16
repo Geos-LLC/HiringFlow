@@ -36,6 +36,7 @@ import {
   redispatchAcceptedEvent,
 } from '@/lib/automation-emit'
 import { logSchedulingEvent } from '@/lib/scheduling'
+import { reconcileFalseNoShow } from '@/lib/meet/reconcile-no-show'
 
 interface SweepCounts {
   scanned: {
@@ -44,6 +45,7 @@ interface SweepCounts {
     meetingsStuckOpen: number
     trainingsCompleted: number
     orphanEvents: number
+    falseNoShowCandidates: number
   }
   fired: {
     flowCompleted: number
@@ -51,6 +53,7 @@ interface SweepCounts {
     meetingEnded: number
     trainingCompleted: number
     orphanRedispatched: number
+    falseNoShowReverted: number
   }
   errors: number
 }
@@ -76,8 +79,8 @@ export async function GET(request: NextRequest) {
 
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const counts: SweepCounts = {
-    scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0, trainingsCompleted: 0, orphanEvents: 0 },
-    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0, trainingCompleted: 0, orphanRedispatched: 0 },
+    scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0, trainingsCompleted: 0, orphanEvents: 0, falseNoShowCandidates: 0 },
+    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0, trainingCompleted: 0, orphanRedispatched: 0, falseNoShowReverted: 0 },
     errors: 0,
   }
 
@@ -422,6 +425,77 @@ export async function GET(request: NextRequest) {
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] orphan redispatch failed', { eventId: ev.id, err })
+    }
+  }
+
+  // -- Rule 6: false meeting_no_show + recording actually landed -----------
+  //
+  // Recall's bot.call_ended (participants list empty, or recording metadata
+  // not yet finalized when the duration fallback ran) and sync-on-read's
+  // attendance path both make best-effort no-show calls. When they get it
+  // wrong the candidate lands in `status='lost'` + `dispositionReason=
+  // interview_no_show` + `rejectionReason='No-show'` + halted automations
+  // — a terminal state that nothing later un-marks.
+  //
+  // The `reconcileFalseNoShow` helper (called from `handleBotDone` and
+  // `syncMeetingFromMeetApi` at write time) fixes new occurrences. This
+  // sweep handles two remaining gaps:
+  //   (a) meetings whose recording landed BEFORE this reconciler shipped —
+  //       Keira Bowman's case triggered the whole design.
+  //   (b) meetings where a rare failure path skipped the inline call — same
+  //       reason we have Rules 1-5.
+  //
+  // 30-day lookback so no candidate wrongly-rejected in the last month
+  // stays rejected. Longer than the other rules' 24h because the incident
+  // window here is longer (a candidate wrongly marked no-show 3 weeks ago
+  // is still wrong today).
+  // Session has no `updatedAt`; use the timestamp that lifecycle:meeting_no_show
+  // itself sets (`lostAt` for the disposition side, `rejectionReasonAt` for the
+  // legacy rejection side). Either qualifies as "was marked no-show within
+  // the lookback window."
+  const noShowLookback = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+  const noShowSessions = await prisma.session.findMany({
+    where: {
+      OR: [
+        {
+          rejectionReason: 'No-show',
+          rejectionReasonAt: { gte: noShowLookback },
+        },
+        {
+          status: 'lost',
+          dispositionReason: 'interview_no_show',
+          lostAt: { gte: noShowLookback },
+        },
+      ],
+    },
+    select: {
+      id: true,
+      interviewMeetings: {
+        where: {
+          OR: [
+            { recordingState: 'ready' },
+            { recallRecordingId: { not: null } },
+            { driveRecordingFileId: { not: null } },
+            { actualStart: { not: null } },
+          ],
+        },
+        select: { id: true },
+        orderBy: { scheduledStart: 'desc' },
+        take: 1,
+      },
+    },
+  })
+  counts.scanned.falseNoShowCandidates = noShowSessions.length
+
+  for (const s of noShowSessions) {
+    const meetingId = s.interviewMeetings[0]?.id
+    if (!meetingId) continue
+    try {
+      const result = await reconcileFalseNoShow(meetingId, 'cron_reconcile_sweep')
+      if (result.reverted) counts.fired.falseNoShowReverted++
+    } catch (err) {
+      counts.errors++
+      console.error('[reconcile-automations] reconcileFalseNoShow failed', { sessionId: s.id, meetingId, err })
     }
   }
 

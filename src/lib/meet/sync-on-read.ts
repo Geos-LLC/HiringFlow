@@ -29,6 +29,7 @@ import { withWorkspaceMeetClient, listConferenceRecords, listParticipants, listR
 import { findMeetRecordingsFolderId, searchMeetRecordings, searchMeetTranscripts } from './google-drive'
 import { findAttendanceForMeeting, type AttendanceSignal } from './attendance-fallback'
 import { recordArtifact, recordArtifacts } from './artifacts'
+import { reconcileFalseNoShow } from './reconcile-no-show'
 import { logSchedulingEvent } from '../scheduling'
 import { fireMeetingLifecycleAutomations } from '../automation'
 import { emitAutomationEvent, eventKeys } from '../automation-emit'
@@ -240,6 +241,12 @@ export async function syncMeetingFromMeetApi(meeting: SyncableMeeting): Promise<
           dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready'),
         }).catch((err) =>
           console.error('[meet-sync] emit recording_ready failed for', meeting.id, ':', (err as Error).message))
+
+        // Recording landing = the meeting happened. If sync-on-read's
+        // attendance path (or an earlier Recall bot.call_ended) marked the
+        // candidate no-show before the recording finalized, un-mark her.
+        await reconcileFalseNoShow(meeting.id, 'meet_api_sync_recording').catch((err) =>
+          console.error('[meet-sync] reconcileFalseNoShow failed for', meeting.id, ':', (err as Error).message))
       }
       if (transcriptJustReady) {
         await logSchedulingEvent({
