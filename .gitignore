@@ -98,3 +98,4 @@ dump-*.sql
 /scripts/test-recall-schedule.ts
 /scripts/trace-orphan-events.ts
 /scripts/trace-tanisha.ts
+/scripts/check-rico-meeting-stage.ts

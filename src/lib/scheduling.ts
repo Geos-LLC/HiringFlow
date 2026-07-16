@@ -114,11 +114,23 @@ export async function updatePipelineStatus(
       select: { pipelineStatus: true, workspaceId: true },
     })
     if (session) {
-      const ws = await prisma.workspace.findUnique({
-        where: { id: session.workspaceId },
-        select: { settings: true },
+      // Resolve stages from the SAME source applyStageTrigger uses — the
+      // session's pipeline (its flow's pipeline, else the workspace default) —
+      // via the pipelines chokepoint, NOT the legacy
+      // Workspace.settings.funnelStages. Workspaces migrated to pipelines have
+      // an empty funnelStages, so reading it here fell back to the four default
+      // stages and mis-ranked every custom stage id (e.g. "stage_8" = "Meeting",
+      // real order 3) as order 0 through mapLegacyStatusToStageId's 'new'
+      // fallback. That blinded this furthest-wins guard: a duplicate booking
+      // write of the legacy 'scheduled' status (order 1) looked like forward
+      // progress and clobbered the candidate straight back out of the Meeting
+      // stage the meeting_scheduled trigger had just placed them in.
+      const { resolvePipelineForSession, stagesFor } = await import('./pipelines')
+      const pipeline = await resolvePipelineForSession({
+        sessionId,
+        workspaceId: session.workspaceId,
       })
-      const stages = normalizeStages((ws?.settings as { funnelStages?: unknown } | null)?.funnelStages)
+      const stages = pipeline ? stagesFor(pipeline) : normalizeStages(undefined)
       const orderOf = (statusValue: string | null): number | null => {
         if (!statusValue) return null
         const direct = stages.find((s) => s.id === statusValue)
