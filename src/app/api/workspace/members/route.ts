@@ -58,12 +58,13 @@ export async function POST(request: NextRequest) {
   })
   if (existing) return NextResponse.json({ error: 'Already a member' }, { status: 409 })
 
-  await prisma.workspaceMember.create({
+  const member = await prisma.workspaceMember.create({
     data: {
       userId: user.id,
       workspaceId: ws.workspaceId,
       role: role || 'member',
     },
+    select: { id: true },
   })
 
   const invite = await sendWorkspaceInviteEmail({
@@ -84,6 +85,7 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     success: true,
+    memberId: member.id,
     email: user.email,
     invitedAsNewUser: isNewUser,
     inviteSent: invite.sent,

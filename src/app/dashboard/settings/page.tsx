@@ -6,6 +6,7 @@ import { GoogleIntegrationCard } from './_GoogleIntegrationCard'
 import { CertnIntegrationCard } from './_CertnIntegrationCard'
 import { TelegramIntegrationCard } from './_TelegramIntegrationCard'
 import { SenderVerificationCard } from './_SenderVerificationCard'
+import { AssignConfigsModal } from './_AssignConfigsModal'
 import { Badge, PageHeader, type BadgeTone } from '@/components/design'
 
 interface Member { id: string; userId: string; email: string; name: string | null; role: string; joinedAt: string }
@@ -61,6 +62,11 @@ export default function SettingsPage() {
   const [inviteRole, setInviteRole] = useState('member')
   const [inviting, setInviting] = useState(false)
 
+  // Assign-calendars modal — opens automatically after a successful invite
+  // (justInvited=true) so owners don't forget, and can be re-opened from
+  // each member row by admins/owners.
+  const [assignFor, setAssignFor] = useState<{ id: string; label: string; justInvited: boolean } | null>(null)
+
   useEffect(() => { fetchSettings() }, [])
 
   const fetchSettings = async () => {
@@ -94,8 +100,15 @@ export default function SettingsPage() {
       body: JSON.stringify({ email: inviteEmail, name: inviteName, role: inviteRole }),
     })
     setInviting(false)
-    if (r.ok) { setInviteEmail(''); setInviteName(''); fetchSettings() }
-    else { const err = await r.json(); alert(err.error || 'Failed to invite') }
+    if (r.ok) {
+      const body = await r.json().catch(() => ({})) as { memberId?: string; email?: string }
+      const label = inviteName || body.email || inviteEmail
+      setInviteEmail(''); setInviteName('')
+      fetchSettings()
+      if (body.memberId) setAssignFor({ id: body.memberId, label, justInvited: true })
+    } else {
+      const err = await r.json(); alert(err.error || 'Failed to invite')
+    }
   }
 
   const updateRole = async (memberId: string, role: string) => {
@@ -372,6 +385,15 @@ export default function SettingsPage() {
                     <span className="text-xs text-grey-50">{new Date(m.joinedAt).toLocaleDateString()}</span>
                     {isAdminOrOwner && (
                       <button
+                        onClick={() => setAssignFor({ id: m.id, label: m.name || m.email, justInvited: false })}
+                        className="text-xs text-grey-40 hover:text-grey-15"
+                        title="Pick which scheduling links this member hosts. They'll be on the invite + get confirm/cancel notifications."
+                      >
+                        Calendars
+                      </button>
+                    )}
+                    {isAdminOrOwner && (
+                      <button
                         onClick={() => resendInvite(m.id, m.email)}
                         disabled={resendingId === m.id}
                         className="text-xs text-grey-40 hover:text-grey-15 disabled:opacity-50"
@@ -472,6 +494,15 @@ export default function SettingsPage() {
         </div>
       )}
       </div>
+
+      {assignFor && (
+        <AssignConfigsModal
+          memberId={assignFor.id}
+          memberLabel={assignFor.label}
+          justInvited={assignFor.justInvited}
+          onClose={() => setAssignFor(null)}
+        />
+      )}
     </div>
   )
 }
