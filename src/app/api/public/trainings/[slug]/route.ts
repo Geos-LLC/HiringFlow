@@ -368,6 +368,12 @@ export async function POST(request: NextRequest, { params }: { params: { slug: s
         const enrollment = await tx.trainingEnrollment.findUnique({ where: { id: enrollmentId } })
         if (!enrollment) return null
         const progress = (enrollment.progress as { completedSections: string[]; quizScores: { sectionId: string; score: number }[]; sectionTimestamps?: Record<string, string> }) || { completedSections: [], quizScores: [] }
+        // Older enrollments were created before these fields existed on the
+        // progress blob. Default them so the findIndex/push below can't throw —
+        // the surrounding try/catch would swallow the error and the score would
+        // silently never be saved (a resubmit keeps showing the stale result).
+        if (!Array.isArray(progress.completedSections)) progress.completedSections = []
+        if (!Array.isArray(progress.quizScores)) progress.quizScores = []
         // Find which section this quiz belongs to
         const section = training.sections.find(s => s.quiz?.id === quizId)
         if (section) {

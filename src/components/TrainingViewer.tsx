@@ -662,10 +662,32 @@ export function TrainingViewer({
   const submitQuiz = async () => {
     if (!section?.quiz) return
     setSubmittingQuiz(true)
+    // Make sure an enrollment exists before grading so the score is actually
+    // persisted. enrollmentId is only populated after the async /start call
+    // resolves; a candidate who reaches a quiz before then (or jumps straight
+    // to a quiz section) would otherwise submit with a null enrollmentId and
+    // the server silently skips the score write — the resubmit-shows-stale bug.
+    let enrollmentId = training.enrollmentId
+    if (!enrollmentId && token && !preview) {
+      try {
+        const startRes = await fetch(`/api/public/trainings/${slug}/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        })
+        if (startRes.ok) {
+          const d = await startRes.json()
+          if (d?.enrollmentId) {
+            enrollmentId = d.enrollmentId
+            setTraining(prev => (prev ? { ...prev, enrollmentId: d.enrollmentId, enrollmentStatus: d.status ?? prev.enrollmentStatus } : prev))
+          }
+        }
+      } catch { /* fall through — the grade still returns, just isn't persisted */ }
+    }
     const res = await fetch(`/api/public/trainings/${slug}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quizId: section.quiz.id, answers: quizAnswers, enrollmentId: training.enrollmentId }),
+      body: JSON.stringify({ quizId: section.quiz.id, answers: quizAnswers, enrollmentId }),
     })
     if (res.ok) {
       const result = await res.json()
