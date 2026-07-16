@@ -422,8 +422,21 @@ export async function GET(request: NextRequest) {
   // Returns null when the candidate is progressing fine (caller treats null
   // as "no drop-off label needed", i.e. green stage badge wins).
   const computeDropOffPoint = (s: typeof sessions[number]): { kind: string; label: string } | null => {
-    // Interview no-show beats everything below.
-    const noShow = s.schedulingEvents.find((e) => e.eventType === 'meeting_no_show')
+    // Interview no-show beats everything below — but only if it wasn't later
+    // overturned by the false-no-show reconciler. A `meeting_no_show_reverted`
+    // event for the same interviewMeetingId means the recording landed and
+    // proved the meeting actually happened; the pill would be misleading.
+    const revertedMeetingIds = new Set(
+      s.schedulingEvents
+        .filter((e) => e.eventType === 'meeting_no_show_reverted')
+        .map((e) => (e.metadata as { interviewMeetingId?: string } | null)?.interviewMeetingId)
+        .filter((id): id is string => !!id),
+    )
+    const noShow = s.schedulingEvents.find((e) => {
+      if (e.eventType !== 'meeting_no_show') return false
+      const meetingId = (e.metadata as { interviewMeetingId?: string } | null)?.interviewMeetingId
+      return !meetingId || !revertedMeetingIds.has(meetingId)
+    })
     if (noShow) return { kind: 'interview', label: 'Interview no-show' }
 
     // Training currently in progress — surface the section they're stuck on.

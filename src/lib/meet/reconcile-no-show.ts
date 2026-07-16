@@ -23,6 +23,7 @@ import { logSchedulingEvent } from '../scheduling'
 import { emitAutomationEvent, eventKeys } from '../automation-emit'
 import { fireMeetingLifecycleAutomations } from '../automation'
 import { statusTransitionPatch } from '../candidate-status'
+import { setPipelineStatus } from '../pipeline-status'
 
 export interface ReconcileResult {
   reverted: boolean
@@ -118,6 +119,36 @@ export async function reconcileFalseNoShow(
   }
 
   await prisma.session.update({ where: { id: session.id }, data: patch })
+
+  // Restore the kanban stage the candidate was on before meeting_no_show
+  // moved her. Emitting meeting_ended below would only work if the workspace
+  // wired a stage to that trigger; without a wired stage the card would
+  // otherwise stay pinned to the "Rejected" column. The auto:meeting_no_show
+  // PipelineStatusChange row records the exact stage she came from — walk
+  // back to it.
+  try {
+    // Exact-match source: `auto:meeting_no_show_reverted` also starts with
+    // `auto:meeting_no_show`, so a startsWith filter would loop back onto
+    // the reverter's own audit row on a second pass.
+    const priorMove = await prisma.pipelineStatusChange.findFirst({
+      where: {
+        sessionId: session.id,
+        source: 'auto:meeting_no_show',
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { fromStatus: true },
+    })
+    if (priorMove?.fromStatus) {
+      await setPipelineStatus({
+        sessionId: session.id,
+        toStatus: priorMove.fromStatus,
+        source: 'auto:meeting_no_show_reverted',
+        metadata: { interviewMeetingId: meeting.id, reason: source },
+      })
+    }
+  } catch (err) {
+    console.error('[reconcile-no-show] restore prior stage failed:', (err as Error).message)
+  }
 
   await logSchedulingEvent({
     sessionId: session.id,
