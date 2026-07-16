@@ -39,7 +39,20 @@ export async function POST(
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'sqs_unavailable'
-    logger.error('finalize_publish_failed', { videoId: video.id, error: message })
+    // Preserve AWS SDK metadata so credential/permission problems are
+    // observable as machine-parseable fields rather than only in the
+    // human-readable message. `Code` + `$metadata` are set by
+    // @aws-sdk/client-sqs on service exceptions; for non-AWS errors they
+    // stay undefined and the log gracefully degrades to what we had.
+    const anyErr = err as any
+    logger.error('finalize_publish_failed', {
+      videoId: video.id,
+      error: message,
+      error_name: anyErr?.name,
+      aws_error_code: anyErr?.Code,
+      aws_http_status: anyErr?.$metadata?.httpStatusCode,
+      aws_request_id: anyErr?.$metadata?.requestId,
+    })
     return NextResponse.json({ error: 'Transcode dispatch failed', detail: message }, { status: 503 })
   }
 
