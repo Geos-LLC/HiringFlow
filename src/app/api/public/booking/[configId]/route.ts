@@ -200,7 +200,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       detail: (err as Error).message,
       stack: (err as Error).stack,
     })
-    void notifyTenantOfBookingFailure(config.workspaceId, 'free_busy_failed', { err })
+    void notifyTenantOfBookingFailure(config.workspaceId, 'free_busy_failed', { err, sessionId })
     return NextResponse.json({
       error: 'free_busy_failed',
       message: bookingErrorMessage('free_busy_failed', { contactEmail }),
@@ -290,7 +290,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
         detail: err.message,
         stack: err.stack,
       })
-      void notifyTenantOfBookingFailure(config.workspaceId, err.code || 'free_busy_failed', { err })
+      void notifyTenantOfBookingFailure(config.workspaceId, err.code || 'free_busy_failed', { err, sessionId })
       return NextResponse.json({
         error: err.code,
         message: bookingErrorMessage(err.code, { contactEmail }) || err.message,
@@ -305,7 +305,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       detail: (err as Error).message,
       stack: (err as Error).stack,
     })
-    void notifyTenantOfBookingFailure(config.workspaceId, 'internal', { err })
+    void notifyTenantOfBookingFailure(config.workspaceId, 'internal', { err, sessionId })
     return NextResponse.json({
       error: 'internal',
       message: bookingErrorMessage('internal', { contactEmail }),

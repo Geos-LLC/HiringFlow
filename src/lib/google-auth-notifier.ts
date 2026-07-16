@@ -84,6 +84,10 @@ interface NotifyOpts {
    *  detect OAuth-specific subcategories (invalid_grant etc.) that
    *  override the code-based category. */
   err?: unknown
+  /** Session id of the affected candidate, when known. Adds a
+   *  "Candidate: name (email) — View candidate" line to the email so the
+   *  recipient can jump straight to the person who hit the failure. */
+  sessionId?: string
 }
 
 /**
@@ -143,12 +147,25 @@ export async function notifyTenantOfBookingFailure(
     }
 
     const errDetail = opts.err instanceof Error ? opts.err.message : opts.err ? String(opts.err) : null
+
+    let candidate: { id: string; name: string | null; email: string | null } | null = null
+    if (opts.sessionId) {
+      const session = await prisma.session.findUnique({
+        where: { id: opts.sessionId },
+        select: { id: true, candidateName: true, candidateEmail: true },
+      }).catch(() => null)
+      if (session) {
+        candidate = { id: session.id, name: session.candidateName, email: session.candidateEmail }
+      }
+    }
+
     const { subject, html, text } = renderEmail({
       category,
       code,
       workspaceName: workspace.name,
       senderName: workspace.senderName,
       errDetail,
+      candidate,
     })
 
     const result = await sendEmail({
@@ -211,6 +228,7 @@ interface RenderArgs {
   workspaceName: string
   senderName: string | null
   errDetail: string | null
+  candidate: { id: string; name: string | null; email: string | null } | null
 }
 
 function renderEmail(args: RenderArgs): { subject: string; html: string; text: string } {
@@ -285,11 +303,27 @@ function renderEmail(args: RenderArgs): { subject: string; html: string; text: s
     ? `<p style="color:#9ca3af;font-size:12px;background:#f9fafb;padding:8px 12px;border-radius:4px;font-family:ui-monospace,monospace;word-break:break-word;">${escapeHtml(args.errDetail).slice(0, 600)}</p>`
     : ''
 
+  const candidateHtml = args.candidate
+    ? (() => {
+        const url = `${appUrl}/dashboard/candidates/${args.candidate!.id}`
+        const label = args.candidate!.name?.trim() || args.candidate!.email?.trim() || 'Unnamed candidate'
+        const contact = args.candidate!.name && args.candidate!.email
+          ? ` (${escapeHtml(args.candidate!.email!)})`
+          : ''
+        return `
+      <p style="color:#374151;background:#f9fafb;padding:12px 14px;border-radius:6px;border-left:3px solid #FF9500;">
+        <strong>Candidate:</strong> ${escapeHtml(label)}${contact}<br/>
+        <a href="${url}" style="color:#FF9500;text-decoration:none;font-weight:600;">View candidate page →</a>
+      </p>`
+      })()
+    : ''
+
   const html = `
     <div style="font-family: -apple-system, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px;">
       <h2 style="color: #1f2937; margin-top: 0;">${escapeHtml(content.subject)}</h2>
       <p style="color: #374151;">${greeting}</p>
       <p style="color: #374151;">${content.intro}</p>
+      ${candidateHtml}
       <p style="margin: 24px 0;">
         <a href="${content.ctaUrl}"
            style="background:#FF9500;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block;">
@@ -303,10 +337,20 @@ function renderEmail(args: RenderArgs): { subject: string; html: string; text: s
     </div>
   `.trim()
 
+  const candidateText = args.candidate
+    ? (() => {
+        const url = `${appUrl}/dashboard/candidates/${args.candidate!.id}`
+        const label = args.candidate!.name?.trim() || args.candidate!.email?.trim() || 'Unnamed candidate'
+        const contact = args.candidate!.name && args.candidate!.email ? ` (${args.candidate!.email})` : ''
+        return `Candidate: ${label}${contact}\nView candidate page: ${url}\n\n`
+      })()
+    : ''
+
   const text =
     `${greeting.replace(/<[^>]+>/g, '')}\n\n` +
     stripHtml(content.intro) +
-    `\n\n${content.ctaLabel}: ${content.ctaUrl}\n\n` +
+    `\n\n${candidateText}` +
+    `${content.ctaLabel}: ${content.ctaUrl}\n\n` +
     (content.followup ? `${stripHtml(content.followup)}\n\n` : '') +
     (args.errDetail ? `Technical detail: ${args.errDetail.slice(0, 600)}\n\n` : '') +
     'You will not be re-notified about the same kind of issue for 24 hours.\n\n— HireFunnel'

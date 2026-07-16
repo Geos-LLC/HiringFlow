@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
   ])
 
   if (!config || !config.isActive) {
-    if (config) void notifyTenantOfBookingFailure(config.workspaceId, 'config_not_found')
+    if (config) void notifyTenantOfBookingFailure(config.workspaceId, 'config_not_found', { sessionId })
     return NextResponse.json({
       error: 'config_not_found',
       message: bookingErrorMessage('config_not_found', { contactEmail: config?.workspace.senderEmail }),
