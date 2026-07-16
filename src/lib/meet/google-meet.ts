@@ -223,6 +223,62 @@ export async function endActiveConference(client: OAuth2Client, spaceName: strin
   await meetFetch<void>(client, `/${path}:endActiveConference`, { method: 'POST', body: '{}' })
 }
 
+// ---------- spaces.members (cohost management) ----------
+//
+// Meet v2 space members. Assigning a workspace teammate the COHOST role lets
+// them start the meeting, admit knockers, and end for all — the powers that
+// otherwise only belong to the space owner (the workspace's connected Google
+// account). Without this, an assigned host on the calendar can join but can't
+// actually run the meeting.
+
+export type MemberRole = 'ROLE_UNSPECIFIED' | 'COHOST'
+
+export interface SpaceMember {
+  name: string        // "spaces/{space}/members/{member}"
+  email?: string
+  role?: MemberRole
+}
+
+export async function createSpaceMember(
+  client: OAuth2Client,
+  spaceName: string,
+  email: string,
+  role: MemberRole = 'COHOST',
+): Promise<SpaceMember> {
+  const path = spaceName.startsWith('spaces/') ? spaceName : `spaces/${spaceName}`
+  return meetFetch<SpaceMember>(client, `/${path}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  })
+}
+
+export async function listSpaceMembers(
+  client: OAuth2Client,
+  spaceName: string,
+): Promise<SpaceMember[]> {
+  const path = spaceName.startsWith('spaces/') ? spaceName : `spaces/${spaceName}`
+  const all: SpaceMember[] = []
+  let pageToken: string | undefined
+  do {
+    const qs = pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ''
+    const body = await meetFetch<{ members?: SpaceMember[]; nextPageToken?: string }>(
+      client,
+      `/${path}/members${qs}`,
+    )
+    if (body.members) all.push(...body.members)
+    pageToken = body.nextPageToken
+  } while (pageToken)
+  return all
+}
+
+export async function deleteSpaceMember(
+  client: OAuth2Client,
+  memberName: string,
+): Promise<void> {
+  const path = memberName.startsWith('spaces/') ? memberName : `spaces/${memberName}`
+  await meetFetch<void>(client, `/${path}`, { method: 'DELETE' })
+}
+
 // ---------- conferenceRecords ----------
 
 export async function listConferenceRecords(

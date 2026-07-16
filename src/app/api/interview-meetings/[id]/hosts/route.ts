@@ -25,7 +25,12 @@ import { google } from 'googleapis'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { getAuthedClientForWorkspace } from '@/lib/google'
-import { resolveHostMembers, sendHostAssignmentInvites } from '@/lib/scheduling/meeting-hosts'
+import {
+  resolveHostMembers,
+  sendHostAssignmentInvites,
+  promoteHostsToCohosts,
+  demoteCohosts,
+} from '@/lib/scheduling/meeting-hosts'
 
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
@@ -36,6 +41,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     select: {
       id: true,
       googleCalendarEventId: true,
+      meetSpaceName: true,
       hosts: {
         select: {
           workspaceMember: {
@@ -100,42 +106,61 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     }
   }
 
-  // Reconcile Google Calendar event attendees. Failures are non-fatal — the
-  // HF host list is what drives notifications regardless; the calendar sync
-  // is best-effort convenience for Google's native invite emails.
+  // Reconcile Google Calendar event attendees + Meet space cohost roles.
+  // Failures are non-fatal — the HF host list is what drives notifications
+  // regardless; calendar + Meet sync are best-effort.
   try {
     const authed = await getAuthedClientForWorkspace(ws.workspaceId)
-    if (authed && meeting.googleCalendarEventId) {
-      const calendar = google.calendar({ version: 'v3', auth: authed.client })
-      const existing = await calendar.events.get({
-        calendarId: authed.integration.calendarId,
-        eventId: meeting.googleCalendarEventId,
-      })
-      const currentAttendees = existing.data.attendees ?? []
+    if (authed) {
       const removedEmails = new Set(
         removals.map((m) => m.user?.email?.toLowerCase()).filter((v): v is string => !!v),
       )
-      // Drop the removed hosts (by email) but keep everyone else Google shows
-      // on the event (candidate, Calendly organizer, ad-hoc external guests).
-      const filtered = currentAttendees.filter((a) => {
-        const e = (a.email ?? '').toLowerCase()
-        return !e || !removedEmails.has(e)
-      })
-      const filteredEmails = new Set(
-        filtered.map((a) => (a.email ?? '').toLowerCase()).filter(Boolean),
-      )
-      const addedHosts = await resolveHostMembers(ws.workspaceId, additions)
-      for (const h of addedHosts) {
-        if (!filteredEmails.has(h.email.toLowerCase()) && !previousEmails.has(h.email.toLowerCase())) {
-          filtered.push({ email: h.email, ...(h.name ? { displayName: h.name } : {}) })
+      const addedHosts = additions.length > 0
+        ? await resolveHostMembers(ws.workspaceId, additions)
+        : []
+
+      if (meeting.googleCalendarEventId) {
+        const calendar = google.calendar({ version: 'v3', auth: authed.client })
+        const existing = await calendar.events.get({
+          calendarId: authed.integration.calendarId,
+          eventId: meeting.googleCalendarEventId,
+        })
+        const currentAttendees = existing.data.attendees ?? []
+        // Drop the removed hosts (by email) but keep everyone else Google shows
+        // on the event (candidate, Calendly organizer, ad-hoc external guests).
+        const filtered = currentAttendees.filter((a) => {
+          const e = (a.email ?? '').toLowerCase()
+          return !e || !removedEmails.has(e)
+        })
+        const filteredEmails = new Set(
+          filtered.map((a) => (a.email ?? '').toLowerCase()).filter(Boolean),
+        )
+        for (const h of addedHosts) {
+          if (!filteredEmails.has(h.email.toLowerCase()) && !previousEmails.has(h.email.toLowerCase())) {
+            filtered.push({ email: h.email, ...(h.name ? { displayName: h.name } : {}) })
+          }
+        }
+        await calendar.events.patch({
+          calendarId: authed.integration.calendarId,
+          eventId: meeting.googleCalendarEventId,
+          sendUpdates: 'all',
+          requestBody: { attendees: filtered },
+        })
+      }
+
+      // Sync COHOST role on the Meet space so newly-added hosts can start the
+      // meeting and removed hosts lose that authority. Requires meetSpaceName
+      // — meetings adopted from external calendars sometimes lack it. Runs
+      // independent of the calendar patch above so a calendar API hiccup
+      // doesn't block the cohost sync.
+      if (meeting.meetSpaceName) {
+        if (addedHosts.length > 0) {
+          await promoteHostsToCohosts(authed.client, meeting.meetSpaceName, addedHosts)
+        }
+        if (removedEmails.size > 0) {
+          await demoteCohosts(authed.client, meeting.meetSpaceName, Array.from(removedEmails))
         }
       }
-      await calendar.events.patch({
-        calendarId: authed.integration.calendarId,
-        eventId: meeting.googleCalendarEventId,
-        sendUpdates: 'all',
-        requestBody: { attendees: filtered },
-      })
     }
   } catch (err) {
     console.warn('[meeting-hosts] calendar reconcile failed (non-fatal):', (err as Error).message)

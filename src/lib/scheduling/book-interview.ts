@@ -41,7 +41,12 @@ import { scheduleBot, RecallApiError } from '../recall/client'
 import { logger } from '../logger'
 import { notifyRecallOutOfCredits } from '../alerts/recall-credits'
 import { sendMeetingConfirmation } from './meeting-confirmation'
-import { resolveHostMembers, hostsAsCalendarAttendees, sendHostAssignmentInvites } from './meeting-hosts'
+import {
+  resolveHostMembers,
+  hostsAsCalendarAttendees,
+  sendHostAssignmentInvites,
+  promoteHostsToCohosts,
+} from './meeting-hosts'
 
 export type BookingSource = 'operator' | 'public'
 
@@ -313,6 +318,15 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
     } else {
       console.error('[bookInterview] subscribeSpace failed:', err)
     }
+  }
+
+  // 7b. Promote assigned hosts to Meet COHOSTs (best-effort). Grants Start
+  // Meeting / Admit / End-for-all authority so any assigned teammate can run
+  // the call without the workspace owner joining first. Personal Gmail or a
+  // Workspace admin policy blocking external cohosts will 403 here — swallowed
+  // inside promoteHostsToCohosts, booking still succeeds without cohost power.
+  if (hostMembers.length > 0) {
+    await promoteHostsToCohosts(client, space.name, hostMembers)
   }
 
   // 9. Persist + fire automations

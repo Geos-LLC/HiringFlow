@@ -17,8 +17,15 @@
  * own calendar).
  */
 
+import type { OAuth2Client } from 'google-auth-library'
 import { prisma } from '../prisma'
 import { sendEmail } from '../email'
+import {
+  createSpaceMember,
+  deleteSpaceMember,
+  listSpaceMembers,
+  MeetApiError,
+} from '../meet/google-meet'
 
 export interface HostMemberInfo {
   memberId: string
@@ -237,6 +244,79 @@ export async function sendHostAssignmentInvites(
       workspaceId: ws.id,
     }).catch((err) => console.error('[meeting-hosts] host invite to', h.email, 'failed:', (err as Error).message))
   }))
+}
+
+/**
+ * Grant each host the Meet COHOST role on the space so they can start the
+ * meeting, admit knockers, and end for all — the powers Meet reserves for
+ * the space owner by default. Being a calendar attendee only grants
+ * "can join"; without cohost promotion the space owner (workspace's
+ * connected Google account) is the only one who can actually run the call.
+ *
+ * Best-effort. Meet returns 403 in two situations we must swallow:
+ *   - Personal Gmail owner: the members API is Workspace-only. Same
+ *     limitation that already downgrades accessType to TRUSTED for these
+ *     accounts (see book-interview.ts).
+ *   - Admin policy: the owner's Workspace admin has host-management disabled
+ *     for external users. Nothing HireFunnel can do; recruiter must flip the
+ *     Google Admin Console setting.
+ * 409 = already a member; treat as success.
+ *
+ * Any failure is logged and dropped — Kate not being a cohost is a
+ * degradation, not a booking-blocker.
+ */
+export async function promoteHostsToCohosts(
+  client: OAuth2Client,
+  spaceName: string,
+  hosts: HostMemberInfo[],
+): Promise<void> {
+  if (hosts.length === 0) return
+  await Promise.all(hosts.map(async (h) => {
+    try {
+      await createSpaceMember(client, spaceName, h.email, 'COHOST')
+    } catch (err) {
+      const status = err instanceof MeetApiError ? err.status : 0
+      if (status === 409) return
+      console.warn('[meeting-hosts] cohost promotion failed for', h.email, ':', (err as Error).message)
+    }
+  }))
+}
+
+/**
+ * Revoke COHOST role for the given emails on a Meet space. Used by the
+ * per-meeting hosts reconcile route when a host is removed. We look up the
+ * member resource by listing the space's members and matching on email
+ * (case-insensitive) because HF doesn't store the Meet-side member id.
+ *
+ * Best-effort — a lingering cohost who's been removed from the calendar
+ * attendee list can't join the RESTRICTED meeting anyway, so the worst-case
+ * of a failed demotion is harmless.
+ */
+export async function demoteCohosts(
+  client: OAuth2Client,
+  spaceName: string,
+  emails: string[],
+): Promise<void> {
+  if (emails.length === 0) return
+  const targets = new Set(emails.map((e) => e.toLowerCase()))
+  let members: Awaited<ReturnType<typeof listSpaceMembers>>
+  try {
+    members = await listSpaceMembers(client, spaceName)
+  } catch (err) {
+    console.warn('[meeting-hosts] listSpaceMembers failed:', (err as Error).message)
+    return
+  }
+  await Promise.all(
+    members
+      .filter((m) => !!m.email && targets.has(m.email.toLowerCase()))
+      .map(async (m) => {
+        try {
+          await deleteSpaceMember(client, m.name)
+        } catch (err) {
+          console.warn('[meeting-hosts] cohost demotion failed for', m.email, ':', (err as Error).message)
+        }
+      }),
+  )
 }
 
 function escapeHtml(s: string): string {

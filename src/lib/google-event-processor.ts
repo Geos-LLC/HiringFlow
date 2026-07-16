@@ -19,7 +19,7 @@ import { getSpaceByMeetingCode, parseMeetingCodeFromUrl, updateSpaceSettings } f
 import { subscribeSpace, deleteSubscription } from './meet/workspace-events'
 import { archivePrimaryArtifacts } from './meet/artifacts'
 import { getAuthedClientForWorkspace, hasMeetScopes } from './google'
-import { resolveHostMembers, sendHostAssignmentInvites } from './scheduling/meeting-hosts'
+import { resolveHostMembers, sendHostAssignmentInvites, promoteHostsToCohosts } from './scheduling/meeting-hosts'
 
 export interface ProcessEventResult {
   matched: boolean
@@ -338,6 +338,10 @@ async function adoptExternalMeet(
         console.warn('[AdoptMeet] events.patch(attendees) failed (non-fatal):', (err as Error).message)
       }
     }
+    // Promote assigned hosts to Meet COHOST so they can start the adopted
+    // meeting themselves. Best-effort — 403 (personal Gmail owner or admin
+    // policy) is swallowed inside the helper.
+    await promoteHostsToCohosts(authed.client, space.name, hostMembers)
   }
 
   let subName: string | null = null
