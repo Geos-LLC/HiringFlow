@@ -111,6 +111,29 @@ export async function processCalendarEvent(
     }
   }
 
+  // Echo guard for HireFunnel's own bookings. bookInterview inserts the Google
+  // Calendar event (which triggers this watch webhook) and then logs its own
+  // `meeting_scheduled` SchedulingEvent + updatePipelineStatus + automations.
+  // The push often round-trips back and lands here *before* bookInterview
+  // reaches its logSchedulingEvent, so `existing` above is null and we'd
+  // re-process the booking as if it were external — a duplicate
+  // meeting_scheduled row, a second updatePipelineStatus('scheduled') write
+  // (which used to clobber the candidate's stage), and redundant automation
+  // dispatch. An InterviewMeeting row already existing for this calendar event
+  // means we booked it ourselves (bookInterview creates that row; external
+  // Google bookings have none until adoptExternalMeet creates it below), so
+  // the echo is a no-op. Only reachable when `existing` is null, so genuine
+  // reschedules (which set `existing`) are unaffected.
+  if (!existing && event.id) {
+    const selfBooked = await prisma.interviewMeeting.findFirst({
+      where: { workspaceId, googleCalendarEventId: event.id },
+      select: { id: true },
+    })
+    if (selfBooked) {
+      return { matched: true, eventType: 'meeting_scheduled', sessionId }
+    }
+  }
+
   const eventType = existing ? 'meeting_rescheduled' : 'meeting_scheduled'
 
   await logSchedulingEvent({
