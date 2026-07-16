@@ -29,6 +29,7 @@ yarn-error.log*
 .env.test.local
 .env.production.local
 .env.diagnose
+.env.prod
 
 # Claude Code runtime
 .claude/scheduled_tasks.lock
@@ -55,3 +56,45 @@ public/uploads/*
 # Local DB snapshots pulled from prod for offline dev
 dump.sql
 dump-*.sql
+
+# Playwright test artifacts
+/test-results/
+
+# Local investigation logs (pg_dump / pg_restore stderr, etc.)
+/dump-errors.log
+/restore-errors.log
+
+# Ad-hoc scratch scripts kept local per user preference.
+# Committed one-offs live under /scripts/_oneoff/ instead.
+/scripts/check-abandoners.ts
+/scripts/check-alina-sharkova.ts
+/scripts/check-automation-health.ts
+/scripts/check-craigslist-abandonment.ts
+/scripts/check-darina-liudmila.ts
+/scripts/check-day-13.ts
+/scripts/check-dual-recording.ts
+/scripts/check-flow-startscreen.ts
+/scripts/check-nicole-walker.ts
+/scripts/check-orphan-meetings.ts
+/scripts/check-recall-orphans.ts
+/scripts/check-rule-history.ts
+/scripts/check-schedule-loading.ts
+/scripts/check-serhii-events.ts
+/scripts/check-spotless-scheduling.ts
+/scripts/check-workspace-sender.ts
+/scripts/deep-debug.ts
+/scripts/deep-dive-viktoriia.ts
+/scripts/diagnose-no-bot.ts
+/scripts/diagnose-sean-moore.ts
+/scripts/find-liudmila.ts
+/scripts/find-serhii-automations.ts
+/scripts/find-serhii-recordings.ts
+/scripts/find-serhii.ts
+/scripts/inspect-nosession-events.ts
+/scripts/match-rules.ts
+/scripts/recover-serhii-recording-ready.ts
+/scripts/resend-liudmila.ts
+/scripts/test-recall-key.ts
+/scripts/test-recall-schedule.ts
+/scripts/trace-orphan-events.ts
+/scripts/trace-tanisha.ts
