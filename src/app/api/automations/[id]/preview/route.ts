@@ -61,12 +61,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const sampleScheduleLink = step.nextStepType === 'scheduling'
     ? (resolved?.url || step.schedulingConfig?.schedulingUrl || 'https://calendly.com/example/30min')
     : ''
-  // Use owner-preview mode (`?preview=1`) instead of a fake token so the
-  // recruiter can actually open the training from the preview modal. A
-  // SAMPLE_TOKEN would 403 at /api/public/trainings/[slug] (TOKEN_INVALID);
-  // `?preview=1` is honored for workspace owners via their dashboard session.
+  // Owner-preview mode (`?preview=1`) instead of a fake token so the
+  // recruiter can actually open the training from the preview modal.
+  // Build the URL from the request's origin so the session cookie flows —
+  // `hirefunnel.app` vs `www.hirefunnel.app` would drop the dashboard cookie
+  // and `getWorkspaceSession()` would return null → 403.
   const sampleTrainingLink = step.nextStepType === 'training' && step.training
-    ? `https://hirefunnel.app/t/${step.training.slug}?preview=1`
+    ? `${url.origin}/t/${step.training.slug}?preview=1`
     : (step.nextStepUrl || '')
 
   const workspaceTz = rule.workspace.timezone || 'America/New_York'

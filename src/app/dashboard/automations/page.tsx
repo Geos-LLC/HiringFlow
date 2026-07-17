@@ -490,6 +490,20 @@ function AutomationsPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, searchParams])
 
+  // Deep-link from the candidate page automation-preview modal "View" link —
+  // `?rule=<id>` auto-opens the preview modal for that specific rule.
+  const rulePreviewDeepLinkOpenedRef = useRef(false)
+  useEffect(() => {
+    if (loading || rulePreviewDeepLinkOpenedRef.current) return
+    const ruleId = searchParams?.get('rule') || ''
+    if (!ruleId) return
+    const target = rules.find((x) => x.id === ruleId)
+    if (!target) return
+    rulePreviewDeepLinkOpenedRef.current = true
+    openPreview(target)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, searchParams, rules])
+
   // Inject a {{xxx_link}} CTA into a workspace template's bodyHtml so the
   // recruiter doesn't have to hand-edit the template. Idempotent — does
   // nothing if the token is already present. The CTA uses the configured
