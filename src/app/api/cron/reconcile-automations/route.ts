@@ -37,6 +37,7 @@ import {
 } from '@/lib/automation-emit'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { reconcileFalseNoShow } from '@/lib/meet/reconcile-no-show'
+import { setPipelineStatus } from '@/lib/pipeline-status'
 
 interface SweepCounts {
   scanned: {
@@ -54,6 +55,7 @@ interface SweepCounts {
     trainingCompleted: number
     orphanRedispatched: number
     falseNoShowReverted: number
+    falseNoShowStageRestored: number
   }
   errors: number
 }
@@ -80,7 +82,7 @@ export async function GET(request: NextRequest) {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const counts: SweepCounts = {
     scanned: { sessionsFinished: 0, capturesProcessed: 0, meetingsStuckOpen: 0, trainingsCompleted: 0, orphanEvents: 0, falseNoShowCandidates: 0 },
-    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0, trainingCompleted: 0, orphanRedispatched: 0, falseNoShowReverted: 0 },
+    fired: { flowCompleted: 0, recordingReady: 0, meetingEnded: 0, trainingCompleted: 0, orphanRedispatched: 0, falseNoShowReverted: 0, falseNoShowStageRestored: 0 },
     errors: 0,
   }
 
@@ -496,6 +498,68 @@ export async function GET(request: NextRequest) {
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] reconcileFalseNoShow failed', { sessionId: s.id, meetingId, err })
+    }
+  }
+
+  // -- Rule 6b: status was reverted but pipelineStatus stage never moved ---
+  //
+  // Catches candidates whose status was cleared by `reconcileFalseNoShow`
+  // BEFORE the stage-restore code shipped in 2fc9507. They have a
+  // `meeting_no_show_reverted` SchedulingEvent but their kanban card is
+  // still parked on the no-show stage from the original `auto:meeting_no_show`
+  // PipelineStatusChange. Sweeps them back to `fromStatus` idempotently:
+  // the `auto:meeting_no_show_reverted` audit row guards against re-running
+  // for the same session.
+  const revertedEvents = await prisma.schedulingEvent.findMany({
+    where: { eventType: 'meeting_no_show_reverted' },
+    orderBy: { eventAt: 'desc' },
+    select: { sessionId: true, metadata: true, eventAt: true },
+  })
+  const seenSessions = new Set<string>()
+  for (const ev of revertedEvents) {
+    if (seenSessions.has(ev.sessionId)) continue
+    seenSessions.add(ev.sessionId)
+    const meta = (ev.metadata as { interviewMeetingId?: string } | null) || {}
+    if (!meta.interviewMeetingId) continue
+    try {
+      const priorMove = await prisma.pipelineStatusChange.findFirst({
+        where: {
+          sessionId: ev.sessionId,
+          source: 'auto:meeting_no_show',
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { fromStatus: true, toStatus: true, createdAt: true },
+      })
+      if (!priorMove?.fromStatus) continue
+
+      const session = await prisma.session.findUnique({
+        where: { id: ev.sessionId },
+        select: { pipelineStatus: true },
+      })
+      // Only restore when the card is still parked on the no-show stage.
+      // If a recruiter already dragged her elsewhere, don't yank her back.
+      if (session?.pipelineStatus !== priorMove.toStatus) continue
+
+      const alreadyRestored = await prisma.pipelineStatusChange.findFirst({
+        where: {
+          sessionId: ev.sessionId,
+          source: 'auto:meeting_no_show_reverted',
+          createdAt: { gte: priorMove.createdAt },
+        },
+        select: { id: true },
+      })
+      if (alreadyRestored) continue
+
+      await setPipelineStatus({
+        sessionId: ev.sessionId,
+        toStatus: priorMove.fromStatus,
+        source: 'auto:meeting_no_show_reverted',
+        metadata: { interviewMeetingId: meta.interviewMeetingId, backfill: 'rule_6b' },
+      })
+      counts.fired.falseNoShowStageRestored++
+    } catch (err) {
+      counts.errors++
+      console.error('[reconcile-automations] rule 6b restore failed', { sessionId: ev.sessionId, err })
     }
   }
 
