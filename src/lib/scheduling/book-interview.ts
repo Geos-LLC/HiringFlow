@@ -171,13 +171,23 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   // But: RESTRICTED is only available on Google Workspace accounts. Personal
   // Gmail (hostedDomain=null) can't set it — the API throws
   // "updateAccessType is not available to the user." Detected 2026-07-14
-  // via Spotless (sayapingeorge@gmail.com). Pick the tightest accessType
-  // this account can actually use up front: RESTRICTED for Workspace,
-  // TRUSTED for personal Gmail. TRUSTED on personal Gmail means "anyone
-  // signed into a Google account can join" — looser than we'd like, but
-  // the meeting URL only reaches the candidate + hosts on the invite so
-  // in practice this is fine.
-  const desiredAccessType: 'RESTRICTED' | 'TRUSTED' = integration.hostedDomain ? 'RESTRICTED' : 'TRUSTED'
+  // via Spotless (sayapingeorge@gmail.com).
+  //
+  // Workspace → RESTRICTED. Personal Gmail → OPEN (not TRUSTED). Reason: on
+  // personal Gmail the spaces.members API is unavailable, so we can't grant
+  // COHOST to assigned team members — Meet reserves "Start meeting" for the
+  // space owner + cohosts. Under TRUSTED, an assigned host who's first to
+  // arrive gets held on "waiting for host to start the meeting" until the
+  // owner (workspace's connected Google account) joins. That defeats the
+  // point of assigning a teammate as host. OPEN lets any calendar attendee
+  // just join and run the interview without the owner present — the
+  // trade-off is that anyone with the URL can join, but the URL only ever
+  // goes to the candidate + assigned hosts on the calendar invite, so this
+  // is the acceptable cost of running interviews without the workspace
+  // owner. Assigned hosts still lack host controls (mute all, admit
+  // knockers, end for all) because cohost promotion still 403s — accepted
+  // per user requirement "no admin work, just run the meeting".
+  const desiredAccessType: 'RESTRICTED' | 'OPEN' = integration.hostedDomain ? 'RESTRICTED' : 'OPEN'
   let space: Awaited<ReturnType<typeof createSpace>> | undefined
   try {
     space = await createSpace(client, {
@@ -211,7 +221,6 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
       }
     } else if (
       err instanceof MeetApiError
-      && desiredAccessType !== 'TRUSTED'
       && /updateAccessType|accessType/i.test(err.message || '')
     ) {
       // Defensive belt-and-suspenders: even if hostedDomain detection is
