@@ -100,8 +100,11 @@ export async function POST(request: NextRequest) {
   const sampleScheduleLink = body.nextStepType === 'scheduling'
     ? (resolved?.url || schedulingConfig?.schedulingUrl || 'https://calendly.com/example/30min')
     : ''
+  // See /api/automations/[id]/preview: owner-preview mode instead of a fake
+  // token so clicking the link in the preview modal actually opens the
+  // training rather than 403ing on TOKEN_INVALID.
   const sampleTrainingLink = body.nextStepType === 'training' && training
-    ? `https://hirefunnel.app/t/${training.slug}?token=SAMPLE_TOKEN`
+    ? `https://hirefunnel.app/t/${training.slug}?preview=1`
     : ''
 
   const workspaceTz = workspace?.timezone || 'America/New_York'
