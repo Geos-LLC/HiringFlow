@@ -29,6 +29,45 @@ export interface ResolveLinksOpts {
 // (cross-workspace, deleted, typo) silently produce no entry — the
 // renderer will then substitute an empty string, which is the same
 // behaviour as any other unknown token.
+// Preview variant: scans the same sub-tokens as `resolveDynamicLinks` but
+// substitutes owner-preview URLs instead of minting real TrainingAccessToken
+// rows or per-session schedule redirects. Use from the automation preview
+// endpoints — no candidate exists yet, and we don't want the recruiter's
+// "let me eyeball this template" click to leave audit-trail token rows in
+// the DB. Skips ids that aren't in the workspace (silent — same behaviour
+// as the real resolver).
+export async function resolveDynamicLinksForPreview(opts: {
+  text: string
+  workspaceId: string
+  appBaseUrl: string
+}): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  const scheduleIds = new Set<string>()
+  const trainingIds = new Set<string>()
+  SUB_TOKEN_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = SUB_TOKEN_RE.exec(opts.text)) !== null) {
+    if (m[1] === 'schedule_link') scheduleIds.add(m[2])
+    else if (m[1] === 'training_link') trainingIds.add(m[2])
+  }
+  if (trainingIds.size > 0) {
+    const trainings = await prisma.training.findMany({
+      where: { id: { in: Array.from(trainingIds) }, workspaceId: opts.workspaceId },
+      select: { id: true, slug: true },
+    })
+    for (const t of trainings) {
+      out[`training_link:${t.id}`] = `${opts.appBaseUrl}/t/${t.slug}?preview=1`
+    }
+  }
+  if (scheduleIds.size > 0) {
+    for (const id of Array.from(scheduleIds)) {
+      const resolved = await resolveSchedulingUrl(id, opts.workspaceId).catch(() => null)
+      if (resolved?.url) out[`schedule_link:${id}`] = resolved.url
+    }
+  }
+  return out
+}
+
 export async function resolveDynamicLinks(opts: ResolveLinksOpts): Promise<Record<string, string>> {
   const out: Record<string, string> = {}
   const scheduleIds = new Set<string>()

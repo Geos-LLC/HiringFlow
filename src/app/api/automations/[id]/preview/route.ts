@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { renderTemplate } from '@/lib/email'
 import { resolveSchedulingUrl } from '@/lib/scheduling'
 import { getAppBaseUrl } from '@/lib/training-access'
+import { resolveDynamicLinksForPreview } from '@/lib/template-link-resolver'
 import { logger } from '@/lib/logger'
 
 /**
@@ -130,6 +131,29 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     recording_status_note: '',
     source: 'preview',
     ad_name: 'Sample ad',
+  }
+
+  // Sub-token support: templates authored via the editor's "Insert button"
+  // tool embed `{{training_link:<trainingId>}}` / `{{schedule_link:<configId>}}`
+  // rather than the bare `{{training_link}}`. Without this scan the preview
+  // renders an empty href and clicks go nowhere — which was the
+  // "training link still doesn't open" bug.
+  const compositeForScan = channel === 'sms'
+    ? resolvedSmsBody
+    : `${step.emailTemplate?.subject ?? ''} ${step.emailTemplate?.bodyHtml ?? ''} ${step.emailTemplate?.bodyText ?? ''}`
+  const subTokenVars = await resolveDynamicLinksForPreview({
+    text: compositeForScan,
+    workspaceId: ws.workspaceId,
+    appBaseUrl: getAppBaseUrl(),
+  })
+  Object.assign(variables, subTokenVars)
+  if (Object.keys(subTokenVars).length > 0) {
+    logger.info('automation_preview_subtokens_resolved', {
+      ruleId: rule.id,
+      stepId: step.id,
+      channel,
+      resolvedKeys: Object.keys(subTokenVars),
+    })
   }
 
   if (channel === 'sms') {

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { renderTemplate } from '@/lib/email'
 import { resolveSchedulingUrl } from '@/lib/scheduling'
 import { getAppBaseUrl } from '@/lib/training-access'
+import { resolveDynamicLinksForPreview } from '@/lib/template-link-resolver'
 
 /**
  * Preview an UNSAVED automation step. Used by the rule editor modal so
@@ -151,6 +152,12 @@ export async function POST(request: NextRequest) {
     const rawBody = (smsTemplate?.body && smsTemplate.body.trim().length > 0)
       ? smsTemplate.body
       : (body.smsBody as string)
+    // Sub-token support — see /api/automations/[id]/preview for context.
+    Object.assign(variables, await resolveDynamicLinksForPreview({
+      text: rawBody,
+      workspaceId: ws.workspaceId,
+      appBaseUrl: getAppBaseUrl(),
+    }))
     const renderedBody = renderTemplate(rawBody, variables)
     const smsRecipient = body.smsDestination === 'company'
       ? (workspace?.phone || '(no company phone configured)')
@@ -168,6 +175,13 @@ export async function POST(request: NextRequest) {
       segments: Math.max(1, Math.ceil(renderedBody.length / 160)),
     })
   }
+
+  // Sub-token support — see /api/automations/[id]/preview for context.
+  Object.assign(variables, await resolveDynamicLinksForPreview({
+    text: `${template!.subject} ${template!.bodyHtml} ${template!.bodyText ?? ''}`,
+    workspaceId: ws.workspaceId,
+    appBaseUrl: getAppBaseUrl(),
+  }))
 
   const subject = renderTemplate(template!.subject, variables)
   const html = renderTemplate(template!.bodyHtml, variables)
