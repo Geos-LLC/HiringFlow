@@ -46,15 +46,24 @@ export async function createAccessToken(opts: {
 }
 
 /**
- * Build a full training link with token.
+ * Resolve the app's public base URL. Same precedence used by every
+ * outbound-link builder in the app so previews and real emails point
+ * at the same domain (matters for the session cookie in owner-preview
+ * mode — `?preview=1` needs the recruiter's dashboard cookie in scope).
  */
-export function buildTrainingLink(trainingSlug: string, token: string): string {
-  const appUrl = process.env.APP_URL
+export function getAppBaseUrl(): string {
+  return process.env.APP_URL
     || process.env.NEXT_PUBLIC_APP_URL
     || process.env.NEXTAUTH_URL
     || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null)
     || 'http://localhost:3000'
-  return `${appUrl}/t/${trainingSlug}?token=${token}`
+}
+
+/**
+ * Build a full training link with token.
+ */
+export function buildTrainingLink(trainingSlug: string, token: string): string {
+  return `${getAppBaseUrl()}/t/${trainingSlug}?token=${token}`
 }
 
 /**

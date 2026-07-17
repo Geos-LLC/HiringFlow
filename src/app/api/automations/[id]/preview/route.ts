@@ -3,6 +3,7 @@ import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { renderTemplate } from '@/lib/email'
 import { resolveSchedulingUrl } from '@/lib/scheduling'
+import { getAppBaseUrl } from '@/lib/training-access'
 
 /**
  * Render what an automation step would send, using sample values so the
@@ -63,11 +64,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     : ''
   // Owner-preview mode (`?preview=1`) instead of a fake token so the
   // recruiter can actually open the training from the preview modal.
-  // Build the URL from the request's origin so the session cookie flows —
-  // `hirefunnel.app` vs `www.hirefunnel.app` would drop the dashboard cookie
-  // and `getWorkspaceSession()` would return null → 403.
+  // getAppBaseUrl() returns the same canonical www.hirefunnel.app that
+  // real emails use — using request.url here can hand back Vercel's
+  // internal deployment URL, which would drop the dashboard session
+  // cookie and 403 on owner-preview.
   const sampleTrainingLink = step.nextStepType === 'training' && step.training
-    ? `${url.origin}/t/${step.training.slug}?preview=1`
+    ? `${getAppBaseUrl()}/t/${step.training.slug}?preview=1`
     : (step.nextStepUrl || '')
 
   const workspaceTz = rule.workspace.timezone || 'America/New_York'
