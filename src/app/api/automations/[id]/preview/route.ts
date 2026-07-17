@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { renderTemplate } from '@/lib/email'
 import { resolveSchedulingUrl } from '@/lib/scheduling'
 import { getAppBaseUrl } from '@/lib/training-access'
+import { logger } from '@/lib/logger'
 
 /**
  * Render what an automation step would send, using sample values so the
@@ -71,6 +72,26 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const sampleTrainingLink = step.nextStepType === 'training' && step.training
     ? `${getAppBaseUrl()}/t/${step.training.slug}?preview=1`
     : (step.nextStepUrl || '')
+
+  if (step.nextStepType === 'training' && step.training) {
+    logger.info('automation_preview_training_link', {
+      ruleId: rule.id,
+      stepId: step.id,
+      trainingId: step.training.id,
+      trainingSlug: step.training.slug,
+      sampleTrainingLink,
+      appBaseUrl: getAppBaseUrl(),
+      appUrlEnv: process.env.APP_URL || null,
+      nextPublicAppUrlEnv: process.env.NEXT_PUBLIC_APP_URL || null,
+      nextAuthUrlEnv: process.env.NEXTAUTH_URL || null,
+      vercelUrlEnv: process.env.VERCEL_URL || null,
+      requestOrigin: url.origin,
+      requestHost: request.headers.get('host'),
+      xForwardedHost: request.headers.get('x-forwarded-host'),
+      workspaceId: ws.workspaceId,
+      trainingWorkspaceId: rule.workspaceId,
+    })
+  }
 
   const workspaceTz = rule.workspace.timezone || 'America/New_York'
   const sampleMeetingDateObj = (() => {

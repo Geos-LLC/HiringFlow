@@ -167,14 +167,44 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
   // Preview mode: owner/admin can view unpublished or invitation-only trainings via dashboard session.
   const isPreview = request.nextUrl.searchParams.get('preview') === '1'
   let isOwnerPreview = false
+  let previewWsPresent = false
+  let previewWsId: string | null = null
+  let previewIsSuperAdmin = false
   if (isPreview) {
     const ws = await getWorkspaceSession()
+    previewWsPresent = !!ws
+    previewWsId = ws?.workspaceId ?? null
+    previewIsSuperAdmin = !!ws?.isSuperAdmin
     if (ws && (ws.isSuperAdmin || ws.workspaceId === training.workspaceId)) {
       isOwnerPreview = true
     }
   }
+  if (isPreview) {
+    logger.info('public_training_preview_decision', {
+      slug: params.slug,
+      trainingId: training.id,
+      trainingWorkspaceId: training.workspaceId,
+      trainingIsPublished: training.isPublished,
+      trainingAccessMode: training.accessMode,
+      sessionPresent: previewWsPresent,
+      sessionWorkspaceId: previewWsId,
+      sessionIsSuperAdmin: previewIsSuperAdmin,
+      workspaceIdMatch: previewWsId === training.workspaceId,
+      isOwnerPreview,
+      cookieHeaderPresent: !!request.headers.get('cookie'),
+      host: request.headers.get('host'),
+      xForwardedHost: request.headers.get('x-forwarded-host'),
+    })
+  }
 
   if (!training.isPublished && !isOwnerPreview) {
+    logger.warn('public_training_denied_unpublished', {
+      slug: params.slug,
+      trainingId: training.id,
+      isPreview,
+      isOwnerPreview,
+      trainingIsPublished: training.isPublished,
+    })
     return NextResponse.json({ error: 'Training not found' }, { status: 404 })
   }
 
@@ -188,11 +218,13 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
 
   if (training.accessMode === 'invitation_only' && !isOwnerPreview) {
     if (!token) {
+      logger.warn('public_training_denied_token_required', { slug: params.slug, trainingId: training.id, isPreview })
       return NextResponse.json({ error: 'Access token required', code: 'TOKEN_REQUIRED' }, { status: 403 })
     }
 
     const accessToken = await time('validateAccessToken', () => validateAccessToken(token, training.id), timings)
     if (!accessToken) {
+      logger.warn('public_training_denied_token_invalid', { slug: params.slug, trainingId: training.id, tokenPrefix: token.slice(0, 8) })
       return NextResponse.json({ error: 'Access unavailable or expired', code: 'TOKEN_INVALID' }, { status: 403 })
     }
 
