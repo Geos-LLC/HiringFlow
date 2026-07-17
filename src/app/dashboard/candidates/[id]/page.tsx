@@ -28,6 +28,7 @@ import CapturePlayback from '@/components/CapturePlayback'
 import { AICallsPanel } from './_AICallsPanel'
 import { DispositionReasonPicker } from '../_DispositionReasonPicker'
 import { SendMessageModal } from '../_SendMessageModal'
+import AutomationPreviewModal from '@/components/AutomationPreviewModal'
 
 interface CaptureSummary {
   id: string
@@ -222,6 +223,10 @@ export default function CandidateDetailPage() {
   // Per-rule status for the "Run" button on each row. Lets the recruiter fire
   // one rule at a time without dismissing the modal — keyed by ruleId.
   const [perRuleState, setPerRuleState] = useState<Record<string, { firing: boolean; result?: { ok: boolean; message: string } }>>({})
+  // "View" opens the automation preview modal inline instead of navigating
+  // to /dashboard/automations?rule=<id> — keeps the recruiter on the
+  // candidate detail so they can flip between context and preview.
+  const [viewingRule, setViewingRule] = useState<{ id: string; name: string } | null>(null)
 
   // Load captures eagerly on mount so the top-level CapturesPanel can render
   // alongside InterviewPanel without waiting for a tab click. Same fetch
@@ -1953,13 +1958,12 @@ export default function CandidateDetailPage() {
                           >
                             {firing ? 'Firing…' : result?.ok ? 'Run again' : 'Run'}
                           </button>
-                          <Link
-                            href={`/dashboard/automations?rule=${r.id}`}
-                            target="_blank"
+                          <button
+                            onClick={() => setViewingRule({ id: r.id, name: r.name })}
                             className="text-xs text-brand-600 hover:underline"
                           >
                             View
-                          </Link>
+                          </button>
                         </div>
                       </li>
                     )
@@ -1978,6 +1982,14 @@ export default function CandidateDetailPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {viewingRule && (
+        <AutomationPreviewModal
+          ruleId={viewingRule.id}
+          ruleName={viewingRule.name}
+          onClose={() => setViewingRule(null)}
+        />
       )}
     </div>
   )
