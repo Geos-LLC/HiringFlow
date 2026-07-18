@@ -5,6 +5,26 @@ import { logger } from '@/lib/logger'
 import { validateEmail, validatePhone } from '@/lib/contact-validation'
 import { findActiveProcessForFlow } from '@/lib/hiring-processes'
 
+// Public endpoint invoked from arbitrary external sites (careers pages,
+// landing forms, etc.). The flowSlug acts as the routing key, so wildcard
+// origin is intentional — the endpoint has no per-caller secret to protect.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'content-type',
+  'Access-Control-Max-Age': '86400',
+}
+
+function jsonWithCors(data: unknown, init?: ResponseInit): NextResponse {
+  const res = NextResponse.json(data, init)
+  for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v)
+  return res
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS })
+}
+
 /**
  * True if the email matches anyone "internal" to the workspace: a workspace
  * member, OR the email of the connected Google integration account. Owners
@@ -38,7 +58,7 @@ export async function POST(request: NextRequest) {
     const { flowSlug, candidateName, candidateEmail, candidatePhone, preview, adId, source, campaign } = body
 
     if (!flowSlug) {
-      return NextResponse.json({ error: 'Flow slug is required' }, { status: 400 })
+      return jsonWithCors({ error: 'Flow slug is required' }, { status: 400 })
     }
 
     // Validate + normalize candidate email/phone server-side. The client
@@ -51,12 +71,12 @@ export async function POST(request: NextRequest) {
     let normalizedPhone: string | null = null
     if (typeof candidateEmail === 'string' && candidateEmail.trim()) {
       const r = validateEmail(candidateEmail)
-      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 })
+      if (!r.ok) return jsonWithCors({ error: r.error }, { status: 400 })
       normalizedEmail = r.value
     }
     if (typeof candidatePhone === 'string' && candidatePhone.trim()) {
       const r = validatePhone(candidatePhone)
-      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 })
+      if (!r.ok) return jsonWithCors({ error: r.error }, { status: 400 })
       normalizedPhone = r.value
     }
 
@@ -66,7 +86,7 @@ export async function POST(request: NextRequest) {
       // Preview mode: allow unpublished flows for workspace members
       const ws = await getWorkspaceSession()
       if (!ws) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        return jsonWithCors({ error: 'Unauthorized' }, { status: 401 })
       }
 
       flow = await prisma.flow.findFirst({
@@ -97,7 +117,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (!flow) {
-      return NextResponse.json({ error: 'Flow not found' }, { status: 404 })
+      return jsonWithCors({ error: 'Flow not found' }, { status: 404 })
     }
 
     // Enforce start-screen required fields server-side. The client-side
@@ -108,10 +128,10 @@ export async function POST(request: NextRequest) {
     const showName = startCfg.showNameField ?? true
     const showEmail = startCfg.showEmailField ?? false
     if (showName && startCfg.nameRequired && !(typeof candidateName === 'string' && candidateName.trim())) {
-      return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+      return jsonWithCors({ error: 'Name is required' }, { status: 400 })
     }
     if (showEmail && startCfg.emailRequired && !normalizedEmail) {
-      return NextResponse.json({ error: 'Email is required' }, { status: 400 })
+      return jsonWithCors({ error: 'Email is required' }, { status: 400 })
     }
 
     const startStepId = flow.steps[0]?.id || null
@@ -225,12 +245,12 @@ export async function POST(request: NextRequest) {
 
     logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource, processId })
 
-    return NextResponse.json({
+    return jsonWithCors({
       id: session.id,
       startStepId,
     })
   } catch (error: any) {
     logger.error('Create session failed', { error: error.message })
-    return NextResponse.json({ error: 'Failed to create session' }, { status: 500 })
+    return jsonWithCors({ error: 'Failed to create session' }, { status: 500 })
   }
 }
