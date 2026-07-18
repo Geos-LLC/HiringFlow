@@ -55,10 +55,26 @@ async function isInternalEmail(workspaceId: string, email: string): Promise<bool
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { flowSlug, candidateName, candidateEmail, candidatePhone, preview, adId, source, campaign } = body
+    const { flowSlug, candidateName, candidateEmail, candidatePhone, preview, adId, source, campaign, formData, completed } = body
 
     if (!flowSlug) {
       return jsonWithCors({ error: 'Flow slug is required' }, { status: 400 })
+    }
+
+    // Sanitize free-form form fields from external sites. The Form Data card
+    // on the candidate profile renders each key/value verbatim, so we cap
+    // shape + size to keep hostile callers from stuffing 5MB of HTML into a
+    // row that then blows up the profile page. Non-string values are coerced
+    // to string; reserved keys already covered by first-class columns
+    // (name/email/phone) are dropped so the card doesn't render duplicates.
+    let sanitizedFormData: Record<string, string> | null = null
+    if (formData && typeof formData === 'object' && !Array.isArray(formData)) {
+      const reserved = new Set(['name', 'email', 'phone'])
+      const entries = Object.entries(formData as Record<string, unknown>)
+        .filter(([k]) => typeof k === 'string' && k.length > 0 && k.length <= 80 && !reserved.has(k.toLowerCase()))
+        .slice(0, 30)
+        .map(([k, v]) => [k, String(v ?? '').slice(0, 500)] as const)
+      if (entries.length > 0) sanitizedFormData = Object.fromEntries(entries)
     }
 
     // Validate + normalize candidate email/phone server-side. The client
@@ -195,6 +211,7 @@ export async function POST(request: NextRequest) {
         lastStepId: startStepId,
         lastActivityAt: new Date(),
         lastProgressAt: new Date(),
+        formData: sanitizedFormData ?? undefined,
         // Source attribution (from Ad link)
         adId: adId || null,
         source: effectiveSource,
@@ -202,6 +219,25 @@ export async function POST(request: NextRequest) {
         processId,
       },
     })
+
+    // External-site submissions arrive complete — the full form has already
+    // been filled out on the caller's careers page. Mirror the finish state
+    // in a second write (matching /api/public/sessions/[id]/submit) so the
+    // Prisma lifecycle middleware fires `flow_completed` and any wired
+    // stage-advance / automation rules run. Skipping this leaves the
+    // Application stage stuck as "in progress" forever on the kanban.
+    if (completed === true) {
+      const now = new Date()
+      await prisma.session.update({
+        where: { id: session.id },
+        data: {
+          finishedAt: now,
+          outcome: 'completed',
+          lastActivityAt: now,
+          lastProgressAt: now,
+        },
+      })
+    }
 
     // Close out older sessions of the same candidate so the kanban only
     // ever shows the latest attempt. Without this, the May session sits
