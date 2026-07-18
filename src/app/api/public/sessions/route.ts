@@ -57,19 +57,6 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { flowSlug, candidateName, candidateEmail, candidatePhone, preview, adId, source, campaign } = body
 
-    // TEMP debug — remove after diagnosis. See conversation 2026-07-18.
-    logger.info('public/sessions POST body', {
-      flowSlug: String(flowSlug || ''),
-      candidateNameLen: String((candidateName || '').length),
-      candidateName: String(candidateName || ''),
-      candidateEmail: String(candidateEmail || ''),
-      candidatePhone: String(candidatePhone || ''),
-      source: String(source || ''),
-      keys: Object.keys(body || {}).join(','),
-      contentType: request.headers.get('content-type') || '',
-      origin: request.headers.get('origin') || '',
-    })
-
     if (!flowSlug) {
       return jsonWithCors({ error: 'Flow slug is required' }, { status: 400 })
     }
