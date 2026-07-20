@@ -87,7 +87,12 @@ export async function GET(request: NextRequest) {
     where,
     orderBy: { createdAt: 'desc' },
     include: {
-      flow: { select: { id: true, name: true } },
+      // Multi-flow scope. Empty array = workspace-wide (fires for every
+      // flow); non-empty = restricted to those flows. Replaces the legacy
+      // single-`flow` relation for reads.
+      flows: {
+        include: { flow: { select: { id: true, name: true } } },
+      },
       pipeline: { select: { id: true, name: true, isDefault: true } },
       // Legacy per-rule fields kept for backwards compatibility with table
       // rendering during rollout. New code reads from `steps`.
@@ -113,7 +118,18 @@ export async function POST(request: NextRequest) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
   const body = await request.json()
-  const { name, triggerType, flowId, stageId, pipelineId, triggerAutomationId, minutesBefore, waitForRecording, steps } = body
+  const { name, triggerType, stageId, pipelineId, triggerAutomationId, minutesBefore, waitForRecording, steps } = body
+  // Multi-flow scope. Empty / omitted = workspace-wide. Older clients may
+  // still send `flowId` (single string); coerce to a single-item array so
+  // existing form submissions don't regress. Prefer `flowIds` on new writes.
+  const rawFlowIds: unknown = body.flowIds
+  const legacyFlowId: unknown = body.flowId
+  let flowIds: string[] = []
+  if (Array.isArray(rawFlowIds)) {
+    flowIds = rawFlowIds.filter((v): v is string => typeof v === 'string' && v.length > 0)
+  } else if (typeof legacyFlowId === 'string' && legacyFlowId) {
+    flowIds = [legacyFlowId]
+  }
   // Rule-level trainingId scopes which training a `training_*` rule fires for
   // ("Onboarding only" vs "any training"). Distinct from step.trainingId,
   // which is the action target (which training to send the candidate to).
@@ -135,6 +151,19 @@ export async function POST(request: NextRequest) {
     })
     if (!pipeline) return NextResponse.json({ error: 'Pipeline not found' }, { status: 404 })
     resolvedPipelineId = pipeline.id
+  }
+
+  // Flow scope: every id in flowIds must reference a flow the caller owns.
+  // Cross-tenant ids would let one workspace hijack another workspace's
+  // dispatch. Empty set stays empty = workspace-wide.
+  if (flowIds.length > 0) {
+    const owned = await prisma.flow.findMany({
+      where: { id: { in: flowIds }, workspaceId: ws.workspaceId },
+      select: { id: true },
+    })
+    if (owned.length !== flowIds.length) {
+      return NextResponse.json({ error: 'One or more flowIds not found in workspace' }, { status: 400 })
+    }
   }
 
   // Steps are the canonical send config now. Reject if missing.
@@ -188,7 +217,13 @@ export async function POST(request: NextRequest) {
   const rule = await prisma.automationRule.create({
     data: {
       workspaceId: ws.workspaceId, createdById: ws.userId, name, triggerType,
-      flowId: flowId || null,
+      // Legacy single-flow column kept in sync while the join table becomes
+      // the source of truth: mirror flows[0] when exactly one flow is
+      // scoped, else null. Lets a rollback to pre-join code still resolve
+      // the intended flow scope for single-flow rules. Multi-flow rules
+      // become workspace-wide under rollback (over-fire, not silent break).
+      flowId: flowIds.length === 1 ? flowIds[0] : null,
+      flows: flowIds.length > 0 ? { create: flowIds.map((fid) => ({ flowId: fid })) } : undefined,
       pipelineId: resolvedPipelineId,
       stageId: typeof stageId === 'string' && stageId ? stageId : null,
       triggerAutomationId: triggerAutomationId || null,
@@ -225,7 +260,7 @@ export async function POST(request: NextRequest) {
       },
     },
     include: {
-      flow: { select: { id: true, name: true } },
+      flows: { include: { flow: { select: { id: true, name: true } } } },
       emailTemplate: { select: { id: true, name: true } },
       training: { select: { id: true, title: true, slug: true } },
       schedulingConfig: { select: { id: true, name: true, schedulingUrl: true } },

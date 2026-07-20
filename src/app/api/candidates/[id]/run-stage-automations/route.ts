@@ -5,6 +5,7 @@ import { dispatchRule } from '@/lib/automation'
 import { type StageTriggerEvent } from '@/lib/funnel-stages'
 import { resolvePipelineForFlow, stagesFor } from '@/lib/pipelines'
 import { pipelineScopeFragment } from '@/lib/automation-pipeline-scope'
+import { flowScopeFragment } from '@/lib/automation-flow-scope'
 
 // Workspace roles authorised to issue manual reruns. Manual reruns can create
 // real-world sends (emails, SMS, Certn orders) and are billed; they are a
@@ -70,7 +71,7 @@ async function findMatchingRules(opts: {
       isActive: true,
       AND: [
         { OR: stageMatch },
-        { OR: [{ flowId: opts.flowId }, { flowId: null }] },
+        flowScopeFragment(opts.flowId),
         // Pipeline scope: only rules pinned to this pipeline (or
         // workspace-wide, pipelineId=null) are eligible.
         pipelineScopeFragment(pipeline.id),

@@ -35,6 +35,7 @@ import {
   findOrphanAutomationEvents,
   redispatchAcceptedEvent,
 } from '@/lib/automation-emit'
+import { flowScopeFragment } from '@/lib/automation-flow-scope'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { reconcileFalseNoShow } from '@/lib/meet/reconcile-no-show'
 import { setPipelineStatus } from '@/lib/pipeline-status'
@@ -107,7 +108,7 @@ export async function GET(request: NextRequest) {
     where: {
       finishedAt: { gte: cutoff, not: null },
     },
-    select: { id: true, outcome: true, workspaceId: true },
+    select: { id: true, outcome: true, workspaceId: true, flowId: true },
   })
   counts.scanned.sessionsFinished = finishedSessions.length
 
@@ -126,11 +127,16 @@ export async function GET(request: NextRequest) {
       if (existing) continue
 
       // No matching active rule → no work to do, no point re-emitting forever.
+      // Flow-scope check mirrors the runtime dispatch (dispatchRulesForTrigger):
+      // a rule with an explicit flow list only matches sessions from that
+      // list; an empty list is workspace-wide. Skipping here keeps us from
+      // re-emitting for sessions no rule would ever fire against.
       const eligible = await prisma.automationRule.findFirst({
         where: {
           workspaceId: s.workspaceId,
           isActive: true,
           triggerType: { in: ['flow_completed', 'flow_passed'] },
+          ...flowScopeFragment(s.flowId),
         },
         select: { id: true },
       })
@@ -166,7 +172,14 @@ export async function GET(request: NextRequest) {
       status: 'processed',
       createdAt: { gte: cutoff },
     },
-    select: { id: true, sessionId: true, workspaceId: true },
+    select: {
+      id: true,
+      sessionId: true,
+      workspaceId: true,
+      // session.flowId is needed to honour rule flow-scoping in the
+      // eligibility pre-filter below (mirrors runtime dispatch).
+      session: { select: { flowId: true } },
+    },
   })
   counts.scanned.capturesProcessed = processedCaps.length
 
@@ -185,12 +198,15 @@ export async function GET(request: NextRequest) {
 
       // Second filter: is there any active rule that COULD have matched?
       // Without this, we'd re-fire every cron run for workspaces that
-      // simply have no recording_ready rule wired.
+      // simply have no recording_ready rule wired. Flow-scope check keeps
+      // the re-emit tight when a rule exists but is scoped to a different
+      // flow than this candidate's.
       const eligible = await prisma.automationRule.findFirst({
         where: {
           workspaceId: cap.workspaceId,
           isActive: true,
           triggerType: 'recording_ready',
+          ...(cap.session ? flowScopeFragment(cap.session.flowId) : {}),
         },
         select: { id: true },
       })
@@ -258,7 +274,9 @@ export async function GET(request: NextRequest) {
       id: true,
       sessionId: true,
       trainingId: true,
-      session: { select: { workspaceId: true, automationsHaltedAt: true } },
+      // session.flowId is needed to honour rule flow-scoping in the
+      // eligibility pre-filter below (mirrors runtime dispatch).
+      session: { select: { workspaceId: true, flowId: true, automationsHaltedAt: true } },
     },
   })
   counts.scanned.trainingsCompleted = recentCompletions.length
@@ -282,13 +300,18 @@ export async function GET(request: NextRequest) {
 
       // Don't re-fire for workspaces with no eligible rule — `trainingId: null`
       // catches workspace-wide rules, `trainingId: e.trainingId` catches
-      // training-specific ones.
+      // training-specific ones. Flow-scope check mirrors runtime dispatch so
+      // we don't re-emit for training completions whose flow is outside every
+      // matching rule's scope.
       const eligible = await prisma.automationRule.findFirst({
         where: {
           workspaceId: e.session.workspaceId,
           isActive: true,
           triggerType: 'training_completed',
-          OR: [{ trainingId: e.trainingId }, { trainingId: null }],
+          AND: [
+            { OR: [{ trainingId: e.trainingId }, { trainingId: null }] },
+            flowScopeFragment(e.session.flowId),
+          ],
         },
         select: { id: true },
       })

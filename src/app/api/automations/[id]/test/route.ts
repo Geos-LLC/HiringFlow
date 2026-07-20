@@ -34,7 +34,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const rule = await prisma.automationRule.findFirst({
     where: { id: params.id, workspaceId: ws.workspaceId },
     select: {
-      id: true, flowId: true, triggerType: true, name: true,
+      id: true, triggerType: true, name: true,
+      // Multi-flow scope replaces the legacy single flowId. We pick a
+      // deterministic sample flow for the test candidate below.
+      flows: { select: { flowId: true } },
       steps: {
         orderBy: { order: 'asc' },
         select: { id: true, channel: true, emailTemplateId: true, smsTemplateId: true, smsBody: true },
@@ -62,11 +65,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (testChannel === 'sms' && !/^\+?\d[\d\s().-]{6,}$/.test(to)) {
     return NextResponse.json({ error: 'Valid recipient phone required' }, { status: 400 })
   }
-  // Rules with no flowId (the "Any flow" default) are still testable — fall
-  // back to the workspace's first active flow so we can create a tracked
-  // test session. Session-wide triggers (meeting_*, before_meeting, etc.)
-  // hide the flow picker entirely; they hit this branch by design.
-  let testFlowId = rule.flowId
+  // Rules with no explicit flow scope (the "Any flow" default) are still
+  // testable — fall back to the workspace's first active flow so we can
+  // create a tracked test session. Session-wide triggers (meeting_*,
+  // before_meeting, etc.) hide the flow picker entirely; they hit this
+  // branch by design. Rules with multiple scoped flows: pick the first for
+  // the test candidate — the rule fires the same way regardless of which
+  // matching flow the candidate came through.
+  let testFlowId: string | null = rule.flows[0]?.flowId ?? null
   if (!testFlowId) {
     const fallbackFlow = await prisma.flow.findFirst({
       where: { workspaceId: ws.workspaceId, isPublished: true },

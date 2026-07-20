@@ -85,7 +85,11 @@ export async function POST(request: NextRequest) {
       where: { id: payload.ruleId, workspaceId: ws.workspaceId },
       include: {
         workspace: { select: { timezone: true } },
-        flow: { select: { id: true, name: true } },
+        // Multi-flow scope replaces the legacy single flow relation. We use
+        // the first scoped flow (deterministic) to seed the test session
+        // below — the rule fires the same way regardless of which matching
+        // flow the candidate came through.
+        flows: { include: { flow: { select: { id: true, name: true } } } },
         steps: {
           where: { id: payload.stepId },
           include: {
@@ -102,6 +106,7 @@ export async function POST(request: NextRequest) {
         ? step.smsTemplate.body
         : (step.smsBody ?? '')
       if (rawBody.trim().length > 0) {
+        const firstScope = rule.flows[0]?.flow ?? null
         resolved = {
           rawBody,
           nextStepType: step.nextStepType,
@@ -110,8 +115,8 @@ export async function POST(request: NextRequest) {
           schedulingConfigId: step.schedulingConfigId ?? null,
           schedulingConfig: step.schedulingConfig ?? null,
           ruleId: rule.id,
-          flowId: rule.flowId,
-          flowName: rule.flow?.name ?? null,
+          flowId: firstScope?.id ?? null,
+          flowName: firstScope?.name ?? null,
           workspaceTz: rule.workspace?.timezone ?? null,
         }
       }
@@ -153,10 +158,13 @@ export async function POST(request: NextRequest) {
             where: { id: payload.editingRuleId, workspaceId: ws.workspaceId },
             include: {
               workspace: { select: { timezone: true } },
-              flow: { select: { id: true, name: true } },
+              // Multi-flow scope; pick the first scoped flow (deterministic)
+              // to seed flow_name and flow-context tokens in the preview.
+              flows: { include: { flow: { select: { id: true, name: true } } } },
             },
           })
         : null
+      const editingFirstFlow = editingRule?.flows[0]?.flow ?? null
 
       resolved = {
         rawBody,
@@ -166,8 +174,8 @@ export async function POST(request: NextRequest) {
         schedulingConfigId: d.schedulingConfigId ?? null,
         schedulingConfig,
         ruleId: editingRule?.id ?? null,
-        flowId: editingRule?.flowId ?? null,
-        flowName: editingRule?.flow?.name ?? null,
+        flowId: editingFirstFlow?.id ?? null,
+        flowName: editingFirstFlow?.name ?? null,
         workspaceTz: editingRule?.workspace?.timezone ?? null,
       }
     }

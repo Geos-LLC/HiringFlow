@@ -67,6 +67,28 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   if (!rule) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const body = await request.json()
 
+  // Flow scope update: caller may pass `flowIds: string[]` to replace the
+  // rule's flow scope, or omit the field to leave it untouched. Empty array
+  // = workspace-wide (fires for every flow). Legacy `flowId` (single string)
+  // is accepted for older clients — coerced to a single-item array.
+  let flowIdsUpdate: string[] | null = null
+  if (Array.isArray(body.flowIds)) {
+    flowIdsUpdate = (body.flowIds as unknown[]).filter(
+      (v): v is string => typeof v === 'string' && v.length > 0,
+    )
+  } else if (body.flowId !== undefined) {
+    flowIdsUpdate = typeof body.flowId === 'string' && body.flowId ? [body.flowId] : []
+  }
+  if (flowIdsUpdate && flowIdsUpdate.length > 0) {
+    const owned = await prisma.flow.findMany({
+      where: { id: { in: flowIdsUpdate }, workspaceId: ws.workspaceId },
+      select: { id: true },
+    })
+    if (owned.length !== flowIdsUpdate.length) {
+      return NextResponse.json({ error: 'One or more flowIds not found in workspace' }, { status: 400 })
+    }
+  }
+
   // Pipeline scope (added 2026-05-13). Null/empty = "any pipeline"
   // (workspace-wide rule). Non-null values must reference a pipeline in
   // this workspace — guard the FK lookup against cross-tenant assignment.
@@ -142,7 +164,13 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       data: {
         ...(body.name !== undefined && { name: body.name }),
         ...(body.triggerType !== undefined && { triggerType: body.triggerType }),
-        ...(body.flowId !== undefined && { flowId: body.flowId || null }),
+        // Legacy single-flow column: keep in sync with the join. Mirror
+        // flows[0] when the new scope is a single flow, else null.
+        // Multi-flow scopes clear the legacy column (rollback would treat
+        // them as workspace-wide — over-fire, not silent break).
+        ...(flowIdsUpdate !== null && {
+          flowId: flowIdsUpdate.length === 1 ? flowIdsUpdate[0] : null,
+        }),
         ...(pipelineUpdate && pipelineUpdate),
         // trainingId is the trigger filter for training_* rules (which
         // training fires this rule). Independent from step.trainingId
@@ -177,6 +205,18 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
         }),
       },
     })
+    if (flowIdsUpdate !== null) {
+      // Replace the rule's flow scope wholesale. Wipe-and-recreate is safe
+      // here — the join rows carry no downstream references (unlike
+      // AutomationStep, which is upserted by order to preserve step ids for
+      // AutomationExecution history).
+      await tx.automationRuleFlow.deleteMany({ where: { ruleId: params.id } })
+      if (flowIdsUpdate.length > 0) {
+        await tx.automationRuleFlow.createMany({
+          data: flowIdsUpdate.map((fid) => ({ ruleId: params.id, flowId: fid })),
+        })
+      }
+    }
     if (validatedSteps) {
       // Upsert-by-order rather than wipe-and-recreate: preserves stepIds for
       // existing positions so AutomationExecution rows linked to those steps
@@ -228,7 +268,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   const updated = await prisma.automationRule.findUnique({
     where: { id: params.id },
     include: {
-      flow: { select: { id: true, name: true } },
+      flows: { include: { flow: { select: { id: true, name: true } } } },
       pipeline: { select: { id: true, name: true, isDefault: true } },
       emailTemplate: { select: { id: true, name: true, subject: true } },
       training: { select: { id: true, title: true, slug: true } },

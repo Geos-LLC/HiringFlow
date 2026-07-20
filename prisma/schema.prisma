@@ -720,6 +720,7 @@ model Flow {
   sessions                   Session[]
   ads                        Ad[]
   automationRules            AutomationRule[]
+  automationRuleFlows        AutomationRuleFlow[]
   captureResponses           CaptureResponse[]
   hiringProcesses            HiringProcess[]
 
@@ -1392,8 +1393,17 @@ model AutomationRule {
   // older rules fall back to the implicit mapping. Stages live in JSON on
   // Workspace.settings, so this is intentionally a plain string (no FK).
   stageId                 String?                   @map("stage_id")
+  // Legacy single-flow scope. Superseded by the `flows` join below — kept
+  // populated on old rows for one-way rollback safety, but new writes ignore
+  // it and reads MUST go through `flows`. Drop in a follow-up once we've
+  // been running on the join for a full release cycle without incident.
   flowId                  String?                   @map("flow_id")
   flow                    Flow?                     @relation(fields: [flowId], references: [id])
+  // Multi-flow scope. Empty array = workspace-wide (fires for every flow's
+  // events). Non-empty = fires only when the session's flowId matches one of
+  // the listed flows. Replaces the single-flow `flowId` column so recruiters
+  // can attach one rule to several flows without cloning it.
+  flows                   AutomationRuleFlow[]
   // Pipeline scope. When set, the rule only matches candidates whose flow's
   // pipeline (`Flow.pipelineId`, falling back to the workspace default) is
   // this one. Null = "any pipeline" — the rule applies workspace-wide,
@@ -1453,6 +1463,21 @@ model AutomationRule {
 
   @@index([pipelineId])
   @@map("automation_rules")
+}
+
+// Join table for AutomationRule <-> Flow multi-scoping. Empty set for a
+// given ruleId means "workspace-wide, fires for every flow's events"; a
+// non-empty set restricts firing to the listed flows. See the eligibility
+// check in src/lib/automation.ts (dispatchRulesForTrigger and friends).
+model AutomationRuleFlow {
+  ruleId String         @map("rule_id")
+  flowId String         @map("flow_id")
+  rule   AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  flow   Flow           @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  @@id([ruleId, flowId])
+  @@index([flowId])
+  @@map("automation_rule_flows")
 }
 
 // One send within an AutomationRule. A rule is now a *sequence* of steps

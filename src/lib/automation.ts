@@ -6,6 +6,7 @@ import { createAccessToken, buildTrainingLink } from './training-access'
 import { resolveSchedulingUrl, buildScheduleRedirectUrl, logSchedulingEvent, updatePipelineStatus } from './scheduling'
 import { applyStageTrigger } from './funnel-stage-runtime'
 import { automationScopeForSession, pipelineScopeFragment, resolveFlowPipelineId } from './automation-pipeline-scope'
+import { flowScopeFragment, flowScopeForMeetingsWhere } from './automation-flow-scope'
 import { Client } from '@upstash/qstash'
 import { canExecuteAutomationStep, recordSkip, type ExecutionMode } from './automation-guard'
 
@@ -352,7 +353,13 @@ async function detachSentMeetingRelativeExecutions(sessionId: string) {
 export async function autoBackfillRuleForUpcomingMeetings(ruleId: string) {
   const rule = await prisma.automationRule.findUnique({
     where: { id: ruleId },
-    select: { id: true, workspaceId: true, triggerType: true, isActive: true, flowId: true },
+    select: {
+      id: true,
+      workspaceId: true,
+      triggerType: true,
+      isActive: true,
+      flows: { select: { flowId: true } },
+    },
   })
   if (!rule) return
   if (!['meeting_scheduled', 'before_meeting'].includes(rule.triggerType)) return
@@ -387,7 +394,7 @@ export async function autoBackfillRuleForUpcomingMeetings(ruleId: string) {
     where: {
       workspaceId: rule.workspaceId,
       scheduledStart: { gt: now },
-      ...(rule.flowId ? { session: { flowId: rule.flowId } } : {}),
+      ...flowScopeForMeetingsWhere(rule.flows),
     },
     select: { sessionId: true, scheduledStart: true },
     orderBy: { scheduledStart: 'asc' },
@@ -425,7 +432,7 @@ async function reScheduleMeetingRelativeSteps(sessionId: string) {
       isActive: true,
       workspaceId: session.workspaceId,
       AND: [
-        { OR: [{ flowId: session.flowId }, { flowId: null }] },
+        flowScopeFragment(session.flowId),
         pipelineScopeFragment(pipelineId),
       ],
       triggerType: { in: ['meeting_scheduled', 'meeting_started', 'meeting_ended', 'recording_ready'] },
@@ -591,7 +598,7 @@ export async function fireMeetingLifecycleAutomations(
           triggerType: 'meeting_ended',
           workspaceId: session.workspaceId,
           AND: [
-            { OR: [{ flowId: session.flowId }, { flowId: null }] },
+            flowScopeFragment(session.flowId),
             pipelineScopeFragment(pipelineId),
           ],
         },
@@ -909,7 +916,7 @@ async function dispatchRulesForTrigger(
     workspaceId: session.workspaceId,
   })
   const ands: Array<Record<string, unknown>> = [
-    { OR: [{ flowId: session.flowId }, { flowId: null }] },
+    flowScopeFragment(session.flowId) as unknown as Record<string, unknown>,
     pipelineScopeFragment(pipelineId) as unknown as Record<string, unknown>,
   ]
   if (ctx.trainingId) {
@@ -1286,7 +1293,7 @@ export async function scheduleBeforeMeetingReminders(sessionId: string, schedule
         triggerType: 'before_meeting',
         workspaceId: session.workspaceId,
         AND: [
-          { OR: [{ flowId: session.flowId }, { flowId: null }] },
+          flowScopeFragment(session.flowId),
           pipelineScopeFragment(pipelineId),
         ],
       },

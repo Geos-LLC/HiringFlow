@@ -45,8 +45,17 @@ interface StepShape {
 }
 
 interface PipelineLite { id: string; name: string; isDefault: boolean; stages?: FunnelStage[] }
+interface RuleFlowScope { flowId: string; flow?: Flow | null }
 interface Rule {
-  id: string; name: string; triggerType: string; flowId: string | null
+  id: string; name: string; triggerType: string
+  // Legacy single-flow scope. Superseded by `flows[]`; still populated on
+  // read for pre-migration rows and one-way rollback safety. New reads
+  // should consume `flows[]`.
+  flowId: string | null
+  // Multi-flow scope from the AutomationRuleFlow join table. Empty array =
+  // workspace-wide (fires for every flow). Missing on responses from
+  // routes that haven't been updated yet — treat as "fall back to flowId".
+  flows?: RuleFlowScope[]
   // Pipeline scope (added 2026-05-13). Null = "any pipeline" — rule fires
   // for candidates regardless of their flow's pipeline assignment.
   pipelineId?: string | null
@@ -69,7 +78,11 @@ interface Rule {
   trainingId?: string | null
   schedulingConfigId?: string | null
   isActive: boolean; createdAt: string
-  flow: Flow | null; emailTemplate: Template | null; training: TrainingItem | null
+  // Legacy single-flow relation. Optional now — new API responses return
+  // `flows[]` (join table) instead. Kept optional so pre-migration cached
+  // responses still render the fallback branch in the flow-name column.
+  flow?: Flow | null
+  emailTemplate: Template | null; training: TrainingItem | null
   schedulingConfig: SchedulingItem | null; _count: { executions: number }
   steps: StepShape[]
 }
@@ -309,7 +322,15 @@ function AutomationsPageInner() {
   const [editing, setEditing] = useState<Rule | null>(null)
   const [name, setName] = useState('')
   const [triggerType, setTriggerType] = useState('flow_completed')
+  // Legacy single-string state, still used for the `triggerType='automation_completed'`
+  // case where it carries the chained rule id (not a flow id). Multi-flow
+  // scope lives in `flowIds` below.
   const [flowId, setFlowId] = useState('')
+  // Multi-flow scope. Empty array = workspace-wide (fires for every flow's
+  // events). Non-empty = restricted to the listed flows. Populated from the
+  // rule's `flows` join on edit; falls back to `[flowId]` if only the
+  // legacy column is present.
+  const [flowIds, setFlowIds] = useState<string[]>([])
   // Rule-level training filter for training_started / training_completed
   // triggers — which training fires this rule. '' means any training.
   // Independent from per-step trainingId (action target).
@@ -756,6 +777,7 @@ function AutomationsPageInner() {
     setTriggerType(trigger)
     setName(`${TRIGGER_LABELS[trigger] ?? trigger} follow-up`)
     setFlowId('')
+    setFlowIds([])
     setTriggerTrainingId('')
     setStageIdField(overrides?.stageId || '')
     // Default new rules to the active pipeline filter when one is selected,
@@ -798,6 +820,17 @@ function AutomationsPageInner() {
   const openEdit = (r: Rule) => {
     setEditing(r); setName(r.name); setTriggerType(r.triggerType)
     setFlowId(r.flowId || (r as { triggerAutomationId?: string }).triggerAutomationId || '')
+    // Prefer the join table when the API returned it; fall back to the
+    // legacy single flowId for rules read through unmigrated endpoints.
+    // Empty array = workspace-wide, the same semantics `flowId=null`
+    // carried under the old schema.
+    if (r.flows && r.flows.length > 0) {
+      setFlowIds(r.flows.map((f) => f.flow?.id ?? f.flowId))
+    } else if (r.flowId) {
+      setFlowIds([r.flowId])
+    } else {
+      setFlowIds([])
+    }
     setTriggerTrainingId(r.trainingId ?? '')
     setStageIdField(r.stageId ?? '')
     setPipelineIdField(r.pipelineId ?? '')
@@ -939,7 +972,12 @@ function AutomationsPageInner() {
     const isTrainingTrigger = triggerType === 'training_started' || triggerType === 'training_completed'
     const body = {
       name, triggerType,
-      flowId: (!SESSION_WIDE_TRIGGERS.has(triggerType)) ? (flowId || null) : null,
+      // Multi-flow scope replaces the legacy single flowId. Empty array =
+      // workspace-wide (fires for every flow). Session-wide triggers
+      // (meeting_*, before_meeting, automation_completed) ignore flow
+      // scope entirely — send an empty array so the backend clears any
+      // previously-persisted flow scope on edit.
+      flowIds: (!SESSION_WIDE_TRIGGERS.has(triggerType)) ? flowIds : [],
       trainingId: isTrainingTrigger ? (triggerTrainingId || null) : null,
       stageId: stageIdField || null,
       // Pipeline scope. Empty = "any pipeline" (workspace-wide rule). When
@@ -1513,7 +1551,19 @@ function AutomationsPageInner() {
                         )}
                       </td>
                       <td className="px-5 py-4"><span className={`text-xs px-2.5 py-1 rounded-full font-medium ${r.triggerType === 'training_completed' ? 'bg-green-50 text-green-700' : 'bg-brand-50 text-brand-600'}`}>{TRIGGER_LABELS[r.triggerType] || r.triggerType}</span></td>
-                      <td className="px-5 py-4 text-sm text-grey-35">{r.flow?.name || 'Any workflow'}</td>
+                      <td className="px-5 py-4 text-sm text-grey-35">
+                        {(() => {
+                          // Prefer the multi-flow join; fall back to the legacy
+                          // single-flow relation for rows the backend hasn't
+                          // populated yet. Empty scope = workspace-wide.
+                          const names = r.flows && r.flows.length > 0
+                            ? r.flows.map((f) => f.flow?.name).filter(Boolean) as string[]
+                            : (r.flow?.name ? [r.flow.name] : [])
+                          if (names.length === 0) return 'Any workflow'
+                          if (names.length <= 2) return names.join(', ')
+                          return `${names[0]}, ${names[1]} +${names.length - 2}`
+                        })()}
+                      </td>
                       <td className="px-5 py-4 text-xs text-grey-35">
                         {r.steps && r.steps.length > 0 ? (
                           <span className="inline-flex items-center gap-1 flex-wrap">
@@ -1695,11 +1745,38 @@ function AutomationsPageInner() {
               )}
               {!SESSION_WIDE_TRIGGERS.has(triggerType) && (
                 <div>
-                  <label className="block text-sm font-medium text-grey-20 mb-1.5">Flow (optional — leave empty for all flows)</label>
-                  <select value={flowId} onChange={(e) => setFlowId(e.target.value)} className="w-full px-4 py-3 border border-surface-border rounded-[8px] text-grey-15 focus:outline-none focus:ring-2 focus:ring-brand-500">
-                    <option value="">Any flow</option>
-                    {flows.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                  </select>
+                  <label className="block text-sm font-medium text-grey-20 mb-1.5">Flows (optional — leave empty for all flows)</label>
+                  <div className="border border-surface-border rounded-[8px] p-3 max-h-56 overflow-y-auto space-y-1.5 bg-white">
+                    {flows.length === 0 ? (
+                      <p className="text-xs text-grey-40">No flows in this workspace yet.</p>
+                    ) : (
+                      flows.map((f) => {
+                        const checked = flowIds.includes(f.id)
+                        return (
+                          <label key={f.id} className="flex items-center gap-2 cursor-pointer select-none text-sm text-grey-15 hover:bg-surface rounded px-1.5 py-1">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                setFlowIds((prev) =>
+                                  e.target.checked
+                                    ? Array.from(new Set([...prev, f.id]))
+                                    : prev.filter((id) => id !== f.id),
+                                )
+                              }}
+                              className="rounded border-surface-border text-brand-500 focus:ring-brand-500"
+                            />
+                            <span>{f.name}</span>
+                          </label>
+                        )
+                      })
+                    )}
+                  </div>
+                  <p className="text-xs text-grey-40 mt-1">
+                    {flowIds.length === 0
+                      ? 'Rule fires for every flow in the workspace.'
+                      : `Rule fires only for ${flowIds.length} selected ${flowIds.length === 1 ? 'flow' : 'flows'}.`}
+                  </p>
                 </div>
               )}
               {(triggerType === 'training_started' || triggerType === 'training_completed') && (

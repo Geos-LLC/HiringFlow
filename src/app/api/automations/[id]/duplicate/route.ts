@@ -8,7 +8,13 @@ export async function POST(_: Request, { params }: { params: { id: string } }) {
 
   const source = await prisma.automationRule.findFirst({
     where: { id: params.id, workspaceId: ws.workspaceId },
-    include: { steps: { orderBy: { order: 'asc' } } },
+    include: {
+      steps: { orderBy: { order: 'asc' } },
+      // Multi-flow scope. Copy it verbatim onto the duplicate so cloning
+      // a rule preserves "which flows does this apply to?" — otherwise the
+      // duplicate would silently become workspace-wide (empty scope).
+      flows: { select: { flowId: true } },
+    },
   })
   if (!source) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
@@ -25,7 +31,13 @@ export async function POST(_: Request, { params }: { params: { id: string } }) {
       createdAt: new Date(source.createdAt.getTime() - 1),
       name: `${source.name} (copy)`,
       triggerType: source.triggerType,
-      flowId: source.flowId,
+      // Legacy single-flow column kept in sync with the join table (see
+      // POST /api/automations for the same mirror rule).
+      flowId: source.flows.length === 1 ? source.flows[0].flowId : null,
+      flows:
+        source.flows.length > 0
+          ? { create: source.flows.map((f) => ({ flowId: f.flowId })) }
+          : undefined,
       // Preserve pipeline + stage scope on the copy. Without this, duplicating
       // a rule from a specific pipeline view dropped the copy into
       // "Any-pipeline", making it invisible in the user's current filter and
@@ -79,7 +91,7 @@ export async function POST(_: Request, { params }: { params: { id: string } }) {
     // page crashes trying to read r.steps[0] / r._count.executions on the
     // returned object.
     include: {
-      flow: { select: { id: true, name: true } },
+      flows: { include: { flow: { select: { id: true, name: true } } } },
       pipeline: { select: { id: true, name: true, isDefault: true } },
       emailTemplate: { select: { id: true, name: true, subject: true } },
       training: { select: { id: true, title: true, slug: true } },
