@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { verifyBookingToken, issueBookingToken } from '@/lib/scheduling/booking-links'
 import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
+import { parseCustomFieldsOrEmpty, validateCustomFieldAnswers } from '@/lib/scheduling/custom-fields'
 import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
 import { bookInterview, BookInterviewError } from '@/lib/scheduling/book-interview'
@@ -31,6 +32,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     candidateEmail?: string | null
     candidatePhone?: string | null
     notes?: string | null
+    customFieldAnswers?: Record<string, unknown> | null
   }
 
   if (!body.slotStartUtc) {
@@ -80,6 +82,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       isActive: true,
       useBuiltInScheduler: true,
       bookingRules: true,
+      customFields: true,
       calendarId: true,
       workspaceId: true,
       workspace: { select: { timezone: true, senderEmail: true } },
@@ -90,6 +93,20 @@ export async function POST(request: NextRequest, { params }: { params: { configI
     return NextResponse.json({ error: 'config_not_found', message: bookingErrorMessage('config_not_found') }, { status: 404 })
   }
   const contactEmail = config.workspace.senderEmail
+
+  // Validate custom-field answers against the config's schema. Fields the
+  // recruiter marked required must have non-empty answers; radio answers
+  // must match a listed option. Silently drops answers for fields the
+  // recruiter removed between page load and submit.
+  const fieldSchema = parseCustomFieldsOrEmpty(config.customFields)
+  const answerCheck = validateCustomFieldAnswers(fieldSchema, body.customFieldAnswers)
+  if (!answerCheck.ok) {
+    return NextResponse.json({
+      error: 'invalid_custom_field_answers',
+      message: answerCheck.errors[0]?.message || 'Please fill in the required questions',
+      fieldErrors: answerCheck.errors,
+    }, { status: 400 })
+  }
 
   // Anonymous-mode session creation: now that we have the workspace, find a
   // flow to attach to and either reuse a recent public_booking session for
@@ -253,6 +270,7 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       schedulingConfigId: config.id,
       source: 'public',
       loggedBy: null,
+      customFieldAnswers: answerCheck.clean,
     })
 
     // Issue reschedule + cancel tokens, expiring at slotStart - 1h (no

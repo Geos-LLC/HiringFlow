@@ -12,6 +12,7 @@
 import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { verifyBookingToken } from '@/lib/scheduling/booking-links'
+import { parseCustomFieldsOrEmpty } from '@/lib/scheduling/custom-fields'
 import { BookingClient } from './BookingClient'
 
 export const dynamic = 'force-dynamic'
@@ -29,12 +30,15 @@ export default async function BookPage({ params, searchParams }: PageProps) {
       name: true,
       isActive: true,
       useBuiltInScheduler: true,
+      customFields: true,
       workspace: {
         select: { name: true, logoUrl: true, senderName: true, timezone: true },
       },
     },
   })
   if (!config || !config.isActive || !config.useBuiltInScheduler) return notFound()
+
+  const customFields = parseCustomFieldsOrEmpty(config.customFields)
 
   // Anonymous flow: render the picker without prefilled candidate info; the
   // confirm step asks for name/email and the booking endpoint creates the
@@ -50,6 +54,7 @@ export default async function BookPage({ params, searchParams }: PageProps) {
         workspaceName={config.workspace.name}
         workspaceLogo={config.workspace.logoUrl}
         configName={config.name}
+        customFields={customFields}
         anonymous
       />
     )
@@ -77,6 +82,7 @@ export default async function BookPage({ params, searchParams }: PageProps) {
       workspaceName={config.workspace.name}
       workspaceLogo={config.workspace.logoUrl}
       configName={config.name}
+      customFields={customFields}
     />
   )
 }

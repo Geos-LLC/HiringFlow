@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { parseCustomFields } from '@/lib/scheduling/custom-fields'
 
 export async function GET() {
   const ws = await getWorkspaceSession()
@@ -21,11 +23,21 @@ export async function POST(request: NextRequest) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
 
-  const { name, schedulingUrl, isDefault, useBuiltInScheduler, assignedMemberIds } = await request.json()
+  const body = await request.json()
+  const { name, schedulingUrl, isDefault, useBuiltInScheduler, assignedMemberIds, customFields } = body
   if (!name) return NextResponse.json({ error: 'name required' }, { status: 400 })
   // Built-in scheduler doesn't need an external URL; placeholder is fine.
   if (!useBuiltInScheduler && !schedulingUrl) {
     return NextResponse.json({ error: 'schedulingUrl required for external providers' }, { status: 400 })
+  }
+
+  let customFieldsPersist: Prisma.InputJsonValue | undefined
+  if (customFields !== undefined) {
+    try {
+      customFieldsPersist = parseCustomFields(customFields) as unknown as Prisma.InputJsonValue
+    } catch (err) {
+      return NextResponse.json({ error: 'invalid_custom_fields', message: (err as Error).message }, { status: 400 })
+    }
   }
 
   // If setting as default, clear existing defaults
@@ -48,6 +60,7 @@ export async function POST(request: NextRequest) {
       isDefault: !!isDefault,
       useBuiltInScheduler: !!useBuiltInScheduler,
       assignedMemberIds: memberIds,
+      ...(customFieldsPersist !== undefined && { customFields: customFieldsPersist }),
     },
   })
 

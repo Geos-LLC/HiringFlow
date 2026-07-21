@@ -62,6 +62,12 @@ export interface BookInterviewOpts {
   source: BookingSource
   /** Operator userId, or null for public bookings. Stored on the scheduling event. */
   loggedBy?: string | null
+  /**
+   * Candidate answers to SchedulingConfig.customFields. Already validated by
+   * the caller — the shape is trusted here. Persisted on
+   * InterviewMeeting.customFieldAnswers.
+   */
+  customFieldAnswers?: Record<string, string> | null
 }
 
 export interface BookInterviewResult {
@@ -359,6 +365,9 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
       hosts: hostMembers.length
         ? { create: hostMembers.map((h) => ({ workspaceMemberId: h.memberId })) }
         : undefined,
+      ...(opts.customFieldAnswers && Object.keys(opts.customFieldAnswers).length > 0
+        ? { customFieldAnswers: opts.customFieldAnswers }
+        : {}),
     },
   })
 

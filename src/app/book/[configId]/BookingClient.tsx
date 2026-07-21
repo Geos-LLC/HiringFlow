@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import type { CustomField } from '@/lib/scheduling/custom-fields'
 
 interface SlotDto { startUtc: string; endUtc: string }
 interface AvailabilityDto {
@@ -23,6 +24,12 @@ interface Props {
   currentMeetingStartUtc?: string | null
   /** Public global-link mode — no token in URL. Confirm step collects name/email. */
   anonymous?: boolean
+  /**
+   * Recruiter-defined questions layered onto the booking form. Empty by
+   * default. Required fields block Confirm; radio answers must match a
+   * listed option. Server re-validates in the booking POST route.
+   */
+  customFields?: CustomField[]
 }
 
 const DAYS_VISIBLE_DESKTOP = 3
@@ -67,6 +74,13 @@ export function BookingClient(props: Props) {
   const [email, setEmail] = useState(props.candidateEmail || '')
   const [phone, setPhone] = useState(props.candidatePhone || '')
   const [notes, setNotes] = useState('')
+  const customFields = props.customFields || []
+  const [customValues, setCustomValues] = useState<Record<string, string>>({})
+  const missingRequiredCustom = useMemo(
+    () => customFields.some((f) => f.required && !(customValues[f.id] || '').trim()),
+    [customFields, customValues],
+  )
+  const setCustom = (id: string, v: string) => setCustomValues((prev) => ({ ...prev, [id]: v }))
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [confirmedMeetingUri, setConfirmedMeetingUri] = useState<string | null>(null)
@@ -155,11 +169,24 @@ export function BookingClient(props: Props) {
     if (!selectedSlot) return
     if (props.anonymous && !name.trim()) { setSubmitError('Please enter your name'); return }
     if (props.anonymous && !email.trim()) { setSubmitError('Please enter your email'); return }
+    if (!isReschedule && missingRequiredCustom) {
+      const missing = customFields.find((f) => f.required && !(customValues[f.id] || '').trim())
+      setSubmitError(missing ? `${missing.label} is required` : 'Please answer the required questions')
+      return
+    }
     setSubmitting(true); setSubmitError(null)
     try {
       const endpoint = isReschedule
         ? `/api/public/booking/${props.configId}/reschedule`
         : `/api/public/booking/${props.configId}`
+      // Only send answers for the fields still declared on the config
+      // (customValues may contain stale keys if the recruiter edited fields
+      // mid-session). Server re-validates and silently drops anything else.
+      const customFieldAnswers: Record<string, string> = {}
+      for (const f of customFields) {
+        const v = (customValues[f.id] || '').trim()
+        if (v) customFieldAnswers[f.id] = v
+      }
       const payload = isReschedule
         ? { t: props.token, slotStartUtc: selectedSlot.startUtc }
         : {
@@ -171,6 +198,7 @@ export function BookingClient(props: Props) {
             candidateEmail: email || null,
             candidatePhone: phone || null,
             notes: notes || null,
+            customFieldAnswers,
           }
       const r = await fetch(endpoint, {
         method: 'POST',
@@ -326,6 +354,19 @@ export function BookingClient(props: Props) {
                     className="w-full px-2.5 py-1.5 border border-[#E5E7EB] rounded-md text-[13px] text-[#262626] focus:outline-none focus:border-[#FF9500]"
                   />
                 </div>
+                {customFields.length > 0 && (
+                  <div className="pt-2 mt-2 border-t border-[#F0F0F0] space-y-3">
+                    {customFields.map((f) => (
+                      <CustomFieldRenderer
+                        key={f.id}
+                        field={f}
+                        value={customValues[f.id] || ''}
+                        onChange={(v) => setCustom(f.id, v)}
+                        size="sm"
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="mt-5">
@@ -339,7 +380,7 @@ export function BookingClient(props: Props) {
                 {submitError && <div className="text-[12px] text-red-600 mb-2">{submitError}</div>}
                 <button
                   onClick={handleConfirm}
-                  disabled={!selectedSlot || !name.trim() || !email.trim() || submitting}
+                  disabled={!selectedSlot || !name.trim() || !email.trim() || submitting || missingRequiredCustom}
                   className="w-full bg-[#FF9500] text-white py-2.5 rounded-md text-[13px] font-medium hover:bg-[#E68500] transition-colors disabled:opacity-50"
                 >
                   {submitting ? 'Booking…' : 'Confirm booking'}
@@ -403,6 +444,10 @@ export function BookingClient(props: Props) {
               email={email} setEmail={setEmail}
               phone={phone} setPhone={setPhone}
               notes={notes} setNotes={setNotes}
+              customFields={customFields}
+              customValues={customValues}
+              setCustom={setCustom}
+              missingRequiredCustom={missingRequiredCustom}
               onCancel={() => { setSelectedSlot(null); setView('pick') }}
               onConfirm={handleConfirm}
               submitting={submitting}
@@ -626,6 +671,7 @@ function SlotColumns({
 function ConfirmStep({
   slot, tz, durationMinutes, isReschedule,
   name, setName, email, setEmail, phone, setPhone, notes, setNotes,
+  customFields, customValues, setCustom, missingRequiredCustom,
   onCancel, onConfirm, submitting, submitError,
 }: {
   slot: SlotDto; tz: string; durationMinutes: number; isReschedule: boolean
@@ -633,6 +679,10 @@ function ConfirmStep({
   email: string; setEmail: (v: string) => void
   phone: string; setPhone: (v: string) => void
   notes: string; setNotes: (v: string) => void
+  customFields: CustomField[]
+  customValues: Record<string, string>
+  setCustom: (id: string, v: string) => void
+  missingRequiredCustom: boolean
   onCancel: () => void; onConfirm: () => void; submitting: boolean; submitError: string | null
 }) {
   return (
@@ -649,6 +699,18 @@ function ConfirmStep({
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
               className="w-full px-3 py-2 border border-[#E5E7EB] rounded-md text-[13px] text-[#262626] focus:outline-none focus:border-[#FF9500]" />
           </div>
+          {customFields.length > 0 && (
+            <div className="pt-3 mt-1 border-t border-[#F0F0F0] space-y-3">
+              {customFields.map((f) => (
+                <CustomFieldRenderer
+                  key={f.id}
+                  field={f}
+                  value={customValues[f.id] || ''}
+                  onChange={(v) => setCustom(f.id, v)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <div className="text-[13px] text-[#666] mb-2">We&apos;ll update your existing meeting to this time.</div>
@@ -659,11 +721,65 @@ function ConfirmStep({
           className="px-4 py-2 rounded-md border border-[#E5E7EB] text-[13px] text-[#444] hover:border-[#FF9500] transition-colors disabled:opacity-50">
           Back
         </button>
-        <button onClick={onConfirm} disabled={submitting || (!isReschedule && !email)}
+        <button onClick={onConfirm} disabled={submitting || (!isReschedule && !email) || (!isReschedule && missingRequiredCustom)}
           className="px-5 py-2 rounded-md bg-[#FF9500] text-white text-[13px] font-medium hover:bg-[#E68500] transition-colors disabled:opacity-50">
           {submitting ? (isReschedule ? 'Rescheduling…' : 'Booking…') : (isReschedule ? 'Confirm reschedule' : 'Confirm booking')}
         </button>
       </div>
+    </div>
+  )
+}
+
+function CustomFieldRenderer({
+  field, value, onChange, size = 'md',
+}: {
+  field: CustomField
+  value: string
+  onChange: (v: string) => void
+  size?: 'sm' | 'md'
+}) {
+  const inputCls = size === 'sm'
+    ? 'w-full px-2.5 py-1.5 border border-[#E5E7EB] rounded-md text-[13px] text-[#262626] focus:outline-none focus:border-[#FF9500]'
+    : 'w-full px-3 py-2 border border-[#E5E7EB] rounded-md text-[13px] text-[#262626] focus:outline-none focus:border-[#FF9500]'
+  const label = (
+    <label className="text-[12px] text-[#444] block mb-1">
+      {field.label}
+      {field.required ? ' *' : ''}
+    </label>
+  )
+  if (field.type === 'textarea') {
+    return (
+      <div>
+        {label}
+        <textarea rows={3} value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} />
+      </div>
+    )
+  }
+  if (field.type === 'radio' && field.options) {
+    return (
+      <div>
+        {label}
+        <div className="space-y-1">
+          {field.options.map((opt) => (
+            <label key={opt} className="flex items-center gap-2 text-[13px] text-[#262626] cursor-pointer">
+              <input
+                type="radio"
+                name={`cf-${field.id}`}
+                checked={value === opt}
+                onChange={() => onChange(opt)}
+                className="accent-[#FF9500]"
+              />
+              {opt}
+            </label>
+          ))}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div>
+      {label}
+      <input type="text" value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} />
     </div>
   )
 }

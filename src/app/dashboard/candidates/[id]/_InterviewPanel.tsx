@@ -15,6 +15,7 @@ import {
   type FunnelStage,
 } from '@/lib/funnel-stages'
 import { ScheduleInterviewDialog } from './_ScheduleInterviewDialog'
+import { parseCustomFieldsOrEmpty } from '@/lib/scheduling/custom-fields'
 
 interface InterviewMeetingArtifact {
   id: string
@@ -46,6 +47,8 @@ interface InterviewMeeting {
   confirmedAt: string | null
   cancelledAt: string | null
   hosts: Array<{ memberId: string; userId: string | null; email: string | null; name: string | null }>
+  customFieldAnswers: Record<string, string> | null
+  schedulingConfig: { id: string; customFields: unknown } | null
   createdAt: string
 }
 
@@ -318,6 +321,30 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
                     <div>Transcript: <span className="text-grey-15">{m.transcriptState}</span></div>
                   )}
                 </div>
+
+                {/* Candidate answers to the config's custom booking questions.
+                    Resolved to the label from the config's field schema so
+                    renames keep working; unresolved keys (field deleted from
+                    the config after booking) fall back to showing the id so
+                    no data is silently dropped. */}
+                {m.customFieldAnswers && Object.keys(m.customFieldAnswers).length > 0 && (() => {
+                  const schema = parseCustomFieldsOrEmpty(m.schedulingConfig?.customFields)
+                  const labelById = new Map(schema.map((f) => [f.id, f.label]))
+                  const entries = Object.entries(m.customFieldAnswers)
+                  return (
+                    <div className="mt-3 rounded-[8px] bg-surface-light p-2.5 space-y-1.5">
+                      <div className="font-mono text-[10px] uppercase text-grey-50" style={{ letterSpacing: '0.08em' }}>
+                        Booking answers
+                      </div>
+                      {entries.map(([fid, val]) => (
+                        <div key={fid} className="text-xs">
+                          <div className="text-grey-40">{labelById.get(fid) || fid}</div>
+                          <div className="text-grey-15 whitespace-pre-wrap break-words">{val}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()}
 
                 {/* Host team members — chips + "Manage" opens the picker.
                     Empty state prompts assigning someone. The connected

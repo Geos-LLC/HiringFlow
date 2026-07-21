@@ -58,6 +58,8 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       driveGeminiNotesFileId: true,
       participants: true,
       confirmedAt: true,
+      customFieldAnswers: true,
+      schedulingConfig: { select: { id: true, customFields: true } },
       createdAt: true,
       // Full artifact history (recordings made on prior reschedule URLs,
       // multiple recordings when the host reopened the link, etc.). The

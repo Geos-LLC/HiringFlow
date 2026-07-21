@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { parseBookingRules } from '@/lib/scheduling/booking-rules'
+import { parseCustomFields } from '@/lib/scheduling/custom-fields'
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
@@ -32,6 +33,15 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     }
   }
 
+  let customFieldsUpdate: Prisma.InputJsonValue | undefined
+  if (body.customFields !== undefined) {
+    try {
+      customFieldsUpdate = parseCustomFields(body.customFields) as unknown as Prisma.InputJsonValue
+    } catch (err) {
+      return NextResponse.json({ error: 'invalid_custom_fields', message: (err as Error).message }, { status: 400 })
+    }
+  }
+
   // Cross-check assigned member ids belong to this workspace. Silent-drop
   // stale ids so a save doesn't fail if a member was removed between page
   // load and save.
@@ -57,6 +67,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       ...(bookingRulesUpdate !== undefined && { bookingRules: bookingRulesUpdate }),
       ...(body.calendarId !== undefined && { calendarId: body.calendarId || null }),
       ...(assignedMemberIdsUpdate !== undefined && { assignedMemberIds: assignedMemberIdsUpdate }),
+      ...(customFieldsUpdate !== undefined && { customFields: customFieldsUpdate }),
     },
   })
 

@@ -12,6 +12,7 @@ import { VideoPickerModal } from '@/components/VideoPickerModal'
 import { type BrandingConfig } from '@/lib/branding'
 import { validateCaptureConfig } from '@/lib/capture/capture-config'
 import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
+import { parseCustomFieldsOrEmpty } from '@/lib/scheduling/custom-fields'
 import CaptureStepConfigPanel from './_CaptureStepConfigPanel'
 import { useUploads } from '../../../_components/UploadProvider'
 import { videoBlobCache } from '@/lib/video-blob-cache'
@@ -75,6 +76,7 @@ interface SchedulingConfigLite {
   schedulingUrl?: string
   assignedMemberIds?: string[]
   bookingRules?: unknown
+  customFields?: unknown
 }
 
 interface Flow {
@@ -2193,17 +2195,30 @@ export default function FlowBuilderPage() {
                                 {selected.useBuiltInScheduler ? (
                                   <ul className="text-[12px] space-y-1">
                                     {[
-                                      { label: 'Date + time slot', required: true },
-                                      { label: 'Name', required: true, prefilled: true },
-                                      { label: 'Email', required: true, prefilled: true },
-                                      { label: 'Phone', required: false, prefilled: true },
-                                      { label: 'Notes', required: false },
-                                    ].map((f) => (
-                                      <li key={f.label} className="flex items-center justify-between gap-2">
+                                      { label: 'Date + time slot', required: true, custom: false, prefilled: false, note: null as string | null },
+                                      { label: 'Name', required: true, custom: false, prefilled: true, note: null },
+                                      { label: 'Email', required: true, custom: false, prefilled: true, note: null },
+                                      { label: 'Phone', required: false, custom: false, prefilled: true, note: null },
+                                      { label: 'Notes', required: false, custom: false, prefilled: false, note: null },
+                                      ...parseCustomFieldsOrEmpty(selected.customFields).map((cf) => ({
+                                        label: cf.label,
+                                        required: cf.required,
+                                        custom: true,
+                                        prefilled: false,
+                                        note: cf.type === 'radio' ? `radio: ${(cf.options || []).join(' / ')}` : cf.type,
+                                      })),
+                                    ].map((f, i) => (
+                                      <li key={`${f.label}-${i}`} className="flex items-center justify-between gap-2">
                                         <span className="text-grey-15">
                                           {f.label}
+                                          {f.custom && (
+                                            <span className="ml-1.5 text-[10px] font-mono uppercase text-brand-500">custom</span>
+                                          )}
                                           {f.prefilled && (
                                             <span className="ml-1.5 text-[10px] text-grey-40">(prefilled if collected earlier)</span>
+                                          )}
+                                          {f.note && (
+                                            <span className="ml-1.5 text-[10px] text-grey-40">({f.note})</span>
                                           )}
                                         </span>
                                         <span className={`font-mono text-[10px] uppercase px-1.5 py-0.5 rounded ${

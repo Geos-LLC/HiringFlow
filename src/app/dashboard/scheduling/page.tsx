@@ -11,6 +11,8 @@ import Link from 'next/link'
 import { Badge, Button, Card, Eyebrow, PageHeader, Stat, WipBadge, WipSection } from '@/components/design'
 import { BookingRulesEditor } from './_BookingRulesEditor'
 import { defaultBookingRules, parseBookingRulesOrDefault, type BookingRules } from '@/lib/scheduling/booking-rules'
+import { CustomFieldsEditor } from './_CustomFieldsEditor'
+import { parseCustomFieldsOrEmpty, type CustomField } from '@/lib/scheduling/custom-fields'
 
 interface SchedulingConfig {
   id: string; name: string; provider: string; schedulingUrl: string
@@ -18,6 +20,7 @@ interface SchedulingConfig {
   useBuiltInScheduler: boolean
   bookingRules: unknown
   assignedMemberIds: string[]
+  customFields: unknown
   _count: { events: number }
 }
 
@@ -78,6 +81,7 @@ export default function SchedulingPage() {
   const [bookingRules, setBookingRules] = useState<BookingRules>(defaultBookingRules())
   const [assignedMemberIds, setAssignedMemberIds] = useState<string[]>([])
   const [members, setMembers] = useState<WorkspaceMemberOption[]>([])
+  const [customFields, setCustomFields] = useState<CustomField[]>([])
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
@@ -103,6 +107,7 @@ export default function SchedulingPage() {
     setEditing(null); setName(''); setUrl(''); setIsDefault(configs.length === 0)
     setUseBuiltIn(false); setBookingRules(defaultBookingRules()); setSaveError(null)
     setAssignedMemberIds([])
+    setCustomFields([])
     setShowModal(true)
   }
   const openEdit = (c: SchedulingConfig) => {
@@ -110,6 +115,7 @@ export default function SchedulingPage() {
     setUseBuiltIn(!!c.useBuiltInScheduler)
     setBookingRules(parseBookingRulesOrDefault(c.bookingRules))
     setAssignedMemberIds(Array.isArray(c.assignedMemberIds) ? c.assignedMemberIds : [])
+    setCustomFields(parseCustomFieldsOrEmpty(c.customFields))
     setSaveError(null)
     setShowModal(true)
   }
@@ -126,6 +132,10 @@ export default function SchedulingPage() {
       assignedMemberIds,
     }
     if (useBuiltIn) body.bookingRules = bookingRules
+    // Custom fields only apply to the built-in scheduler — Calendly / Cal.com
+    // own their own form. Send [] to clear when useBuiltIn flips off so a
+    // config isn't left with stale fields the candidate can't see.
+    body.customFields = useBuiltIn ? customFields : []
     const r = editing
       ? await fetch(`/api/scheduling/${editing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       : await fetch('/api/scheduling', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -546,6 +556,16 @@ export default function SchedulingPage() {
                   </div>
                 )}
               </div>
+
+              {useBuiltIn && (
+                <div>
+                  <div className="eyebrow mb-1.5">Custom questions on the booking form</div>
+                  <p className="text-[12px] text-grey-40 mb-2">
+                    Extra fields the candidate answers when they confirm a slot. Name, email, phone are already collected — add anything else you need.
+                  </p>
+                  <CustomFieldsEditor value={customFields} onChange={setCustomFields} />
+                </div>
+              )}
             </div>
             {saveError && <div className="mt-3 text-[12px] text-[color:var(--danger-fg)]">{saveError}</div>}
             <div className="flex gap-2 mt-6 justify-end">

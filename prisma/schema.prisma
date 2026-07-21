@@ -428,6 +428,7 @@ model InterviewMeeting {
   sessionId                   String                     @map("session_id")
   session                     Session                    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   schedulingConfigId          String?                    @map("scheduling_config_id")
+  schedulingConfig            SchedulingConfig?          @relation("InterviewMeetingSchedulingConfig", fields: [schedulingConfigId], references: [id], onDelete: SetNull)
   // Meet resource identifiers
   meetSpaceName               String                     @unique @map("meet_space_name") // "spaces/abc..."
   meetingCode                 String?                    @map("meeting_code")
@@ -486,6 +487,11 @@ model InterviewMeeting {
   // reminder (or any future channel that lands on this row). Null until
   // confirmation. Surfaced on the candidate detail page as a green pill.
   confirmedAt                 DateTime?                  @map("confirmed_at")
+  // Answers to SchedulingConfig.customFields, captured at booking time.
+  // Shape: { [fieldId: string]: string }. Written by the built-in booking
+  // POST after validation against the config's field schema. Read on the
+  // candidate detail page under the meeting card.
+  customFieldAnswers          Json?                      @map("custom_field_answers")
   // Recall.ai bot id when this meeting is being recorded/tracked by a Recall
   // bot. Null when the workspace is on the legacy Meet auto-record + chrome-
   // extension attendance path. Populated by bookInterview /
@@ -1737,6 +1743,12 @@ model SchedulingConfig {
   // array = only the connected Google account is on the invite (legacy
   // behavior).
   assignedMemberIds   String[]          @default([]) @map("assigned_member_ids")
+  // Recruiter-defined questions the candidate answers on the booking form
+  // (built-in scheduler only). Validated via parseCustomFields in
+  // src/lib/scheduling/custom-fields.ts. Shape: array of
+  // { id, label, type: 'text'|'textarea'|'radio', required, options? }.
+  // Answers persist on InterviewMeeting.customFieldAnswers as {fieldId:value}.
+  customFields        Json?             @map("custom_fields")
   isDefault           Boolean           @default(false) @map("is_default")
   isActive            Boolean           @default(true) @map("is_active")
   createdAt           DateTime          @default(now()) @map("created_at")
@@ -1746,6 +1758,7 @@ model SchedulingConfig {
   events              SchedulingEvent[]
   hiringProcesses     HiringProcess[]
   flowSteps           FlowStep[]        @relation("FlowStepScheduling")
+  interviewMeetings   InterviewMeeting[] @relation("InterviewMeetingSchedulingConfig")
 
   @@map("scheduling_configs")
 }
