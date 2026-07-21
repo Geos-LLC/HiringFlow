@@ -11,6 +11,7 @@ import VideoRecorderModal from '@/components/VideoRecorderModal'
 import { VideoPickerModal } from '@/components/VideoPickerModal'
 import { type BrandingConfig } from '@/lib/branding'
 import { validateCaptureConfig } from '@/lib/capture/capture-config'
+import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
 import CaptureStepConfigPanel from './_CaptureStepConfigPanel'
 import { useUploads } from '../../../_components/UploadProvider'
 import { videoBlobCache } from '@/lib/video-blob-cache'
@@ -70,6 +71,10 @@ interface SchedulingConfigLite {
   isActive: boolean
   isDefault: boolean
   useBuiltInScheduler: boolean
+  provider?: string
+  schedulingUrl?: string
+  assignedMemberIds?: string[]
+  bookingRules?: unknown
 }
 
 interface Flow {
@@ -2127,6 +2132,111 @@ export default function FlowBuilderPage() {
                         {renderCombineConfig(popupStep)}
                       </div>
                     )}
+
+                    {/* === SCHEDULING STEP ===
+                        Config lives in /dashboard/scheduling — the builder
+                        exposes a picker + read-only summary so the recruiter
+                        can verify without leaving the flow. */}
+                    {popupStep.stepType === 'scheduling' && (() => {
+                      const selected = schedulingConfigs.find(c => c.id === popupStep.schedulingConfigId)
+                      const rules = selected?.useBuiltInScheduler
+                        ? parseBookingRulesOrDefault(selected.bookingRules)
+                        : null
+                      const workingDays = rules
+                        ? (['mon','tue','wed','thu','fri','sat','sun'] as const)
+                            .filter(d => (rules.workingHours[d] || []).length > 0)
+                            .map(d => d[0].toUpperCase() + d.slice(1))
+                            .join(', ')
+                        : ''
+                      const assignedCount = Array.isArray(selected?.assignedMemberIds)
+                        ? selected.assignedMemberIds.length
+                        : 0
+                      return (
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-grey-20 mb-1.5">Scheduling config</label>
+                            {schedulingConfigs.filter(c => c.isActive).length === 0 ? (
+                              <div className="rounded-[8px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                                You don&apos;t have any active scheduling configs yet.{' '}
+                                <Link href="/dashboard/scheduling" className="underline">Create one</Link>.
+                              </div>
+                            ) : (
+                              <select
+                                value={popupStep.schedulingConfigId || ''}
+                                onChange={(e) => updateStep(popupStep.id, { schedulingConfigId: e.target.value || null } as any)}
+                                className="w-full px-4 py-2.5 text-sm border border-surface-border rounded-[8px] focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                              >
+                                <option value="">Select a scheduling config…</option>
+                                {schedulingConfigs.filter(c => c.isActive).map(c => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name}{c.isDefault ? ' (default)' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            <p className="text-xs text-grey-40 mt-1">Candidate must book a meeting before the flow can advance.</p>
+                          </div>
+
+                          {selected && (
+                            <div className="rounded-[8px] border border-surface-border bg-surface-light p-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <div className="font-mono text-[10px] uppercase text-grey-50" style={{ letterSpacing: '0.08em' }}>
+                                  Summary
+                                </div>
+                                <Link
+                                  href="/dashboard/scheduling"
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[11px] text-brand-500 hover:text-brand-600"
+                                >
+                                  Edit in Scheduling →
+                                </Link>
+                              </div>
+                              <dl className="grid grid-cols-[110px_1fr] gap-y-1.5 text-[12px]">
+                                <dt className="text-grey-40">Provider</dt>
+                                <dd className="text-grey-15">
+                                  {selected.useBuiltInScheduler ? 'Built-in scheduler' : (selected.provider || 'external')}
+                                </dd>
+                                {selected.useBuiltInScheduler && rules ? (
+                                  <>
+                                    <dt className="text-grey-40">Duration</dt>
+                                    <dd className="text-grey-15">{rules.durationMinutes} min</dd>
+                                    <dt className="text-grey-40">Slot every</dt>
+                                    <dd className="text-grey-15">{rules.slotIntervalMinutes} min</dd>
+                                    <dt className="text-grey-40">Buffer</dt>
+                                    <dd className="text-grey-15">{rules.bufferBeforeMinutes} before / {rules.bufferAfterMinutes} after</dd>
+                                    <dt className="text-grey-40">Min notice</dt>
+                                    <dd className="text-grey-15">{rules.minNoticeHours} h</dd>
+                                    <dt className="text-grey-40">Max days out</dt>
+                                    <dd className="text-grey-15">{rules.maxDaysOut}</dd>
+                                    <dt className="text-grey-40">Working days</dt>
+                                    <dd className="text-grey-15">{workingDays || '—'}</dd>
+                                  </>
+                                ) : (
+                                  <>
+                                    <dt className="text-grey-40">URL</dt>
+                                    <dd className="text-grey-15 font-mono text-[11px] truncate" title={selected.schedulingUrl}>
+                                      {(selected.schedulingUrl || '').replace(/^https?:\/\//, '') || '—'}
+                                    </dd>
+                                  </>
+                                )}
+                                <dt className="text-grey-40">Hosts</dt>
+                                <dd className="text-grey-15">{assignedCount} assigned</dd>
+                                {selected.isDefault && (
+                                  <>
+                                    <dt className="text-grey-40">Default</dt>
+                                    <dd className="text-grey-15">Yes</dd>
+                                  </>
+                                )}
+                              </dl>
+                            </div>
+                          )}
+                          {renderButtonConfig(popupStep)}
+                          {renderPreviousStepConfig(popupStep)}
+                          {renderCombineConfig(popupStep)}
+                        </div>
+                      )
+                    })()}
                   </div>
                 ) : null}
 
