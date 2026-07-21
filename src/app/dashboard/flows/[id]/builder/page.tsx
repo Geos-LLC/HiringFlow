@@ -2178,58 +2178,102 @@ export default function FlowBuilderPage() {
                           </div>
 
                           {selected && (
-                            <div className="rounded-[8px] border border-surface-border bg-surface-light p-3 space-y-2">
-                              <div className="flex items-center justify-between">
+                            <>
+                              {/* What the candidate fills out. The built-in
+                                  scheduler has a hardcoded field set (see
+                                  BookingClient.ConfirmStep + _IntakeForm) —
+                                  custom fields aren't configurable yet, so
+                                  the list here mirrors the code 1:1. Inside
+                                  a flow with a prior form step, name/email/
+                                  phone arrive prefilled but stay editable. */}
+                              <div className="rounded-[8px] border border-surface-border bg-white p-3 space-y-2">
                                 <div className="font-mono text-[10px] uppercase text-grey-50" style={{ letterSpacing: '0.08em' }}>
-                                  Summary
+                                  Candidate fills out
                                 </div>
-                                <Link
-                                  href="/dashboard/scheduling"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-[11px] text-brand-500 hover:text-brand-600"
-                                >
-                                  Edit in Scheduling →
-                                </Link>
-                              </div>
-                              <dl className="grid grid-cols-[110px_1fr] gap-y-1.5 text-[12px]">
-                                <dt className="text-grey-40">Provider</dt>
-                                <dd className="text-grey-15">
-                                  {selected.useBuiltInScheduler ? 'Built-in scheduler' : (selected.provider || 'external')}
-                                </dd>
-                                {selected.useBuiltInScheduler && rules ? (
-                                  <>
-                                    <dt className="text-grey-40">Duration</dt>
-                                    <dd className="text-grey-15">{rules.durationMinutes} min</dd>
-                                    <dt className="text-grey-40">Slot every</dt>
-                                    <dd className="text-grey-15">{rules.slotIntervalMinutes} min</dd>
-                                    <dt className="text-grey-40">Buffer</dt>
-                                    <dd className="text-grey-15">{rules.bufferBeforeMinutes} before / {rules.bufferAfterMinutes} after</dd>
-                                    <dt className="text-grey-40">Min notice</dt>
-                                    <dd className="text-grey-15">{rules.minNoticeHours} h</dd>
-                                    <dt className="text-grey-40">Max days out</dt>
-                                    <dd className="text-grey-15">{rules.maxDaysOut}</dd>
-                                    <dt className="text-grey-40">Working days</dt>
-                                    <dd className="text-grey-15">{workingDays || '—'}</dd>
-                                  </>
+                                {selected.useBuiltInScheduler ? (
+                                  <ul className="text-[12px] space-y-1">
+                                    {[
+                                      { label: 'Date + time slot', required: true },
+                                      { label: 'Name', required: true, prefilled: true },
+                                      { label: 'Email', required: true, prefilled: true },
+                                      { label: 'Phone', required: false, prefilled: true },
+                                      { label: 'Notes', required: false },
+                                    ].map((f) => (
+                                      <li key={f.label} className="flex items-center justify-between gap-2">
+                                        <span className="text-grey-15">
+                                          {f.label}
+                                          {f.prefilled && (
+                                            <span className="ml-1.5 text-[10px] text-grey-40">(prefilled if collected earlier)</span>
+                                          )}
+                                        </span>
+                                        <span className={`font-mono text-[10px] uppercase px-1.5 py-0.5 rounded ${
+                                          f.required ? 'bg-red-50 text-red-600' : 'bg-surface text-grey-40'
+                                        }`} style={{ letterSpacing: '0.06em' }}>
+                                          {f.required ? 'Required' : 'Optional'}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
                                 ) : (
-                                  <>
-                                    <dt className="text-grey-40">URL</dt>
-                                    <dd className="text-grey-15 font-mono text-[11px] truncate" title={selected.schedulingUrl}>
-                                      {(selected.schedulingUrl || '').replace(/^https?:\/\//, '') || '—'}
-                                    </dd>
-                                  </>
+                                  <p className="text-[12px] text-grey-40">
+                                    External provider ({selected.provider || 'link'}) — fields are configured in the provider&apos;s dashboard, not HireFunnel.
+                                  </p>
                                 )}
-                                <dt className="text-grey-40">Hosts</dt>
-                                <dd className="text-grey-15">{assignedCount} assigned</dd>
-                                {selected.isDefault && (
-                                  <>
-                                    <dt className="text-grey-40">Default</dt>
-                                    <dd className="text-grey-15">Yes</dd>
-                                  </>
-                                )}
-                              </dl>
-                            </div>
+                              </div>
+
+                              <div className="rounded-[8px] border border-surface-border bg-surface-light p-3 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <div className="font-mono text-[10px] uppercase text-grey-50" style={{ letterSpacing: '0.08em' }}>
+                                    Booking rules
+                                  </div>
+                                  <Link
+                                    href="/dashboard/scheduling"
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[11px] text-brand-500 hover:text-brand-600"
+                                  >
+                                    Edit in Scheduling →
+                                  </Link>
+                                </div>
+                                <dl className="grid grid-cols-[110px_1fr] gap-y-1.5 text-[12px]">
+                                  <dt className="text-grey-40">Provider</dt>
+                                  <dd className="text-grey-15">
+                                    {selected.useBuiltInScheduler ? 'Built-in scheduler' : (selected.provider || 'external')}
+                                  </dd>
+                                  {selected.useBuiltInScheduler && rules ? (
+                                    <>
+                                      <dt className="text-grey-40">Duration</dt>
+                                      <dd className="text-grey-15">{rules.durationMinutes} min</dd>
+                                      <dt className="text-grey-40">Slot every</dt>
+                                      <dd className="text-grey-15">{rules.slotIntervalMinutes} min</dd>
+                                      <dt className="text-grey-40">Buffer</dt>
+                                      <dd className="text-grey-15">{rules.bufferBeforeMinutes} before / {rules.bufferAfterMinutes} after</dd>
+                                      <dt className="text-grey-40">Min notice</dt>
+                                      <dd className="text-grey-15">{rules.minNoticeHours} h</dd>
+                                      <dt className="text-grey-40">Max days out</dt>
+                                      <dd className="text-grey-15">{rules.maxDaysOut}</dd>
+                                      <dt className="text-grey-40">Working days</dt>
+                                      <dd className="text-grey-15">{workingDays || '—'}</dd>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <dt className="text-grey-40">URL</dt>
+                                      <dd className="text-grey-15 font-mono text-[11px] truncate" title={selected.schedulingUrl}>
+                                        {(selected.schedulingUrl || '').replace(/^https?:\/\//, '') || '—'}
+                                      </dd>
+                                    </>
+                                  )}
+                                  <dt className="text-grey-40">Hosts</dt>
+                                  <dd className="text-grey-15">{assignedCount} assigned</dd>
+                                  {selected.isDefault && (
+                                    <>
+                                      <dt className="text-grey-40">Default</dt>
+                                      <dd className="text-grey-15">Yes</dd>
+                                    </>
+                                  )}
+                                </dl>
+                              </div>
+                            </>
                           )}
                           {renderButtonConfig(popupStep)}
                           {renderPreviousStepConfig(popupStep)}
