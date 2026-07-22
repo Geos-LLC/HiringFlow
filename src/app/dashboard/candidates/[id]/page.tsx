@@ -228,6 +228,11 @@ export default function CandidateDetailPage() {
   // to /dashboard/automations?rule=<id> — keeps the recruiter on the
   // candidate detail so they can flip between context and preview.
   const [viewingRule, setViewingRule] = useState<{ id: string; name: string } | null>(null)
+  // Total count of workspace rules applicable to this candidate — shown
+  // in the Run automation button label so recruiters can see at a glance
+  // how many rules the picker will list. Fetched once when the candidate
+  // loads; null until we have a number so the button doesn't flash.
+  const [applicableRuleCount, setApplicableRuleCount] = useState<number | null>(null)
 
   // Load captures eagerly on mount so the top-level CapturesPanel can render
   // alongside InterviewPanel without waiting for a tab click. Same fetch
@@ -293,6 +298,23 @@ export default function CandidateDetailPage() {
       })
       .catch(() => {})
   }, [])
+
+  // Fetch the applicable-rule count for the Run automation button label. Uses
+  // the same endpoint the picker uses (no stageId — we just want the total
+  // count of rules the picker will show). Re-runs when the candidate ID
+  // changes; picker opens re-fetch anyway so the count stays fresh enough.
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    fetch(`/api/candidates/${id}/run-stage-automations`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((data) => {
+        if (cancelled) return
+        setApplicableRuleCount(Array.isArray(data?.rules) ? data.rules.length : 0)
+      })
+      .catch(() => { if (!cancelled) setApplicableRuleCount(0) })
+    return () => { cancelled = true }
+  }, [id])
 
 
   const updateStatus = async (pipelineStatus: string) => {
@@ -1548,7 +1570,11 @@ export default function CandidateDetailPage() {
             title="Pick an automation to preview and run for this candidate"
             className="text-xs px-3 py-1.5 rounded-[6px] bg-brand-500 text-white hover:bg-brand-600 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {runningAutomations ? 'Firing…' : 'Run automation'}
+            {runningAutomations
+              ? 'Firing…'
+              : applicableRuleCount === null
+                ? 'Run automation'
+                : `Run automation (${applicableRuleCount})`}
           </button>
         </div>
         {automationToast && (
