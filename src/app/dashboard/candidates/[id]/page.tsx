@@ -215,12 +215,14 @@ export default function CandidateDetailPage() {
   // applicable to this candidate (flow + pipeline scope) — the recruiter
   // picks which one to run. `matchesStage` lets us group the rules that are
   // wired to the candidate's current stage first, with the rest below.
+  // `isActive` drives the paused badge + the active/inactive filter chips.
   // null when the modal is closed.
   const [previewState, setPreviewState] = useState<null | {
     loading: boolean
-    rules: Array<{ id: string; name: string; triggerType: string; matchesStage?: boolean }>
+    rules: Array<{ id: string; name: string; triggerType: string; isActive: boolean; matchesStage?: boolean }>
     error?: string
   }>(null)
+  const [ruleFilter, setRuleFilter] = useState<'all' | 'active' | 'inactive'>('all')
   // Per-rule status for the "Run" button on each row. Lets the recruiter fire
   // one rule at a time without dismissing the modal — keyed by ruleId.
   const [perRuleState, setPerRuleState] = useState<Record<string, { firing: boolean; result?: { ok: boolean; message: string } }>>({})
@@ -1904,8 +1906,13 @@ export default function CandidateDetailPage() {
       )}
 
       {previewState && (() => {
-        const stageRules = previewState.rules.filter((r) => r.matchesStage)
-        const otherRules = previewState.rules.filter((r) => !r.matchesStage)
+        const filtered = previewState.rules.filter((r) =>
+          ruleFilter === 'all' ? true : ruleFilter === 'active' ? r.isActive : !r.isActive
+        )
+        const stageRules = filtered.filter((r) => r.matchesStage)
+        const otherRules = filtered.filter((r) => !r.matchesStage)
+        const activeCount = previewState.rules.filter((r) => r.isActive).length
+        const inactiveCount = previewState.rules.length - activeCount
         const renderRow = (r: (typeof previewState.rules)[number]) => {
           const rowState = perRuleState[r.id]
           const firing = rowState?.firing === true
@@ -1913,7 +1920,17 @@ export default function CandidateDetailPage() {
           return (
             <li key={r.id} className="px-4 py-3 flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-sm font-medium text-grey-15 truncate">{r.name}</div>
+                <div className="text-sm font-medium text-grey-15 truncate flex items-center gap-2">
+                  <span className="truncate">{r.name}</span>
+                  {!r.isActive && (
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium shrink-0"
+                      title="Rule is paused — Run will fire it once for this candidate without unpausing the rule."
+                    >
+                      Paused
+                    </span>
+                  )}
+                </div>
                 <div className="text-xs text-grey-40 mt-0.5">
                   Trigger: {triggerLabels[r.triggerType] ?? r.triggerType}
                 </div>
@@ -1953,8 +1970,32 @@ export default function CandidateDetailPage() {
                 <p className="text-sm text-grey-40 mt-1">
                   Pick an automation to fire for this candidate. Preview the message
                   with &ldquo;View&rdquo;, then &ldquo;Run&rdquo; to send. Multi-step rules queue follow-ups
-                  at their configured delays.
+                  at their configured delays. Paused rules can be fired ad-hoc without
+                  unpausing them.
                 </p>
+                {previewState.rules.length > 0 && (
+                  <div className="mt-3 flex items-center gap-1.5">
+                    {(['all', 'active', 'inactive'] as const).map((k) => {
+                      const label = k === 'all' ? `All (${previewState.rules.length})`
+                        : k === 'active' ? `Active (${activeCount})`
+                        : `Paused (${inactiveCount})`
+                      const isSel = ruleFilter === k
+                      return (
+                        <button
+                          key={k}
+                          onClick={() => setRuleFilter(k)}
+                          className={`text-[11px] px-2.5 py-1 rounded-full border font-medium ${
+                            isSel
+                              ? 'bg-ink text-white border-ink'
+                              : 'bg-white text-grey-40 border-surface-border hover:text-grey-15'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
               <div className="px-6 pb-2 max-h-[55vh] overflow-y-auto">
                 {previewState.loading ? (
@@ -1963,7 +2004,11 @@ export default function CandidateDetailPage() {
                   <div className="py-3 px-3 rounded-[8px] bg-red-50 text-red-700 text-sm">{previewState.error}</div>
                 ) : previewState.rules.length === 0 ? (
                   <div className="py-6 text-center text-sm text-grey-40">
-                    No active automations in this workspace apply to this candidate&apos;s flow.
+                    No automations in this workspace apply to this candidate&apos;s flow.
+                  </div>
+                ) : filtered.length === 0 ? (
+                  <div className="py-6 text-center text-sm text-grey-40">
+                    No {ruleFilter === 'active' ? 'active' : 'paused'} rules — try a different filter.
                   </div>
                 ) : (
                   <div className="space-y-4">

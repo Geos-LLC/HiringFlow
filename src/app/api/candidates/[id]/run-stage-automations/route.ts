@@ -74,10 +74,13 @@ async function findApplicableRules(opts: {
     }
   }
 
+  // Include inactive rules too — the candidate page picker lets recruiters
+  // explicitly fire a paused rule against one candidate (executeStep honours
+  // executionMode='manual_rerun' as an implicit ignoreActive). Filtering by
+  // active state is a UI-side concern, not a data-scoping one.
   const rules = await prisma.automationRule.findMany({
     where: {
       workspaceId: opts.workspaceId,
-      isActive: true,
       AND: [
         flowScopeFragment(opts.flowId),
         // Pipeline scope: only rules pinned to this pipeline (or
@@ -177,13 +180,17 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
   let rules: typeof applicableRules
   if (ruleId) {
+    // Explicit rule pick — recruiter chose this one from the picker,
+    // including possibly an inactive rule. executeStep honours the manual
+    // run mode via executionMode='manual_rerun' below.
     rules = applicableRules.filter((r) => r.id === ruleId)
     if (rules.length === 0) {
       return NextResponse.json({ error: 'Rule is not applicable to this candidate' }, { status: 404 })
     }
   } else {
-    // Legacy path: stageId only → fire every rule that matches this stage.
-    rules = applicableRules.filter((r) => r.matchesStage)
+    // Legacy stage-only bulk fire — only active rules attached to this stage.
+    // We never want to bulk-fire a paused rule without an explicit rule pick.
+    rules = applicableRules.filter((r) => r.matchesStage && r.isActive)
   }
   if (rules.length === 0) return NextResponse.json({ fired: 0, results: [] })
 

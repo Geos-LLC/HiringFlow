@@ -1410,7 +1410,14 @@ export async function executeStep(
   })
   if (!step) { console.log(`[Automation] Step ${stepId} NOT FOUND`); return }
   const rule = step.rule
-  if (!rule.isActive && !options?.ignoreActive) { console.log(`[Automation] Rule ${rule.id} INACTIVE — skipping step ${stepId}`); return }
+  // Inactive rules are normally skipped so a paused rule doesn't accidentally
+  // fire from a stale QStash callback. But a recruiter can still explicitly
+  // fire a paused rule against one candidate from the candidate detail page —
+  // that path stamps executionMode='manual_rerun', which we treat as an
+  // implicit ignoreActive. `ignoreActive` (the /automations/[id]/test path)
+  // still works too.
+  const manualRun = options?.dispatchCtx?.executionMode === 'manual_rerun'
+  if (!rule.isActive && !options?.ignoreActive && !manualRun) { console.log(`[Automation] Rule ${rule.id} INACTIVE — skipping step ${stepId}`); return }
 
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
