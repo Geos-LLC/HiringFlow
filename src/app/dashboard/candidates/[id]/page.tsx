@@ -207,17 +207,18 @@ export default function CandidateDetailPage() {
   const [stages, setStages] = useState<FunnelStage[]>(DEFAULT_FUNNEL_STAGES)
   const [customReasons, setCustomReasons] = useState<string[]>([])
   const [customStatuses, setCustomStatuses] = useState<CustomStatus[]>([])
-  const [stageRuleCounts, setStageRuleCounts] = useState<Record<string, number>>({})
   const [runningAutomations, setRunningAutomations] = useState(false)
   const [automationToast, setAutomationToast] = useState<string | null>(null)
   const [sendingReminder, setSendingReminder] = useState(false)
   const [reminderToast, setReminderToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
-  // Set when the user clicks "Run automations". Holds the rules that *would*
-  // fire so we can show them in a confirm modal before actually dispatching.
-  // null when the modal is closed; the array can be empty if loading or none match.
+  // Set when the user clicks "Run automations". Holds every workspace rule
+  // applicable to this candidate (flow + pipeline scope) — the recruiter
+  // picks which one to run. `matchesStage` lets us group the rules that are
+  // wired to the candidate's current stage first, with the rest below.
+  // null when the modal is closed.
   const [previewState, setPreviewState] = useState<null | {
     loading: boolean
-    rules: Array<{ id: string; name: string; triggerType: string }>
+    rules: Array<{ id: string; name: string; triggerType: string; matchesStage?: boolean }>
     error?: string
   }>(null)
   // Per-rule status for the "Run" button on each row. Lets the recruiter fire
@@ -293,38 +294,6 @@ export default function CandidateDetailPage() {
       .catch(() => {})
   }, [])
 
-  // Active rule counts per stage. A rule matches a stage if its stageId is
-  // explicitly set to that stage OR (stageId is null AND its triggerType is
-  // one of the stage's trigger events). Mirrors the server-side matcher in
-  // /api/candidates/[id]/run-stage-automations so the count and the actual
-  // run agree.
-  useEffect(() => {
-    if (!candidate?.flow?.id) return
-    fetch('/api/automations')
-      .then((r) => r.json())
-      .then((rules: Array<{ id: string; isActive: boolean; triggerType: string; flowId: string | null; stageId: string | null; pipelineId?: string | null }>) => {
-        const candidateFlowId = candidate.flow!.id
-        const candidatePipelineId = candidate.pipeline?.id ?? null
-        const counts: Record<string, number> = {}
-        for (const stage of stages) {
-          const events = new Set((stage.triggers ?? []).map((t) => t.event))
-          counts[stage.id] = rules.filter((r) => {
-            if (!r.isActive) return false
-            if (r.flowId !== null && r.flowId !== candidateFlowId) return false
-            // Pipeline scope mirror — rule applies to this candidate iff its
-            // pipelineId is null (any-pipeline) or matches the candidate's
-            // resolved pipeline. Keeps the kanban "X rules in this stage"
-            // badge honest after multi-pipeline.
-            if (r.pipelineId != null && candidatePipelineId != null && r.pipelineId !== candidatePipelineId) return false
-            if (r.stageId === stage.id) return true
-            if (r.stageId === null && events.has(r.triggerType as never)) return true
-            return false
-          }).length
-        }
-        setStageRuleCounts(counts)
-      })
-      .catch(() => {})
-  }, [stages, candidate?.flow?.id, candidate?.pipeline?.id])
 
   const updateStatus = async (pipelineStatus: string) => {
     await fetch(`/api/candidates/${id}`, {
@@ -742,33 +711,35 @@ export default function CandidateDetailPage() {
   if (!candidate) return <div className="text-center py-12 text-grey-40">Candidate not found</div>
 
   const activeStage = resolveStage(candidate.pipelineStatus, stages)
-  const activeStageRuleCount = stageRuleCounts[activeStage.id] ?? 0
-  const activeStageHasTriggers = (activeStage.triggers?.length ?? 0) > 0
 
-  // Open the preview modal — fetch the exact rules that would fire so the
-  // user can see by name what's about to run before confirming.
+  // Open the picker modal — fetch every workspace rule applicable to this
+  // candidate. stageId is passed so the server can flag each rule with
+  // matchesStage; we render the stage-attached rules first and the rest as
+  // "Other automations" below.
   const openPreview = async () => {
-    if (runningAutomations || activeStageRuleCount === 0) return
+    if (runningAutomations) return
     setPerRuleState({})
     setPreviewState({ loading: true, rules: [] })
     try {
       const res = await fetch(`/api/candidates/${id}/run-stage-automations?stageId=${encodeURIComponent(activeStage.id)}`)
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data?.error || 'Failed to load matching automations')
+      if (!res.ok) throw new Error(data?.error || 'Failed to load automations')
       setPreviewState({ loading: false, rules: data.rules ?? [] })
     } catch (err) {
       setPreviewState({
         loading: false,
         rules: [],
-        error: err instanceof Error ? err.message : 'Failed to load matching automations',
+        error: err instanceof Error ? err.message : 'Failed to load automations',
       })
     }
   }
 
-  // Fire a single rule from the preview modal. Keeps the modal open and shows
+  // Fire a single rule from the picker. Keeps the modal open and shows
   // per-row status so the recruiter can fire each rule individually — the
   // previous bulk "Fire all" path was removed because it surprised users when
   // re-running surfaced a "Fire 4 now" button on an already-fired set.
+  // We POST just ruleId (no stageId) so the server validates eligibility by
+  // workspace + flow + pipeline scope instead of gating on stage membership.
   const runSingleRule = async (ruleId: string) => {
     if (perRuleState[ruleId]?.firing) return
     setPerRuleState((s) => ({ ...s, [ruleId]: { firing: true } }))
@@ -776,7 +747,7 @@ export default function CandidateDetailPage() {
       const res = await fetch(`/api/candidates/${id}/run-stage-automations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stageId: activeStage.id, ruleId }),
+        body: JSON.stringify({ ruleId }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data?.error || 'Failed to fire automation')
@@ -1564,25 +1535,20 @@ export default function CandidateDetailPage() {
           })}
         </div>
 
-        {/* Run automations targets the candidate's current stage. Disabled
-            when the active stage has no triggers or no matching active rules. */}
+        {/* Run automations is always available — the picker lists every
+            active workspace rule that applies to this candidate, with the
+            rules attached to the current stage grouped first. */}
         <div className="mt-4 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-xs text-grey-40">
             Current: <span className="font-medium text-grey-15">{activeStage.label}</span>
           </div>
           <button
             onClick={openPreview}
-            disabled={activeStageRuleCount === 0 || runningAutomations}
-            title={
-              activeStageRuleCount === 0
-                ? (activeStageHasTriggers
-                    ? 'No active automations match this stage’s triggers.'
-                    : 'No automations are pinned to this stage. Pin one from the rule editor (Pipeline stage field) or add a trigger to the stage.')
-                : 'Preview which automations will fire, then confirm'
-            }
+            disabled={runningAutomations}
+            title="Pick an automation to preview and run for this candidate"
             className="text-xs px-3 py-1.5 rounded-[6px] bg-brand-500 text-white hover:bg-brand-600 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {runningAutomations ? 'Firing…' : `Run automations${activeStageRuleCount > 0 ? ` (${activeStageRuleCount})` : ''}`}
+            {runningAutomations ? 'Firing…' : 'Run automation'}
           </button>
         </div>
         {automationToast && (
@@ -1911,78 +1877,106 @@ export default function CandidateDetailPage() {
         </div>
       )}
 
-      {previewState && (
-        <div
-          className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 p-4"
-          onMouseDown={(e) => { if (e.target === e.currentTarget && !runningAutomations) setPreviewState(null) }}
-        >
-          <div className="bg-white rounded-[12px] shadow-2xl w-full max-w-[520px]" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 pt-6 pb-3">
-              <h2 className="text-lg font-semibold text-grey-15">Run automations for &quot;{activeStage.label}&quot;</h2>
-              <p className="text-sm text-grey-40 mt-1">
-                These rules will run immediately for this candidate. Configured delays are
-                ignored — manual run sends now.
-              </p>
-            </div>
-            <div className="px-6 pb-2 max-h-[50vh] overflow-y-auto">
-              {previewState.loading ? (
-                <div className="py-6 text-center text-sm text-grey-40">Loading…</div>
-              ) : previewState.error ? (
-                <div className="py-3 px-3 rounded-[8px] bg-red-50 text-red-700 text-sm">{previewState.error}</div>
-              ) : previewState.rules.length === 0 ? (
-                <div className="py-6 text-center text-sm text-grey-40">No matching active rules.</div>
-              ) : (
-                <ul className="divide-y divide-surface-divider rounded-[8px] border border-surface-border">
-                  {previewState.rules.map((r) => {
-                    const rowState = perRuleState[r.id]
-                    const firing = rowState?.firing === true
-                    const result = rowState?.result
-                    return (
-                      <li key={r.id} className="px-4 py-3 flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-grey-15 truncate">{r.name}</div>
-                          <div className="text-xs text-grey-40 mt-0.5">
-                            Trigger: {triggerLabels[r.triggerType] ?? r.triggerType}
-                          </div>
-                          {result && (
-                            <div className={`text-xs mt-1 ${result.ok ? 'text-green-700' : 'text-red-600'}`}>
-                              {result.ok ? '✓ ' : '✗ '}{result.message}
-                            </div>
-                          )}
+      {previewState && (() => {
+        const stageRules = previewState.rules.filter((r) => r.matchesStage)
+        const otherRules = previewState.rules.filter((r) => !r.matchesStage)
+        const renderRow = (r: (typeof previewState.rules)[number]) => {
+          const rowState = perRuleState[r.id]
+          const firing = rowState?.firing === true
+          const result = rowState?.result
+          return (
+            <li key={r.id} className="px-4 py-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-grey-15 truncate">{r.name}</div>
+                <div className="text-xs text-grey-40 mt-0.5">
+                  Trigger: {triggerLabels[r.triggerType] ?? r.triggerType}
+                </div>
+                {result && (
+                  <div className={`text-xs mt-1 ${result.ok ? 'text-green-700' : 'text-red-600'}`}>
+                    {result.ok ? '✓ ' : '✗ '}{result.message}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-3 shrink-0 mt-0.5">
+                <button
+                  onClick={() => runSingleRule(r.id)}
+                  disabled={firing || runningAutomations}
+                  className="text-xs px-2.5 py-1 rounded-[6px] bg-brand-500 text-white font-semibold hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {firing ? 'Firing…' : result?.ok ? 'Run again' : 'Run'}
+                </button>
+                <button
+                  onClick={() => setViewingRule({ id: r.id, name: r.name })}
+                  className="text-xs text-brand-600 hover:underline"
+                >
+                  View
+                </button>
+              </div>
+            </li>
+          )
+        }
+
+        return (
+          <div
+            className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 p-4"
+            onMouseDown={(e) => { if (e.target === e.currentTarget && !runningAutomations) setPreviewState(null) }}
+          >
+            <div className="bg-white rounded-[12px] shadow-2xl w-full max-w-[520px]" onClick={(e) => e.stopPropagation()}>
+              <div className="px-6 pt-6 pb-3">
+                <h2 className="text-lg font-semibold text-grey-15">Run automation</h2>
+                <p className="text-sm text-grey-40 mt-1">
+                  Pick an automation to fire for this candidate. Preview the message
+                  with &ldquo;View&rdquo;, then &ldquo;Run&rdquo; to send. Multi-step rules queue follow-ups
+                  at their configured delays.
+                </p>
+              </div>
+              <div className="px-6 pb-2 max-h-[55vh] overflow-y-auto">
+                {previewState.loading ? (
+                  <div className="py-6 text-center text-sm text-grey-40">Loading…</div>
+                ) : previewState.error ? (
+                  <div className="py-3 px-3 rounded-[8px] bg-red-50 text-red-700 text-sm">{previewState.error}</div>
+                ) : previewState.rules.length === 0 ? (
+                  <div className="py-6 text-center text-sm text-grey-40">
+                    No active automations in this workspace apply to this candidate&apos;s flow.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {stageRules.length > 0 && (
+                      <div>
+                        <div className="text-[11px] uppercase tracking-wide text-grey-40 mb-1.5 font-medium">
+                          Matches current stage — {activeStage.label}
                         </div>
-                        <div className="flex items-center gap-3 shrink-0 mt-0.5">
-                          <button
-                            onClick={() => runSingleRule(r.id)}
-                            disabled={firing || runningAutomations}
-                            className="text-xs px-2.5 py-1 rounded-[6px] bg-brand-500 text-white font-semibold hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {firing ? 'Firing…' : result?.ok ? 'Run again' : 'Run'}
-                          </button>
-                          <button
-                            onClick={() => setViewingRule({ id: r.id, name: r.name })}
-                            className="text-xs text-brand-600 hover:underline"
-                          >
-                            View
-                          </button>
+                        <ul className="divide-y divide-surface-divider rounded-[8px] border border-surface-border">
+                          {stageRules.map(renderRow)}
+                        </ul>
+                      </div>
+                    )}
+                    {otherRules.length > 0 && (
+                      <div>
+                        <div className="text-[11px] uppercase tracking-wide text-grey-40 mb-1.5 font-medium">
+                          {stageRules.length > 0 ? 'Other automations' : 'All automations'}
                         </div>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </div>
-            <div className="px-6 py-4 flex justify-end border-t border-surface-divider mt-2">
-              <button
-                onClick={() => setPreviewState(null)}
-                disabled={runningAutomations}
-                className="text-sm px-4 py-2 rounded-[8px] bg-brand-500 text-white font-semibold hover:bg-brand-600 disabled:opacity-50"
-              >
-                Close
-              </button>
+                        <ul className="divide-y divide-surface-divider rounded-[8px] border border-surface-border">
+                          {otherRules.map(renderRow)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="px-6 py-4 flex justify-end border-t border-surface-divider mt-2">
+                <button
+                  onClick={() => setPreviewState(null)}
+                  disabled={runningAutomations}
+                  className="text-sm px-4 py-2 rounded-[8px] bg-brand-500 text-white font-semibold hover:bg-brand-600 disabled:opacity-50"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {viewingRule && (
         <AutomationPreviewModal

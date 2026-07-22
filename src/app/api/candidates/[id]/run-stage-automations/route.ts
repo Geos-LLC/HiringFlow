@@ -13,83 +13,109 @@ import { flowScopeFragment } from '@/lib/automation-flow-scope'
 // re-fire automations against a candidate. Super admins are always allowed.
 const RERUN_ADMIN_ROLES = new Set(['admin', 'owner'])
 
-// Manually fire all automations attached (via funnel-stage triggers) to a
-// given stage, for one candidate. Each stage has zero or more StageTriggers
-// (event + optional targetId). For every trigger event we find active
-// AutomationRules that share the same triggerType and either match the
-// candidate's flowId or have no flow filter, then dispatch them through
-// the SAME path a real trigger uses — `dispatchRule` queues each step at
-// its own `delayMinutes` via QStash, so a rule with step 0 at +2m and
-// step 1 at +3d behaves exactly like a real flow_completed event: first
-// email lands in 2 minutes, follow-up lands in 3 days. NOT both at once.
+// Manually fire automations for one candidate.
+//
+// Eligibility (both GET and POST) is: rule is active, in the candidate's
+// workspace, and passes flow + pipeline scope for this candidate. stageId
+// is now purely informational — when provided we flag each returned rule
+// with `matchesStage` so the UI can group "matches current stage" vs
+// "other rules" — but we no longer refuse to list or fire rules that
+// don't match the stage. Recruiters wanted the Run button available at
+// all times, not just when the current stage has attached triggers.
+//
+// Dispatch still routes through `dispatchRule`, which queues each step at
+// its `delayMinutes` via QStash, so a rule with step 0 at +2m and step 1
+// at +3d behaves exactly like the real trigger firing now: first email
+// lands in 2 minutes, follow-up lands in 3 days. NOT both at once.
 //
 // Pre-fix (commit ef0f230, since reverted in this endpoint): we called
 // executeRule which iterates every step inline ignoring delays — that
 // sent 2 emails to the same candidate within ~200ms of each other.
-//
-// GET returns the same matched-rule list without firing, so the UI can show
-// a count / button-enabled state.
 
 interface MatchedRule {
   id: string
   name: string
   triggerType: string
   isActive: boolean
+  matchesStage?: boolean
 }
 
-async function findMatchingRules(opts: {
+async function findApplicableRules(opts: {
   workspaceId: string
-  stageId: string
   flowId: string
-}): Promise<{ stageExists: boolean; events: StageTriggerEvent[]; rules: MatchedRule[] }> {
+  stageId?: string | null
+}): Promise<{
+  stageExists: boolean
+  stageId: string | null
+  events: StageTriggerEvent[]
+  rules: MatchedRule[]
+}> {
   // Stages live on the flow's pipeline now. Workspaces with no pipeline yet
   // get one created on the fly from their legacy Workspace.settings.funnelStages.
   const pipeline = await resolvePipelineForFlow({
     flowId: opts.flowId,
     workspaceId: opts.workspaceId,
   })
-  const stages = stagesFor(pipeline)
-  const stage = stages.find((s) => s.id === opts.stageId)
-  if (!stage) return { stageExists: false, events: [], rules: [] }
 
-  const events = Array.from(new Set((stage.triggers ?? []).map((t) => t.event)))
-
-  // A rule matches this stage when EITHER:
-  //  - it's explicitly pinned (stageId === opts.stageId), OR
-  //  - stageId is null AND its triggerType is one of the stage's events.
-  // Explicit pins win even if the stage has no triggers configured, so a
-  // recruiter can attach an automation manually without first having to
-  // hook the trigger into the stage.
-  const stageMatch = [
-    { stageId: opts.stageId },
-    ...(events.length > 0 ? [{ stageId: null, triggerType: { in: events } }] : []),
-  ]
+  let stage: ReturnType<typeof stagesFor>[number] | undefined
+  let events: StageTriggerEvent[] = []
+  let stageExists = true
+  if (opts.stageId) {
+    const stages = stagesFor(pipeline)
+    stage = stages.find((s) => s.id === opts.stageId)
+    if (!stage) {
+      // Stage id supplied but not found on this pipeline — return the
+      // workspace-scoped list anyway with matchesStage=false everywhere,
+      // rather than 404ing. Caller only uses stageExists for context, not
+      // as a hard gate.
+      stageExists = false
+    } else {
+      events = Array.from(new Set((stage.triggers ?? []).map((t) => t.event)))
+    }
+  }
 
   const rules = await prisma.automationRule.findMany({
     where: {
       workspaceId: opts.workspaceId,
       isActive: true,
       AND: [
-        { OR: stageMatch },
         flowScopeFragment(opts.flowId),
         // Pipeline scope: only rules pinned to this pipeline (or
         // workspace-wide, pipelineId=null) are eligible.
         pipelineScopeFragment(pipeline.id),
       ],
     },
-    select: { id: true, name: true, triggerType: true, isActive: true },
+    select: { id: true, name: true, triggerType: true, isActive: true, stageId: true },
     orderBy: { createdAt: 'asc' },
   })
 
-  return { stageExists: true, events, rules }
+  const eventSet = new Set(events)
+  const stageIdForMatch = stage?.id ?? null
+  const matched: MatchedRule[] = rules.map((r) => {
+    const matchesStage = stageIdForMatch
+      ? r.stageId === stageIdForMatch ||
+        (r.stageId === null && eventSet.has(r.triggerType as StageTriggerEvent))
+      : false
+    return {
+      id: r.id,
+      name: r.name,
+      triggerType: r.triggerType,
+      isActive: r.isActive,
+      matchesStage,
+    }
+  })
+
+  return { stageExists, stageId: stageIdForMatch, events, rules: matched }
 }
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
 
+  // stageId is optional now — when supplied, each rule row is annotated with
+  // matchesStage so the UI can group. When absent, we return every applicable
+  // workspace rule for this candidate.
   const stageId = request.nextUrl.searchParams.get('stageId')
-  if (!stageId) return NextResponse.json({ error: 'stageId is required' }, { status: 400 })
 
   const session = await prisma.session.findFirst({
     where: { id: params.id, workspaceId: ws.workspaceId },
@@ -97,12 +123,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   })
   if (!session) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const { stageExists, events, rules } = await findMatchingRules({
+  const { events, rules } = await findApplicableRules({
     workspaceId: ws.workspaceId,
-    stageId,
     flowId: session.flowId,
+    stageId,
   })
-  if (!stageExists) return NextResponse.json({ error: 'Stage not found' }, { status: 404 })
 
   return NextResponse.json({ events, rules })
 }
@@ -125,9 +150,6 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     ruleId?: string
     force?: boolean
   }
-  if (!stageId || typeof stageId !== 'string') {
-    return NextResponse.json({ error: 'stageId is required' }, { status: 400 })
-  }
 
   const isAdminLike = ws.isSuperAdmin || RERUN_ADMIN_ROLES.has(ws.role)
   if (force === true && !isAdminLike) {
@@ -140,18 +162,28 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   })
   if (!session) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const { stageExists, rules: matchedRules } = await findMatchingRules({
+  const { rules: applicableRules } = await findApplicableRules({
     workspaceId: ws.workspaceId,
-    stageId,
     flowId: session.flowId,
+    stageId: stageId ?? null,
   })
-  if (!stageExists) return NextResponse.json({ error: 'Stage not found' }, { status: 404 })
 
-  const rules = ruleId
-    ? matchedRules.filter((r) => r.id === ruleId)
-    : matchedRules
-  if (ruleId && rules.length === 0) {
-    return NextResponse.json({ error: 'Rule not found for this stage' }, { status: 404 })
+  // No stageId AND no ruleId is ambiguous — we don't want a caller
+  // accidentally firing every workspace rule against a candidate. Require
+  // at least one of them.
+  if (!stageId && !ruleId) {
+    return NextResponse.json({ error: 'ruleId is required when stageId is omitted' }, { status: 400 })
+  }
+
+  let rules: typeof applicableRules
+  if (ruleId) {
+    rules = applicableRules.filter((r) => r.id === ruleId)
+    if (rules.length === 0) {
+      return NextResponse.json({ error: 'Rule is not applicable to this candidate' }, { status: 404 })
+    }
+  } else {
+    // Legacy path: stageId only → fire every rule that matches this stage.
+    rules = applicableRules.filter((r) => r.matchesStage)
   }
   if (rules.length === 0) return NextResponse.json({ fired: 0, results: [] })
 
