@@ -152,7 +152,23 @@ export async function GET(request: NextRequest) {
         payload: { outcome },
         dispatch: () => fireAutomations(s.id, outcome, { executionMode: 'cron' }),
       })
-      if (result.accepted) counts.fired.flowCompleted++
+      if (result.accepted) {
+        counts.fired.flowCompleted++
+      } else if (result.reason === 'duplicate' && result.eventId) {
+        // Prior emit landed but the absence of an AutomationExecution row
+        // (checked above) proves dispatch didn't reach executeStep. The
+        // (workspaceId, eventKey) dedup blocks the normal recovery path:
+        // emit returned "duplicate" so the dispatch closure we passed never
+        // ran. The orphan sweep is also no help — it skips events whose
+        // dispatchedAt is already set. Redispatch directly. Mirrors the
+        // Rule 2 self-heal added in d0aad84 — Nicole Walker 2026-07-14 sat
+        // in this state for 14 hours until a manual rerun.
+        await redispatchAcceptedEvent({
+          eventId: result.eventId,
+          dispatch: () => fireAutomations(s.id, outcome, { executionMode: 'cron' }),
+        })
+        counts.fired.flowCompleted++
+      }
     } catch (err) {
       counts.errors++
       console.error('[reconcile-automations] flow_completed emit failed', { sessionId: s.id, err })

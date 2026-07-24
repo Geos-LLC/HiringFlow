@@ -47,44 +47,45 @@ const PRE_MEETING_TRIGGERS = new Set([
 type FireDispatchOptions = { executionMode?: ExecutionMode; actorUserId?: string | null }
 
 export async function fireAutomations(sessionId: string, outcome: string, opts?: FireDispatchOptions) {
-  try {
-    const session = await prisma.session.findUnique({
-      where: { id: sessionId },
-      include: { flow: true, ad: true },
-    })
-    if (!session) return
+  // No try/catch swallow: emitAutomationEvent records dispatchError and skips
+  // stamping dispatchedAt when this throws, which is what lets the orphan
+  // sweep retry. Eating the exception here made Nicole Walker's flow_completed
+  // silently stamp dispatchedAt with zero executions (2026-07-14) — same
+  // shape as the recording_ready swallow fixed in d0aad84.
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: { flow: true, ad: true },
+  })
+  if (!session) return
 
-    const triggerType = outcome === 'passed' ? 'flow_passed' : outcome === 'completed' ? 'flow_completed' : null
-    if (!triggerType) return
+  const triggerType = outcome === 'passed' ? 'flow_passed' : outcome === 'completed' ? 'flow_completed' : null
+  if (!triggerType) return
 
-    // Snapshot pipelineStatus BEFORE applyStageTrigger so delayed sends pinned
-    // to the pre-advance stage still match at QStash callback time.
-    const triggerStageSnapshot = session.pipelineStatus ?? null
+  // Snapshot pipelineStatus BEFORE applyStageTrigger so delayed sends pinned
+  // to the pre-advance stage still match at QStash callback time.
+  const triggerStageSnapshot = session.pipelineStatus ?? null
 
-    const legacyStatus = outcome === 'passed' ? 'passed' : 'completed_flow'
-    await applyStageTrigger({
-      sessionId,
-      workspaceId: session.workspaceId,
-      event: triggerType,
-      flowId: session.flowId,
-      legacyStatus,
-    }).catch(() => updatePipelineStatus(sessionId, legacyStatus).catch(() => {}))
+  const legacyStatus = outcome === 'passed' ? 'passed' : 'completed_flow'
+  await applyStageTrigger({
+    sessionId,
+    workspaceId: session.workspaceId,
+    event: triggerType,
+    flowId: session.flowId,
+    legacyStatus,
+  }).catch(() => updatePipelineStatus(sessionId, legacyStatus).catch(() => {}))
 
-    // Candidate submitted the flow. Nuke any pending flow_started nudges —
-    // those were "finish your application" prompts, moot now that they did.
-    await cancelPendingStepsForSession(sessionId, {
-      ruleTriggerTypes: new Set(['flow_started']),
-      reason: 'Flow was completed before this step fired',
-    }).catch((err) => console.error('[Automation] cancel flow_started follow-ups failed:', err))
+  // Candidate submitted the flow. Nuke any pending flow_started nudges —
+  // those were "finish your application" prompts, moot now that they did.
+  await cancelPendingStepsForSession(sessionId, {
+    ruleTriggerTypes: new Set(['flow_started']),
+    reason: 'Flow was completed before this step fired',
+  }).catch((err) => console.error('[Automation] cancel flow_started follow-ups failed:', err))
 
-    await dispatchRulesForTrigger(sessionId, triggerType, session, {
-      executionMode: opts?.executionMode,
-      actorUserId: opts?.actorUserId,
-      triggerStageSnapshot,
-    })
-  } catch (error) {
-    console.error('[Automation] Error firing automations for session', sessionId, ':', error)
-  }
+  await dispatchRulesForTrigger(sessionId, triggerType, session, {
+    executionMode: opts?.executionMode,
+    actorUserId: opts?.actorUserId,
+    triggerStageSnapshot,
+  })
 }
 
 /**
