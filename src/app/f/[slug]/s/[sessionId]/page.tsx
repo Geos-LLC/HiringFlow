@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import VideoRecorder from '@/components/VideoRecorder'
 import CaptureRecorder from '@/components/CaptureRecorder'
-import CaptionedVideo, { type CaptionStyle, DEFAULT_CAPTION_STYLE } from '@/components/CaptionedVideo'
+import CaptionedVideo, { type CaptionStyle, DEFAULT_CAPTION_STYLE, type VideoWatchTelemetry } from '@/components/CaptionedVideo'
 import { TrainingViewer } from '@/components/TrainingViewer'
 
 interface CaptureStepConfig {
@@ -248,6 +248,23 @@ export default function SessionPlayerPage() {
   const handleVideoEnd = () => {
     setVideoEnded(true)
   }
+
+  // Persist video watch telemetry to the server. Called by CaptionedVideo on
+  // pause / seeked / ended / unmount. Fire-and-forget with keepalive so the
+  // unmount POST (which fires as the candidate advances to the next step)
+  // survives even though the current React tree is being torn down. Errors
+  // are swallowed — telemetry drops shouldn't interrupt the interview.
+  const reportWatchTelemetry = useCallback((stepId: string, data: VideoWatchTelemetry) => {
+    if (isPreview) return // recruiter previewing their own flow → skip
+    try {
+      fetch(`/api/public/sessions/${sessionId}/video-watch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stepId, ...data }),
+        keepalive: true,
+      }).catch(() => {})
+    } catch { /* silent */ }
+  }, [sessionId, isPreview])
 
   const handleFormSubmit = async () => {
     if (!step) return
@@ -967,6 +984,7 @@ export default function SessionPlayerPage() {
                     captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}
                     autoPlay
                     onEnded={handleVideoEnd}
+                    onWatchTelemetry={(data) => reportWatchTelemetry(step.stepId, data)}
                     // Pin the <video> element to a 16:9 aspect ratio via
                     // aspect-video so the box is a fixed shape from
                     // mount — before HLS attaches, before metadata
@@ -1081,6 +1099,7 @@ export default function SessionPlayerPage() {
                 captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}
                 autoPlay
                 onEnded={handleVideoEnd}
+                onWatchTelemetry={(data) => reportWatchTelemetry(step.stepId, data)}
                 className="w-full h-full object-cover"
               />
               {/* Overlay questions on mobile */}

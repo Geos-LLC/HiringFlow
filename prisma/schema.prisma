@@ -814,6 +814,7 @@ model FlowStep {
   submissions      CandidateSubmission[]
   captureResponses CaptureResponse[]
   sessions         Session[]             @relation("LastStep")
+  videoWatches     SessionVideoWatch[]
 
   @@map("flow_steps")
 }
@@ -944,6 +945,7 @@ model Session {
   stageEntries            StageEntry[]
   aiCallCandidates        AICallCandidate[]
   evaluations             CandidateEvaluation[]
+  videoWatches            SessionVideoWatch[]
 
   // Composite index for the board's default "active candidates" filter and
   // for the cron stalled detector's per-workspace sweep — both query by
@@ -987,6 +989,45 @@ model SessionAnswer {
 
   @@index([sessionId, stepId])
   @@map("session_answers")
+}
+
+// Per-video watch telemetry for a candidate's viewing of a flow-step video.
+// One row per (sessionId, stepId) — upserted by the public session player as
+// the candidate scrubs. Captures both the raw seek events and the derived
+// coverage stats so the recruiter can see whether the candidate actually
+// watched the video or skimmed it.
+//
+// - `events` is the raw log: [{ t: <wallclock ms since firstPlay>, from: <sec>, to: <sec> }...]
+//   Only user-initiated seeks are recorded; the play-start 0→0 seek and any
+//   programmatic seeks the player fires (autoplay resume, hls.js buffering
+//   nudges) are filtered client-side before upload.
+// - `watchedRanges` is the merged union of continuously-played intervals
+//   [[start, end], ...] sorted by start. Sum = watchedSec.
+// - Derived counters (watchedSec, coveragePct, seekCount, forwardSkipCount,
+//   backwardSeekCount, maxSkipSec) are recomputed server-side from events +
+//   watchedRanges every upsert so the client can't inflate them.
+model SessionVideoWatch {
+  id                 String   @id @default(uuid())
+  sessionId          String   @map("session_id")
+  session            Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  stepId             String   @map("step_id")
+  step               FlowStep @relation(fields: [stepId], references: [id])
+  durationSec        Float?   @map("duration_sec")
+  watchedSec         Float    @default(0) @map("watched_sec")
+  coveragePct        Float    @default(0) @map("coverage_pct")
+  seekCount          Int      @default(0) @map("seek_count")
+  forwardSkipCount   Int      @default(0) @map("forward_skip_count")
+  backwardSeekCount  Int      @default(0) @map("backward_seek_count")
+  maxForwardSkipSec  Float    @default(0) @map("max_forward_skip_sec")
+  completed          Boolean  @default(false)
+  events             Json     @default("[]")
+  watchedRanges      Json     @default("[]")
+  firstPlayAt        DateTime? @map("first_play_at")
+  lastUpdatedAt      DateTime @default(now()) @updatedAt @map("last_updated_at")
+
+  @@unique([sessionId, stepId])
+  @@index([stepId])
+  @@map("session_video_watches")
 }
 
 model CandidateSubmission {

@@ -51,6 +51,15 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         },
         orderBy: { submittedAt: 'asc' },
       },
+      // Per-step video watch telemetry — recorded by the candidate-facing
+      // flow player. Used by the timeline to show whether the candidate
+      // watched each flow video end-to-end or scrubbed past it.
+      videoWatches: {
+        include: {
+          step: { select: { id: true, title: true } },
+        },
+        orderBy: { lastUpdatedAt: 'asc' },
+      },
       trainingEnrollments: {
         include: {
           training: {

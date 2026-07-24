@@ -40,6 +40,14 @@ const FONT_OPTIONS = [
   { label: 'Impact', value: 'Impact, sans-serif' },
 ]
 
+export interface VideoWatchTelemetry {
+  durationSec: number | null
+  watchedRanges: Array<[number, number]>
+  events: Array<{ t: number; from: number; to: number }>
+  firstPlayAt: string | null
+  completed: boolean
+}
+
 interface CaptionedVideoProps {
   src: string
   /** R2 HLS master.m3u8 — preferred when present. The raw `src` is the
@@ -61,6 +69,12 @@ interface CaptionedVideoProps {
   showStyleEditor?: boolean
   autoPlay?: boolean
   onEnded?: () => void
+  /** Fired on pause / seeked / ended / unmount when set. Used by the
+   *  candidate-facing flow player to record how the video was actually
+   *  consumed (skipped past, rewound, watched end-to-end). Only user-
+   *  initiated seeks land in `events` — the initial 0→0 play seek and
+   *  programmatic seeks driven by hls.js / autoplay are filtered out. */
+  onWatchTelemetry?: (data: VideoWatchTelemetry) => void
   className?: string
   videoClassName?: string
 }
@@ -77,6 +91,7 @@ export default function CaptionedVideo({
   showStyleEditor = false,
   autoPlay = false,
   onEnded,
+  onWatchTelemetry,
   className,
   videoClassName,
 }: CaptionedVideoProps) {
@@ -115,6 +130,159 @@ export default function CaptionedVideo({
     video.addEventListener('timeupdate', handleTimeUpdate)
     return () => video.removeEventListener('timeupdate', handleTimeUpdate)
   }, [])
+
+  // Watch-telemetry: track which chunks of the video were actually played and
+  // every user-initiated seek. Fires onWatchTelemetry on pause / seeked / ended
+  // and on unmount so the candidate-facing player can persist per-step viewing
+  // stats to the server. No-op when the caller doesn't wire the callback.
+  const watchStateRef = useRef<{
+    // Playhead just before the current `seeking` — used as `from` on `seeked`.
+    lastPlayhead: number
+    // Continuously-watched chunk. Opened on `playing`, closed on pause/seek.
+    segmentStart: number | null
+    // Merged watched-range set. Flushed to telemetry payload every callback.
+    ranges: Array<[number, number]>
+    events: Array<{ t: number; from: number; to: number }>
+    firstPlayAt: number | null
+    // Set on any pointer/keyboard/wheel input the user aims at the player.
+    // Cleared after the resulting `seeked` fires so programmatic seeks
+    // (hls.js buffering nudges, autoplay resume) don't get logged.
+    userInitiated: boolean
+    completed: boolean
+  }>({
+    lastPlayhead: 0,
+    segmentStart: null,
+    ranges: [],
+    events: [],
+    firstPlayAt: null,
+    userInitiated: false,
+    completed: false,
+  })
+
+  // Keep the latest callback in a ref so parent re-renders don't tear down
+  // the tracking effect (which would wipe the state ref via cleanup emit()).
+  const onWatchTelemetryRef = useRef(onWatchTelemetry)
+  useEffect(() => { onWatchTelemetryRef.current = onWatchTelemetry }, [onWatchTelemetry])
+
+  useEffect(() => {
+    if (!onWatchTelemetryRef.current) return
+    const video = videoRef.current
+    if (!video) return
+    const state = watchStateRef.current
+
+    const mergeRange = (start: number, end: number) => {
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return
+      if (end <= start + 0.25) return
+      const ranges = state.ranges
+      let inserted: [number, number] = [start, end]
+      const next: Array<[number, number]> = []
+      for (const r of ranges) {
+        if (r[1] < inserted[0] - 0.25) {
+          next.push(r)
+        } else if (r[0] > inserted[1] + 0.25) {
+          next.push(inserted)
+          inserted = r
+        } else {
+          inserted = [Math.min(r[0], inserted[0]), Math.max(r[1], inserted[1])]
+        }
+      }
+      next.push(inserted)
+      state.ranges = next
+    }
+
+    const closeSegment = () => {
+      if (state.segmentStart == null) return
+      mergeRange(state.segmentStart, video.currentTime)
+      state.segmentStart = null
+    }
+
+    const emit = () => {
+      const cb = onWatchTelemetryRef.current
+      if (!cb) return
+      cb({
+        durationSec: Number.isFinite(video.duration) ? video.duration : null,
+        watchedRanges: state.ranges.map(([s, e]) => [s, e] as [number, number]),
+        events: state.events.slice(),
+        firstPlayAt: state.firstPlayAt ? new Date(state.firstPlayAt).toISOString() : null,
+        completed: state.completed,
+      })
+    }
+
+    const handlePlaying = () => {
+      if (state.firstPlayAt == null) state.firstPlayAt = Date.now()
+      state.segmentStart = video.currentTime
+    }
+    const handleTimeUpdate = () => {
+      state.lastPlayhead = video.currentTime
+    }
+    const handleSeeking = () => {
+      closeSegment()
+    }
+    const handleSeeked = () => {
+      const from = state.lastPlayhead
+      const to = video.currentTime
+      // Filter: the initial 0→0 nudge fires before any real interaction, and
+      // programmatic seeks from hls.js / autoplay resume never come with a
+      // user-input flag. Only user-flagged seeks with a meaningful delta land
+      // in the event log.
+      if (state.userInitiated && Math.abs(to - from) >= 0.5 && state.firstPlayAt != null) {
+        state.events.push({
+          t: Date.now() - state.firstPlayAt,
+          from,
+          to,
+        })
+      }
+      state.userInitiated = false
+      state.lastPlayhead = to
+      // Only re-open a segment if the video was playing (paused seeks stay
+      // closed until the user hits play again).
+      if (!video.paused) state.segmentStart = to
+      emit()
+    }
+    const handlePause = () => {
+      closeSegment()
+      emit()
+    }
+    const handleEnded = () => {
+      closeSegment()
+      state.completed = true
+      emit()
+    }
+    // Any pointer / keyboard / wheel input on the player counts as user
+    // intent — the resulting seek gets logged; anything else is filtered.
+    const markUserInitiated = () => { state.userInitiated = true }
+
+    video.addEventListener('playing', handlePlaying)
+    video.addEventListener('timeupdate', handleTimeUpdate)
+    video.addEventListener('seeking', handleSeeking)
+    video.addEventListener('seeked', handleSeeked)
+    video.addEventListener('pause', handlePause)
+    video.addEventListener('ended', handleEnded)
+    video.addEventListener('pointerdown', markUserInitiated)
+    video.addEventListener('keydown', markUserInitiated)
+    video.addEventListener('wheel', markUserInitiated, { passive: true })
+    video.addEventListener('touchstart', markUserInitiated, { passive: true })
+
+    return () => {
+      closeSegment()
+      // Fire one last emit on unmount so the server has the freshest data
+      // when the candidate advances to the next step.
+      emit()
+      video.removeEventListener('playing', handlePlaying)
+      video.removeEventListener('timeupdate', handleTimeUpdate)
+      video.removeEventListener('seeking', handleSeeking)
+      video.removeEventListener('seeked', handleSeeked)
+      video.removeEventListener('pause', handlePause)
+      video.removeEventListener('ended', handleEnded)
+      video.removeEventListener('pointerdown', markUserInitiated)
+      video.removeEventListener('keydown', markUserInitiated)
+      video.removeEventListener('wheel', markUserInitiated)
+      video.removeEventListener('touchstart', markUserInitiated)
+    }
+    // canPlay flips true after HLS/MSE attaches → the <video> ref becomes
+    // real, so re-run the effect then. The callback is read through the ref
+    // above so parent re-renders don't tear down the tracking state.
+  }, [canPlay])
 
   // When the video is still transcoding but we have the just-recorded
   // blob in the in-tab cache, attach it directly to the visible <video>

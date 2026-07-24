@@ -63,6 +63,23 @@ interface Submission {
   id: string; submittedAt: string; videoStorageKey: string | null; videoFilename: string | null; textMessage: string | null
   step: { id: string; title: string; questionText: string | null }
 }
+interface VideoWatch {
+  id: string
+  stepId: string
+  durationSec: number | null
+  watchedSec: number
+  coveragePct: number
+  seekCount: number
+  forwardSkipCount: number
+  backwardSeekCount: number
+  maxForwardSkipSec: number
+  completed: boolean
+  events: Array<{ t: number; from: number; to: number }>
+  watchedRanges: Array<[number, number]>
+  firstPlayAt: string | null
+  lastUpdatedAt: string
+  step: { id: string; title: string }
+}
 interface TrainingSection {
   id: string; title: string; sortOrder: number; kind: string
   contents?: { id: string; type: string }[]
@@ -150,7 +167,7 @@ interface CandidateDetail {
   lastStep: { id: string; title: string; stepOrder: number; stepType: string; questionType: string } | null
   flowStepCount: number
   ad: { id: string; name: string; source: string } | null
-  answers: Answer[]; submissions: Submission[]
+  answers: Answer[]; submissions: Submission[]; videoWatches: VideoWatch[]
   trainingEnrollments: TrainingEnrollment[]; schedulingEvents: SchedulingEvent[]
   automationExecutions?: AutomationExec[]
   interviewMeetings?: { id: string; actualStart: string | null; actualEnd: string | null; scheduledStart: string; scheduledEnd: string; meetingUri: string | null; confirmedAt: string | null; createdAt: string }[]
@@ -200,7 +217,7 @@ export default function CandidateDetailPage() {
   const id = params.id as string
   const [candidate, setCandidate] = useState<CandidateDetail | null>(null)
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState<'answers' | 'submissions' | 'captures' | 'timeline'>('answers')
+  const [tab, setTab] = useState<'answers' | 'submissions' | 'captures' | 'watches' | 'timeline'>('answers')
   const [captures, setCaptures] = useState<CaptureSummary[] | null>(null)
   const [capturesLoading, setCapturesLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -1746,6 +1763,7 @@ export default function CandidateDetailPage() {
           // Captures count is loaded lazily on tab open; show '…' until the
           // fetch lands. The lazy load keeps the main candidate payload tight.
           { key: 'captures' as const, label: `Captures (${captures == null ? '…' : captures.length})` },
+          { key: 'watches' as const, label: `Video watches (${candidate.videoWatches?.length ?? 0})` },
           { key: 'timeline' as const, label: `Timeline (${timeline.length})` },
         ].map(t => (
           <button
@@ -1845,6 +1863,112 @@ export default function CandidateDetailPage() {
               </div>
             ))
           )}
+        </div>
+      )}
+
+      {/* Video watches tab — per-flow-step player telemetry (coverage,
+          seek log, forward-skip vs. rewind). Populated by
+          /api/public/sessions/[id]/video-watch during the candidate's
+          session; rows are keyed by (session, step). */}
+      {tab === 'watches' && (
+        <div className="space-y-4">
+          {(!candidate.videoWatches || candidate.videoWatches.length === 0) ? (
+            <div className="bg-white rounded-[12px] border border-surface-border p-8 text-center text-grey-40">
+              No video watches recorded yet
+            </div>
+          ) : candidate.videoWatches.map((w) => {
+            const dur = w.durationSec ?? 0
+            const fmt = (s: number) => {
+              if (!Number.isFinite(s) || s < 0) return '0:00'
+              const m = Math.floor(s / 60)
+              const sec = Math.floor(s % 60)
+              return `${m}:${sec.toString().padStart(2, '0')}`
+            }
+            return (
+              <div key={w.id} className="bg-white rounded-[8px] border border-surface-border p-4">
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="text-sm font-medium text-grey-15">{w.step.title || 'Video step'}</div>
+                  <div className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    w.completed ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'
+                  }`}>
+                    {w.completed ? 'Watched to end' : 'Did not finish'}
+                  </div>
+                </div>
+
+                {/* Watched-range heatmap. Green = watched, grey = skipped. */}
+                {dur > 0 && (
+                  <div className="relative h-3 w-full bg-grey-90 rounded overflow-hidden mb-3">
+                    {w.watchedRanges.map(([s, e], idx) => (
+                      <div
+                        key={idx}
+                        className="absolute top-0 h-full bg-green-500/80"
+                        style={{
+                          left: `${(s / dur) * 100}%`,
+                          width: `${Math.max(0.5, ((e - s) / dur) * 100)}%`,
+                        }}
+                      />
+                    ))}
+                    {/* Seek arrows overlaid on the timeline */}
+                    {w.events.map((ev, idx) => (
+                      <div
+                        key={`ev-${idx}`}
+                        title={`Skipped from ${fmt(ev.from)} to ${fmt(ev.to)}`}
+                        className={`absolute top-0 h-full w-0.5 ${ev.to > ev.from ? 'bg-orange-500' : 'bg-blue-500'}`}
+                        style={{ left: `${(ev.to / dur) * 100}%` }}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-3">
+                  <div>
+                    <div className="text-grey-50">Coverage</div>
+                    <div className="text-grey-15 font-medium">{w.coveragePct.toFixed(0)}%</div>
+                  </div>
+                  <div>
+                    <div className="text-grey-50">Watched</div>
+                    <div className="text-grey-15 font-medium">
+                      {fmt(w.watchedSec)}{dur > 0 ? ` / ${fmt(dur)}` : ''}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-grey-50">Seeks</div>
+                    <div className="text-grey-15 font-medium">
+                      {w.seekCount === 0 ? 'None' : `${w.seekCount} (${w.forwardSkipCount}→ ${w.backwardSeekCount}←)`}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-grey-50">Biggest skip</div>
+                    <div className="text-grey-15 font-medium">
+                      {w.maxForwardSkipSec > 0 ? fmt(w.maxForwardSkipSec) : '—'}
+                    </div>
+                  </div>
+                </div>
+
+                {w.events.length > 0 && (
+                  <details className="text-xs text-grey-35">
+                    <summary className="cursor-pointer text-grey-40 hover:text-grey-20">
+                      Seek log ({w.events.length})
+                    </summary>
+                    <ul className="mt-2 space-y-0.5 font-mono">
+                      {w.events.map((ev, idx) => (
+                        <li key={idx}>
+                          {ev.to > ev.from ? '⏩' : '⏪'} {fmt(ev.from)} → {fmt(ev.to)}
+                          <span className="text-grey-50 ml-2">
+                            ({ev.to > ev.from ? '+' : ''}{Math.round(ev.to - ev.from)}s)
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+
+                <div className="text-xs text-grey-50 mt-2">
+                  Last update {new Date(w.lastUpdatedAt).toLocaleString()}
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
