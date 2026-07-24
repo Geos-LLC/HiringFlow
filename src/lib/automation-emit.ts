@@ -283,6 +283,7 @@ export async function redispatchAcceptedEvent<T>(opts: {
 // webhooks, cron reconciler, and internal callers all use these.
 
 export const eventKeys = {
+  flowStarted: (sessionId: string) => `flow_started:${sessionId}`,
   flowCompleted: (sessionId: string) => `flow_completed:${sessionId}`,
   flowPassed: (sessionId: string) => `flow_passed:${sessionId}`,
   recordingReadyCapture: (captureResponseId: string) =>

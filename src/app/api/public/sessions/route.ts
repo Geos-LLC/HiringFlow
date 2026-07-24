@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { logger } from '@/lib/logger'
 import { validateEmail, validatePhone } from '@/lib/contact-validation'
 import { findActiveProcessForFlow } from '@/lib/hiring-processes'
+import { emitAutomationEvent, eventKeys } from '@/lib/automation-emit'
+import { fireFlowStartedAutomations } from '@/lib/automation'
 
 // Public endpoint invoked from arbitrary external sites (careers pages,
 // landing forms, etc.). The flowSlug acts as the routing key, so wildcard
@@ -280,6 +282,29 @@ export async function POST(request: NextRequest) {
     }
 
     logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource, processId })
+
+    // Emit `flow_started` so any "finish your application" nudge rule can
+    // fire on a delay. Skipped for: preview mode (recruiter testing), test
+    // sessions (internal email), and pre-completed submissions (the caller
+    // already carried the flow to done, so the flow_completed path is
+    // authoritative — a flow_started nudge would fire and immediately be
+    // cancelled by fireAutomations, generating a skipped_cancelled row for
+    // no reason).
+    if (!preview && effectiveSource !== 'test' && completed !== true) {
+      try {
+        await emitAutomationEvent({
+          workspaceId: flow.workspaceId,
+          sessionId: session.id,
+          triggerType: 'flow_started',
+          eventKey: eventKeys.flowStarted(session.id),
+          source: 'public_endpoint',
+          payload: { flowId: flow.id },
+          dispatch: () => fireFlowStartedAutomations(session.id, { executionMode: 'public_trigger' }),
+        })
+      } catch (err) {
+        logger.warn('flow_started emit failed', { sessionId: session.id, err: err instanceof Error ? err.message : err })
+      }
+    }
 
     return jsonWithCors({
       id: session.id,

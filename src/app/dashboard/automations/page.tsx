@@ -106,6 +106,7 @@ interface ExecutionRow {
 type DestinationFilter = 'all' | 'applicant' | 'company'
 
 const TRIGGERS = [
+  { value: 'flow_started', label: 'Flow Started' },
   { value: 'flow_completed', label: 'Flow Completed' },
   { value: 'flow_passed', label: 'Flow Passed' },
   { value: 'training_started', label: 'Training Started' },
@@ -147,6 +148,7 @@ const SESSION_WIDE_TRIGGERS = new Set([
 ])
 
 const TRIGGER_LABELS: Record<string, string> = {
+  flow_started: 'Flow Started',
   flow_completed: 'Flow Completed',
   flow_passed: 'Flow Passed',
   training_started: 'Training Started',
@@ -181,6 +183,7 @@ const DELAY_PRESETS: Array<{ value: number; label: string }> = [
 // We prefill the actual smsBody field with these when the recruiter
 // switches a step to SMS so the rule is ready to save without typing.
 const TRIGGER_TO_SMS_BODY: Record<string, string> = {
+  flow_started:       'Hi {{candidate_name}}, you started an application for {{flow_name}} but haven\'t submitted it yet. Finish here: {{flow_link}}',
   flow_completed:     'Hi {{candidate_name}}, thanks for applying to {{flow_name}}. We received your application — we\'ll be in touch.',
   flow_passed:        'Hi {{candidate_name}}, you passed the screening for {{flow_name}}! Next step: {{training_link}}',
   training_started:   'Hi {{candidate_name}}, you\'ve started the training. Reply if you have any questions along the way.',
@@ -230,6 +233,7 @@ function detectStepLinkType(step: StepShape, templates: Template[]): LinkType | 
 // prefill a sensible starter template when a recruiter opens "+ New rule"
 // — they shouldn't have to pick from a dropdown to see what will be sent.
 const TRIGGER_TO_TEMPLATE_NAME: Record<string, string> = {
+  flow_started:       'Generic Follow-up',
   flow_completed:     'Form Submit Confirmation',
   flow_passed:        'Training Invitation',
   training_started:   'Generic Follow-up',

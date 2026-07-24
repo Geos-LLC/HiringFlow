@@ -70,6 +70,13 @@ export async function fireAutomations(sessionId: string, outcome: string, opts?:
       legacyStatus,
     }).catch(() => updatePipelineStatus(sessionId, legacyStatus).catch(() => {}))
 
+    // Candidate submitted the flow. Nuke any pending flow_started nudges —
+    // those were "finish your application" prompts, moot now that they did.
+    await cancelPendingStepsForSession(sessionId, {
+      ruleTriggerTypes: new Set(['flow_started']),
+      reason: 'Flow was completed before this step fired',
+    }).catch((err) => console.error('[Automation] cancel flow_started follow-ups failed:', err))
+
     await dispatchRulesForTrigger(sessionId, triggerType, session, {
       executionMode: opts?.executionMode,
       actorUserId: opts?.actorUserId,
@@ -77,6 +84,34 @@ export async function fireAutomations(sessionId: string, outcome: string, opts?:
     })
   } catch (error) {
     console.error('[Automation] Error firing automations for session', sessionId, ':', error)
+  }
+}
+
+/**
+ * Fire `flow_started` rules — typically a delayed "finish your application"
+ * nudge sent when a candidate opens the flow but doesn't submit. Called
+ * once per Session at creation time (see /api/public/sessions). No stage
+ * move; the candidate hasn't done anything yet beyond opening the form.
+ *
+ * Cancellation: `fireAutomations` cancels any queued flow_started steps
+ * when the candidate submits, so a candidate who finishes within the nudge
+ * delay never receives the reminder.
+ */
+export async function fireFlowStartedAutomations(sessionId: string, opts?: FireDispatchOptions) {
+  try {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      include: { flow: true, ad: true },
+    })
+    if (!session) return
+    const triggerStageSnapshot = session.pipelineStatus ?? null
+    await dispatchRulesForTrigger(sessionId, 'flow_started', session, {
+      executionMode: opts?.executionMode,
+      actorUserId: opts?.actorUserId,
+      triggerStageSnapshot,
+    })
+  } catch (error) {
+    console.error('[Automation] Error firing flow_started for session', sessionId, ':', error)
   }
 }
 
@@ -1647,11 +1682,16 @@ export async function executeStep(
     }
   }
 
+  const flowLink = session.flow.slug
+    ? `${process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://www.hirefunnel.app'}/f/${session.flow.slug}/s/${session.id}`
+    : ''
+
   const variables: Record<string, string> = {
     candidate_name: session.candidateName || 'Candidate',
     candidate_email: session.candidateEmail || '',
     candidate_phone: session.candidatePhone || '',
     flow_name: session.flow.name,
+    flow_link: flowLink,
     training_link: trainingLink,
     schedule_link: scheduleLink,
     certn_link: certnLink,
