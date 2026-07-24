@@ -283,19 +283,13 @@ export async function POST(request: NextRequest) {
 
     logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource, processId })
 
-    // Emit `flow_started` for every real candidate session. "Started" is
-    // a strict subset of "completed" — an external-site submission that
-    // arrives with completed=true was still, semantically, started. Sending
-    // both events lets recruiters wire either trigger (or both) without
-    // an invisible carve-out based on submission path.
-    //
-    // For rules with a non-zero delay, the flow_completed dispatch that
-    // follows (via the lifecycle middleware) cancels the pending
-    // flow_started step, so pre-completed sessions don't produce a nudge
-    // send. For delay=0 rules on pre-completed sessions, the flow_started
-    // send lands alongside the flow_completed one — the recruiter's
-    // choice of two rules produces two messages, which is expected.
-    if (!preview && effectiveSource !== 'test') {
+    // Emit `flow_started` for candidates who genuinely started but haven't
+    // submitted. Skipped for pre-completed external-site submissions: the
+    // cancel wiring in fireAutomations would immediately void any queued
+    // flow_started step, and creating that skipped execution row is just
+    // noise. Site-widget submissions should be handled by a flow_completed
+    // rule instead.
+    if (!preview && effectiveSource !== 'test' && completed !== true) {
       try {
         await emitAutomationEvent({
           workspaceId: flow.workspaceId,
