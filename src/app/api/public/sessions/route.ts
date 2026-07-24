@@ -283,14 +283,19 @@ export async function POST(request: NextRequest) {
 
     logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource, processId })
 
-    // Emit `flow_started` so any "finish your application" nudge rule can
-    // fire on a delay. Skipped for: preview mode (recruiter testing), test
-    // sessions (internal email), and pre-completed submissions (the caller
-    // already carried the flow to done, so the flow_completed path is
-    // authoritative — a flow_started nudge would fire and immediately be
-    // cancelled by fireAutomations, generating a skipped_cancelled row for
-    // no reason).
-    if (!preview && effectiveSource !== 'test' && completed !== true) {
+    // Emit `flow_started` for every real candidate session. "Started" is
+    // a strict subset of "completed" — an external-site submission that
+    // arrives with completed=true was still, semantically, started. Sending
+    // both events lets recruiters wire either trigger (or both) without
+    // an invisible carve-out based on submission path.
+    //
+    // For rules with a non-zero delay, the flow_completed dispatch that
+    // follows (via the lifecycle middleware) cancels the pending
+    // flow_started step, so pre-completed sessions don't produce a nudge
+    // send. For delay=0 rules on pre-completed sessions, the flow_started
+    // send lands alongside the flow_completed one — the recruiter's
+    // choice of two rules produces two messages, which is expected.
+    if (!preview && effectiveSource !== 'test') {
       try {
         await emitAutomationEvent({
           workspaceId: flow.workspaceId,
