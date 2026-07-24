@@ -559,10 +559,41 @@ export default function SchedulingPage() {
 
               {useBuiltIn && (
                 <div>
-                  <div className="eyebrow mb-1.5">Custom questions on the booking form</div>
+                  <div className="eyebrow mb-1.5">Questions on the booking form</div>
                   <p className="text-[12px] text-grey-40 mb-2">
-                    Extra fields the candidate answers when they confirm a slot. Name, email, phone are already collected — add anything else you need.
+                    These are what the candidate answers on the confirm step. The first four are built into the platform; add more below.
                   </p>
+
+                  {/* Built-in fields — recruiter can't edit these (they're the
+                      platform baseline) but they're listed so the "add more"
+                      section makes sense in context. Kept in sync with the
+                      hardcoded set in BookingClient.ConfirmStep. */}
+                  <div className="rounded-[8px] border border-surface-border bg-surface-light p-2.5 mb-3">
+                    <div className="font-mono text-[10px] uppercase text-grey-50 mb-1.5" style={{ letterSpacing: '0.08em' }}>
+                      Built-in
+                    </div>
+                    <ul className="space-y-1">
+                      {[
+                        { label: 'Name', required: true },
+                        { label: 'Email', required: true },
+                        { label: 'Phone', required: false },
+                        { label: 'Notes', required: false },
+                      ].map((f) => (
+                        <li key={f.label} className="flex items-center justify-between gap-2 text-[12px]">
+                          <span className="text-grey-15">{f.label}</span>
+                          <span className={`font-mono text-[10px] uppercase px-1.5 py-0.5 rounded ${
+                            f.required ? 'bg-red-50 text-red-600' : 'bg-surface text-grey-40'
+                          }`} style={{ letterSpacing: '0.06em' }}>
+                            {f.required ? 'Required' : 'Optional'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="font-mono text-[10px] uppercase text-grey-50 mb-1.5" style={{ letterSpacing: '0.08em' }}>
+                    Additional questions
+                  </div>
                   <CustomFieldsEditor value={customFields} onChange={setCustomFields} />
                 </div>
               )}
