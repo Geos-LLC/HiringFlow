@@ -60,6 +60,16 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         },
         orderBy: { lastUpdatedAt: 'asc' },
       },
+      // Per-lesson watch telemetry from the TrainingViewer's LessonVideo
+      // player. Same shape as videoWatches — recruiter surface merges the
+      // two so the "Video watches" tab covers both flow videos and training
+      // lessons.
+      trainingVideoWatches: {
+        include: {
+          training: { select: { id: true, title: true, slug: true } },
+        },
+        orderBy: { lastUpdatedAt: 'asc' },
+      },
       trainingEnrollments: {
         include: {
           training: {

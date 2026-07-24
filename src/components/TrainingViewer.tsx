@@ -87,7 +87,7 @@ function reportVideoEvent(payload: Record<string, unknown>) {
 
 type VideoPhase = 'loading' | 'ready' | 'buffering' | 'error'
 
-function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, autoPlay, onEnded, className }: {
+function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, autoPlay, onEnded, className, enrollmentId, accessToken }: {
   src: string
   // When set, the viewer attaches an hls.js MediaSource instead of using `src`
   // directly. Falls through to `src` for legacy Vercel Blob videos and for
@@ -100,11 +100,22 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
   autoPlay?: boolean
   onEnded?: () => void
   className?: string
+  // Passed through from TrainingViewer so this player can POST watch
+  // telemetry (seek log + watched-range heatmap) to
+  // /api/public/trainings/[slug]/video-watch. Both are required to persist —
+  // null on either (preview mode, no enrollment yet) skips the write.
+  enrollmentId?: string | null
+  accessToken?: string | null
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const maxWatchedRef = useRef(0)
   const endedFiredRef = useRef(false)
   const onEndedRef = useRef(onEnded)
+  // Set to true immediately before the requiredWatch rewind fires
+  // `v.currentTime = maxWatchedRef.current`. The watch-telemetry effect
+  // (below) reads it in `seeked` so the auto-rewind isn't logged as a
+  // real user seek. Cleared after the resulting `seeked` fires.
+  const programmaticSeekRef = useRef(false)
   // Telemetry bookkeeping — tracks the lifecycle of THIS video instance so we
   // can compute "time to canplay" and throttle waiting/stalled noise.
   const stallCountRef = useRef(0)
@@ -235,6 +246,7 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     // ── Existing watch-enforcement + completion handlers ──────────────────
     const onTimeUpdate = () => {
       if (requiredWatch && v.currentTime > maxWatchedRef.current + 0.5) {
+        programmaticSeekRef.current = true
         v.currentTime = maxWatchedRef.current
         return
       }
@@ -246,6 +258,7 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     const onSeeking = () => {
       if (!requiredWatch) return
       if (v.currentTime > maxWatchedRef.current + 0.5) {
+        programmaticSeekRef.current = true
         v.currentTime = maxWatchedRef.current
       }
     }
@@ -320,6 +333,123 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
       v.removeEventListener('error', onError)
     }
   }, [requiredWatch, src, slug, contentId, reloadKey])
+
+  // Watch-telemetry: record which chunks of the lesson were actually played
+  // and every user-initiated seek. Posts to /api/public/trainings/[slug]
+  // /video-watch on pause / seeked / ended and on unmount. No-op when the
+  // caller didn't pass enrollment credentials (preview mode, public trainings
+  // without a candidate). Mirrors CaptionedVideo's tracking shape so the same
+  // "Video watches" tab renders both flow-step and training rows.
+  useEffect(() => {
+    if (!enrollmentId) return
+    const v = videoRef.current
+    if (!v) return
+
+    const state = {
+      lastPlayhead: 0,
+      segmentStart: null as number | null,
+      ranges: [] as Array<[number, number]>,
+      events: [] as Array<{ t: number; from: number; to: number }>,
+      firstPlayAt: null as number | null,
+      completed: false,
+      // Set by pointerdown/keydown/wheel/touchstart on the player. Cleared
+      // after each `seeked` so programmatic seeks (hls.js buffering nudges,
+      // requiredWatch auto-rewind) never get logged.
+      userInitiated: false,
+    }
+
+    const mergeRange = (start: number, end: number) => {
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return
+      if (end <= start + 0.25) return
+      let ins: [number, number] = [start, end]
+      const next: Array<[number, number]> = []
+      for (const r of state.ranges) {
+        if (r[1] < ins[0] - 0.25) next.push(r)
+        else if (r[0] > ins[1] + 0.25) { next.push(ins); ins = r }
+        else ins = [Math.min(r[0], ins[0]), Math.max(r[1], ins[1])]
+      }
+      next.push(ins)
+      state.ranges = next
+    }
+    const closeSegment = () => {
+      if (state.segmentStart == null) return
+      mergeRange(state.segmentStart, v.currentTime)
+      state.segmentStart = null
+    }
+    const emit = () => {
+      const payload = {
+        enrollmentId,
+        accessToken: accessToken ?? null,
+        contentId,
+        durationSec: Number.isFinite(v.duration) ? v.duration : null,
+        watchedRanges: state.ranges.map(([s, e]) => [s, e] as [number, number]),
+        events: state.events.slice(),
+        firstPlayAt: state.firstPlayAt ? new Date(state.firstPlayAt).toISOString() : null,
+        completed: state.completed,
+      }
+      try {
+        fetch(`/api/public/trainings/${encodeURIComponent(slug)}/video-watch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(() => {})
+      } catch { /* silent — telemetry is best-effort */ }
+    }
+
+    const handlePlaying = () => {
+      if (state.firstPlayAt == null) state.firstPlayAt = Date.now()
+      state.segmentStart = v.currentTime
+    }
+    const handleTimeUpdateW = () => { state.lastPlayhead = v.currentTime }
+    const handleSeekingW = () => { closeSegment() }
+    const handleSeekedW = () => {
+      const from = state.lastPlayhead
+      const to = v.currentTime
+      const isProgrammatic = programmaticSeekRef.current
+      programmaticSeekRef.current = false
+      if (state.userInitiated && !isProgrammatic && Math.abs(to - from) >= 0.5 && state.firstPlayAt != null) {
+        state.events.push({ t: Date.now() - state.firstPlayAt, from, to })
+      }
+      state.userInitiated = false
+      state.lastPlayhead = to
+      if (!v.paused) state.segmentStart = to
+      emit()
+    }
+    const handlePauseW = () => { closeSegment(); emit() }
+    const handleEndedW = () => { closeSegment(); state.completed = true; emit() }
+    const markUserInitiated = () => { state.userInitiated = true }
+
+    v.addEventListener('playing', handlePlaying)
+    v.addEventListener('timeupdate', handleTimeUpdateW)
+    v.addEventListener('seeking', handleSeekingW)
+    v.addEventListener('seeked', handleSeekedW)
+    v.addEventListener('pause', handlePauseW)
+    v.addEventListener('ended', handleEndedW)
+    v.addEventListener('pointerdown', markUserInitiated)
+    v.addEventListener('keydown', markUserInitiated)
+    v.addEventListener('wheel', markUserInitiated, { passive: true })
+    v.addEventListener('touchstart', markUserInitiated, { passive: true })
+
+    return () => {
+      closeSegment()
+      // Final emit on unmount / lesson advance — the candidate is moving to
+      // the next lesson, so this is our last chance to persist watch state.
+      emit()
+      v.removeEventListener('playing', handlePlaying)
+      v.removeEventListener('timeupdate', handleTimeUpdateW)
+      v.removeEventListener('seeking', handleSeekingW)
+      v.removeEventListener('seeked', handleSeekedW)
+      v.removeEventListener('pause', handlePauseW)
+      v.removeEventListener('ended', handleEndedW)
+      v.removeEventListener('pointerdown', markUserInitiated)
+      v.removeEventListener('keydown', markUserInitiated)
+      v.removeEventListener('wheel', markUserInitiated)
+      v.removeEventListener('touchstart', markUserInitiated)
+    }
+    // Ties to src/reloadKey so a new lesson (or Retry) starts a fresh watch
+    // record. enrollmentId/accessToken/slug/contentId are stable per lesson.
+  }, [enrollmentId, accessToken, slug, contentId, src, reloadKey])
 
   return (
     <div className="relative">
@@ -1056,6 +1186,12 @@ export function TrainingViewer({
                       autoPlay={content.autoplayNext}
                       onEnded={() => setVideoEnded(true)}
                       className="w-full rounded-[8px]"
+                      // Skip watch telemetry entirely in recruiter preview —
+                      // otherwise recruiters QAing their own training would
+                      // pollute candidate watch stats. Real candidates always
+                      // have an enrollmentId once /start has run.
+                      enrollmentId={preview ? null : training.enrollmentId}
+                      accessToken={preview ? null : token}
                     />
                   )}
                   {!videoEnded && <p className="text-sm mt-3 text-center text-[#59595A]">{preview ? 'Preview mode — scrubbing enabled' : content.requiredWatch ? 'Watch the video to continue (skipping ahead is disabled)' : 'Watch the video to continue'}</p>}

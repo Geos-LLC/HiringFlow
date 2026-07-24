@@ -80,6 +80,25 @@ interface VideoWatch {
   lastUpdatedAt: string
   step: { id: string; title: string }
 }
+interface TrainingVideoWatch {
+  id: string
+  contentId: string
+  contentTitle: string | null
+  trainingId: string
+  training: { id: string; title: string; slug: string }
+  durationSec: number | null
+  watchedSec: number
+  coveragePct: number
+  seekCount: number
+  forwardSkipCount: number
+  backwardSeekCount: number
+  maxForwardSkipSec: number
+  completed: boolean
+  events: Array<{ t: number; from: number; to: number }>
+  watchedRanges: Array<[number, number]>
+  firstPlayAt: string | null
+  lastUpdatedAt: string
+}
 interface TrainingSection {
   id: string; title: string; sortOrder: number; kind: string
   contents?: { id: string; type: string }[]
@@ -167,7 +186,7 @@ interface CandidateDetail {
   lastStep: { id: string; title: string; stepOrder: number; stepType: string; questionType: string } | null
   flowStepCount: number
   ad: { id: string; name: string; source: string } | null
-  answers: Answer[]; submissions: Submission[]; videoWatches: VideoWatch[]
+  answers: Answer[]; submissions: Submission[]; videoWatches: VideoWatch[]; trainingVideoWatches: TrainingVideoWatch[]
   trainingEnrollments: TrainingEnrollment[]; schedulingEvents: SchedulingEvent[]
   automationExecutions?: AutomationExec[]
   interviewMeetings?: { id: string; actualStart: string | null; actualEnd: string | null; scheduledStart: string; scheduledEnd: string; meetingUri: string | null; confirmedAt: string | null; createdAt: string }[]
@@ -1763,7 +1782,7 @@ export default function CandidateDetailPage() {
           // Captures count is loaded lazily on tab open; show '…' until the
           // fetch lands. The lazy load keeps the main candidate payload tight.
           { key: 'captures' as const, label: `Captures (${captures == null ? '…' : captures.length})` },
-          { key: 'watches' as const, label: `Video watches (${candidate.videoWatches?.length ?? 0})` },
+          { key: 'watches' as const, label: `Video watches (${(candidate.videoWatches?.length ?? 0) + (candidate.trainingVideoWatches?.length ?? 0)})` },
           { key: 'timeline' as const, label: `Timeline (${timeline.length})` },
         ].map(t => (
           <button
@@ -1866,17 +1885,72 @@ export default function CandidateDetailPage() {
         </div>
       )}
 
-      {/* Video watches tab — per-flow-step player telemetry (coverage,
-          seek log, forward-skip vs. rewind). Populated by
-          /api/public/sessions/[id]/video-watch during the candidate's
-          session; rows are keyed by (session, step). */}
-      {tab === 'watches' && (
+      {/* Video watches tab — merges per-flow-step player telemetry
+          (SessionVideoWatch, from CaptionedVideo in /f/…) with per-lesson
+          training telemetry (TrainingVideoWatch, from LessonVideo in
+          TrainingViewer). Both share the same shape after normalization; a
+          small "Flow" / "Training" badge tells them apart. */}
+      {tab === 'watches' && (() => {
+        type UnifiedWatch = {
+          key: string
+          origin: 'flow' | 'training'
+          title: string
+          contextLabel: string | null
+          durationSec: number | null
+          watchedSec: number
+          coveragePct: number
+          seekCount: number
+          forwardSkipCount: number
+          backwardSeekCount: number
+          maxForwardSkipSec: number
+          completed: boolean
+          events: Array<{ t: number; from: number; to: number }>
+          watchedRanges: Array<[number, number]>
+          lastUpdatedAt: string
+        }
+        const flowWatches: UnifiedWatch[] = (candidate.videoWatches || []).map((w) => ({
+          key: `flow-${w.id}`,
+          origin: 'flow',
+          title: w.step.title || 'Video step',
+          contextLabel: candidate.flow?.name ?? null,
+          durationSec: w.durationSec,
+          watchedSec: w.watchedSec,
+          coveragePct: w.coveragePct,
+          seekCount: w.seekCount,
+          forwardSkipCount: w.forwardSkipCount,
+          backwardSeekCount: w.backwardSeekCount,
+          maxForwardSkipSec: w.maxForwardSkipSec,
+          completed: w.completed,
+          events: w.events,
+          watchedRanges: w.watchedRanges,
+          lastUpdatedAt: w.lastUpdatedAt,
+        }))
+        const trainingWatches: UnifiedWatch[] = (candidate.trainingVideoWatches || []).map((w) => ({
+          key: `training-${w.id}`,
+          origin: 'training',
+          title: w.contentTitle || 'Training lesson',
+          contextLabel: w.training?.title ?? null,
+          durationSec: w.durationSec,
+          watchedSec: w.watchedSec,
+          coveragePct: w.coveragePct,
+          seekCount: w.seekCount,
+          forwardSkipCount: w.forwardSkipCount,
+          backwardSeekCount: w.backwardSeekCount,
+          maxForwardSkipSec: w.maxForwardSkipSec,
+          completed: w.completed,
+          events: w.events,
+          watchedRanges: w.watchedRanges,
+          lastUpdatedAt: w.lastUpdatedAt,
+        }))
+        const watches = [...flowWatches, ...trainingWatches]
+          .sort((a, b) => new Date(a.lastUpdatedAt).getTime() - new Date(b.lastUpdatedAt).getTime())
+        return (
         <div className="space-y-4">
-          {(!candidate.videoWatches || candidate.videoWatches.length === 0) ? (
+          {watches.length === 0 ? (
             <div className="bg-white rounded-[12px] border border-surface-border p-8 text-center text-grey-40">
               No video watches recorded yet
             </div>
-          ) : candidate.videoWatches.map((w) => {
+          ) : watches.map((w) => {
             const dur = w.durationSec ?? 0
             const fmt = (s: number) => {
               if (!Number.isFinite(s) || s < 0) return '0:00'
@@ -1885,15 +1959,25 @@ export default function CandidateDetailPage() {
               return `${m}:${sec.toString().padStart(2, '0')}`
             }
             return (
-              <div key={w.id} className="bg-white rounded-[8px] border border-surface-border p-4">
+              <div key={w.key} className="bg-white rounded-[8px] border border-surface-border p-4">
                 <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="text-sm font-medium text-grey-15">{w.step.title || 'Video step'}</div>
-                  <div className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ${
+                      w.origin === 'flow' ? 'bg-brand-50 text-brand-700' : 'bg-purple-50 text-purple-700'
+                    }`}>
+                      {w.origin === 'flow' ? 'Flow' : 'Training'}
+                    </span>
+                    <div className="text-sm font-medium text-grey-15 truncate">{w.title}</div>
+                  </div>
+                  <div className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
                     w.completed ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'
                   }`}>
                     {w.completed ? 'Watched to end' : 'Did not finish'}
                   </div>
                 </div>
+                {w.contextLabel && (
+                  <div className="text-xs text-grey-50 -mt-2 mb-3">{w.contextLabel}</div>
+                )}
 
                 {/* Watched-range heatmap. Green = watched, grey = skipped. */}
                 {dur > 0 && (
@@ -1970,7 +2054,8 @@ export default function CandidateDetailPage() {
             )
           })}
         </div>
-      )}
+        )
+      })()}
 
       {/* Timeline tab */}
       {tab === 'timeline' && (

@@ -946,6 +946,7 @@ model Session {
   aiCallCandidates        AICallCandidate[]
   evaluations             CandidateEvaluation[]
   videoWatches            SessionVideoWatch[]
+  trainingVideoWatches    TrainingVideoWatch[]
 
   // Composite index for the board's default "active candidates" filter and
   // for the cron stalled detector's per-workspace sweep — both query by
@@ -1030,6 +1031,46 @@ model SessionVideoWatch {
   @@map("session_video_watches")
 }
 
+// Per-training-lesson watch telemetry — mirrors SessionVideoWatch but scoped
+// to training videos (LessonVideo player inside TrainingViewer) so the same
+// coverage %, seek log, and skip counters recruiters see for flow videos
+// also show up for training lessons. Separate table because training videos
+// live under TrainingContent (not FlowStep), and because a candidate can
+// take a training without an active flow session (nullable sessionId).
+model TrainingVideoWatch {
+  id                 String            @id @default(uuid())
+  sessionId          String?           @map("session_id")
+  session            Session?          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  trainingId         String            @map("training_id")
+  training           Training          @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+  contentId          String            @map("content_id")
+  content            TrainingContent?  @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  // Denormalized name of the lesson at watch time — the recruiter timeline
+  // still has to say "watched <lesson>" even if the lesson has since been
+  // renamed or the underlying TrainingContent row was deleted.
+  contentTitle       String?           @map("content_title")
+  durationSec        Float?            @map("duration_sec")
+  watchedSec         Float             @default(0) @map("watched_sec")
+  coveragePct        Float             @default(0) @map("coverage_pct")
+  seekCount          Int               @default(0) @map("seek_count")
+  forwardSkipCount   Int               @default(0) @map("forward_skip_count")
+  backwardSeekCount  Int               @default(0) @map("backward_seek_count")
+  maxForwardSkipSec  Float             @default(0) @map("max_forward_skip_sec")
+  completed          Boolean           @default(false)
+  events             Json              @default("[]")
+  watchedRanges      Json              @default("[]")
+  firstPlayAt        DateTime?         @map("first_play_at")
+  lastUpdatedAt      DateTime          @default(now()) @updatedAt @map("last_updated_at")
+
+  // Candidate can only have one row per lesson — subsequent rewatches merge
+  // via upsert so the merged watchedRanges gives a true "did they watch every
+  // second across all rewatches" answer.
+  @@unique([sessionId, contentId])
+  @@index([trainingId])
+  @@index([contentId])
+  @@map("training_video_watches")
+}
+
 model CandidateSubmission {
   id              String   @id @default(uuid())
   sessionId       String   @map("session_id")
@@ -1092,6 +1133,7 @@ model Training {
   automationSteps AutomationStep[]      @relation("StepTraining")
   flowSteps       FlowStep[]            @relation("FlowStepTraining")
   hiringProcesses HiringProcess[]
+  videoWatches    TrainingVideoWatch[]
 
   @@map("trainings")
 }
@@ -1122,6 +1164,7 @@ model TrainingContent {
   autoplayNext  Boolean         @default(true) @map("autoplay_next")
   textContent   String?         @map("text_content")
   createdAt     DateTime        @default(now()) @map("created_at")
+  videoWatches  TrainingVideoWatch[]
 
   @@map("training_contents")
 }
