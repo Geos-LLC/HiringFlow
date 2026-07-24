@@ -74,7 +74,7 @@ interface VideoWatch {
   backwardSeekCount: number
   maxForwardSkipSec: number
   completed: boolean
-  events: Array<{ t: number; from: number; to: number }>
+  events: Array<{ t: number; from: number; to: number; blocked?: boolean }>
   watchedRanges: Array<[number, number]>
   firstPlayAt: string | null
   lastUpdatedAt: string
@@ -94,7 +94,7 @@ interface TrainingVideoWatch {
   backwardSeekCount: number
   maxForwardSkipSec: number
   completed: boolean
-  events: Array<{ t: number; from: number; to: number }>
+  events: Array<{ t: number; from: number; to: number; blocked?: boolean }>
   watchedRanges: Array<[number, number]>
   firstPlayAt: string | null
   lastUpdatedAt: string
@@ -1904,7 +1904,7 @@ export default function CandidateDetailPage() {
           backwardSeekCount: number
           maxForwardSkipSec: number
           completed: boolean
-          events: Array<{ t: number; from: number; to: number }>
+          events: Array<{ t: number; from: number; to: number; blocked?: boolean }>
           watchedRanges: Array<[number, number]>
           lastUpdatedAt: string
         }
@@ -1979,7 +1979,16 @@ export default function CandidateDetailPage() {
                   <div className="text-xs text-grey-50 -mt-2 mb-3">{w.contextLabel}</div>
                 )}
 
-                {/* Watched-range heatmap. Green = watched, grey = skipped. */}
+                {(() => {
+                  const blockedEvents = w.events.filter(ev => ev.blocked)
+                  const successfulEvents = w.events.filter(ev => !ev.blocked)
+                  const maxBlockedSkipSec = blockedEvents.reduce((m, ev) => Math.max(m, ev.to - ev.from), 0)
+                return (<>
+                {/* Watched-range heatmap. Green = watched (union of played
+                    ranges), grey background = skipped/unwatched. Overlaid:
+                    orange/blue ticks for successful seeks, red ticks with a
+                    left-pointing bracket for blocked skip attempts (where
+                    the enforcer rewound the candidate). */}
                 {dur > 0 && (
                   <div className="relative h-3 w-full bg-grey-90 rounded overflow-hidden mb-3">
                     {w.watchedRanges.map(([s, e], idx) => (
@@ -1992,13 +2001,27 @@ export default function CandidateDetailPage() {
                         }}
                       />
                     ))}
-                    {/* Seek arrows overlaid on the timeline */}
-                    {w.events.map((ev, idx) => (
+                    {successfulEvents.map((ev, idx) => (
                       <div
-                        key={`ev-${idx}`}
-                        title={`Skipped from ${fmt(ev.from)} to ${fmt(ev.to)}`}
+                        key={`ok-${idx}`}
+                        title={`Seeked ${fmt(ev.from)} → ${fmt(ev.to)}`}
                         className={`absolute top-0 h-full w-0.5 ${ev.to > ev.from ? 'bg-orange-500' : 'bg-blue-500'}`}
                         style={{ left: `${(ev.to / dur) * 100}%` }}
+                      />
+                    ))}
+                    {/* Blocked attempts: show a span from `from` to `to`
+                        with a diagonal red hatching so recruiter can see
+                        WHERE the candidate tried to jump AND how far. */}
+                    {blockedEvents.map((ev, idx) => (
+                      <div
+                        key={`bl-${idx}`}
+                        title={`Tried to skip ${fmt(ev.from)} → ${fmt(ev.to)} (blocked)`}
+                        className="absolute top-0 h-full border-l-2 border-red-500/70"
+                        style={{
+                          left: `${(ev.from / dur) * 100}%`,
+                          width: `${Math.max(1, ((ev.to - ev.from) / dur) * 100)}%`,
+                          background: 'repeating-linear-gradient(45deg, rgba(239,68,68,0.35) 0 3px, transparent 3px 6px)',
+                        }}
                       />
                     ))}
                   </div>
@@ -2022,9 +2045,9 @@ export default function CandidateDetailPage() {
                     </div>
                   </div>
                   <div>
-                    <div className="text-grey-50">Biggest skip</div>
-                    <div className="text-grey-15 font-medium">
-                      {w.maxForwardSkipSec > 0 ? fmt(w.maxForwardSkipSec) : '—'}
+                    <div className="text-grey-50">Blocked skips</div>
+                    <div className={`font-medium ${blockedEvents.length > 0 ? 'text-red-600' : 'text-grey-15'}`}>
+                      {blockedEvents.length === 0 ? '—' : `${blockedEvents.length} (biggest ${fmt(maxBlockedSkipSec)})`}
                     </div>
                   </div>
                 </div>
@@ -2032,20 +2055,23 @@ export default function CandidateDetailPage() {
                 {w.events.length > 0 && (
                   <details className="text-xs text-grey-35">
                     <summary className="cursor-pointer text-grey-40 hover:text-grey-20">
-                      Seek log ({w.events.length})
+                      Seek log ({w.events.length}
+                      {blockedEvents.length > 0 ? ` — ${blockedEvents.length} blocked` : ''})
                     </summary>
                     <ul className="mt-2 space-y-0.5 font-mono">
                       {w.events.map((ev, idx) => (
-                        <li key={idx}>
-                          {ev.to > ev.from ? '⏩' : '⏪'} {fmt(ev.from)} → {fmt(ev.to)}
-                          <span className="text-grey-50 ml-2">
-                            ({ev.to > ev.from ? '+' : ''}{Math.round(ev.to - ev.from)}s)
+                        <li key={idx} className={ev.blocked ? 'text-red-600' : ''}>
+                          {ev.blocked ? '⛔' : ev.to > ev.from ? '⏩' : '⏪'} {fmt(ev.from)} → {fmt(ev.to)}
+                          <span className={`ml-2 ${ev.blocked ? 'text-red-500' : 'text-grey-50'}`}>
+                            ({ev.to > ev.from ? '+' : ''}{Math.round(ev.to - ev.from)}s{ev.blocked ? ', blocked' : ''})
                           </span>
                         </li>
                       ))}
                     </ul>
                   </details>
                 )}
+                </>)
+                })()}
 
                 <div className="text-xs text-grey-50 mt-2">
                   Last update {new Date(w.lastUpdatedAt).toLocaleString()}

@@ -15,6 +15,10 @@ interface SeekEvent {
   t: number
   from: number
   to: number
+  // When true, the user attempted to skip forward but the requiredWatch
+  // enforcer snapped them back. Playback never actually moved — but the
+  // recruiter view still shows the intent.
+  blocked?: boolean
 }
 
 type Range = [number, number]
@@ -35,9 +39,10 @@ function normalizeEvents(raw: unknown): SeekEvent[] {
     const from = coerceNumber((e as Record<string, unknown>).from, -1)
     const to = coerceNumber((e as Record<string, unknown>).to, -1)
     const t = coerceNumber((e as Record<string, unknown>).t, 0)
+    const blocked = (e as Record<string, unknown>).blocked === true
     if (from < 0 || to < 0) continue
     if (Math.abs(to - from) < 0.5) continue
-    out.push({ t, from, to })
+    out.push(blocked ? { t, from, to, blocked: true } : { t, from, to })
     if (out.length >= MAX_EVENTS) break
   }
   return out
@@ -74,19 +79,24 @@ function normalizeRanges(raw: unknown, durationSec: number): Range[] {
 }
 
 function deriveCounters(events: SeekEvent[], ranges: Range[], durationSec: number) {
+  // seekCount / forward / backward count *successful* seeks only — the
+  // ones where playback actually moved. Blocked attempts sit in the events
+  // array with `blocked: true` and get counted separately on the frontend
+  // ("N blocked skip attempts") so the recruiter can distinguish "user
+  // scrubbed and got away with it" from "user tried to scrub but got
+  // rewound". maxForwardSkipSec reflects the largest magnitude across
+  // both categories — a big blocked jump is still a strong intent signal.
   let seekCount = 0
   let forwardSkipCount = 0
   let backwardSeekCount = 0
   let maxForwardSkipSec = 0
   for (const e of events) {
-    seekCount += 1
     const delta = e.to - e.from
-    if (delta > 0.5) {
-      forwardSkipCount += 1
-      if (delta > maxForwardSkipSec) maxForwardSkipSec = delta
-    } else if (delta < -0.5) {
-      backwardSeekCount += 1
-    }
+    if (delta > maxForwardSkipSec) maxForwardSkipSec = delta
+    if (e.blocked) continue
+    seekCount += 1
+    if (delta > 0.5) forwardSkipCount += 1
+    else if (delta < -0.5) backwardSeekCount += 1
   }
   let watchedSec = 0
   for (const [s, e] of ranges) watchedSec += Math.max(0, e - s)

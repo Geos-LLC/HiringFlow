@@ -116,6 +116,21 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
   // (below) reads it in `seeked` so the auto-rewind isn't logged as a
   // real user seek. Cleared after the resulting `seeked` fires.
   const programmaticSeekRef = useRef(false)
+  // Shared watch-telemetry state. Lifted to component level so the
+  // requiredWatch enforcer (`onSeeking`/`onTimeUpdate`) can push blocked
+  // skip attempts into `events` alongside the successful seeks the
+  // telemetry effect logs. Same shape for both — a `blocked` flag on the
+  // event distinguishes "user tried to skip but was rewound" from "user
+  // scrubbed successfully". Recruiter sees both.
+  const watchStateRef = useRef({
+    lastPlayhead: 0,
+    segmentStart: null as number | null,
+    ranges: [] as Array<[number, number]>,
+    events: [] as Array<{ t: number; from: number; to: number; blocked?: boolean }>,
+    firstPlayAt: null as number | null,
+    completed: false,
+    userInitiated: false,
+  })
   // Telemetry bookkeeping — tracks the lifecycle of THIS video instance so we
   // can compute "time to canplay" and throttle waiting/stalled noise.
   const stallCountRef = useRef(0)
@@ -138,6 +153,19 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     stallCountRef.current = 0
     lastStallReportAtRef.current = 0
     milestoneSentRef.current = {}
+    // Also reset shared watch-telemetry state so lesson N doesn't inherit
+    // lesson N-1's ranges + events. Only tied to src/reloadKey because
+    // contentId is captured in the same lesson boundary (parent uses
+    // `key={content.id}` on <LessonVideo>).
+    watchStateRef.current = {
+      lastPlayhead: 0,
+      segmentStart: null,
+      ranges: [],
+      events: [],
+      firstPlayAt: null,
+      completed: false,
+      userInitiated: false,
+    }
   }, [src, hlsUrl, reloadKey])
 
   // hls.js attachment. When the candidate's browser can't natively play HLS
@@ -244,8 +272,20 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     }
 
     // ── Existing watch-enforcement + completion handlers ──────────────────
+    // Record a blocked skip attempt into the shared watch-state so the
+    // recruiter view can render "user tried to skip from A to B (blocked)"
+    // even though playback never actually advanced. Only fired when the
+    // watch telemetry effect has started (firstPlayAt != null) — otherwise
+    // the requiredWatch reset on the initial 0→0 nudge would fake events.
+    const logBlockedSkip = (from: number, to: number) => {
+      const ws = watchStateRef.current
+      if (ws.firstPlayAt == null) return
+      if (to - from < 0.5) return
+      ws.events.push({ t: Date.now() - ws.firstPlayAt, from, to, blocked: true })
+    }
     const onTimeUpdate = () => {
       if (requiredWatch && v.currentTime > maxWatchedRef.current + 0.5) {
+        logBlockedSkip(maxWatchedRef.current, v.currentTime)
         programmaticSeekRef.current = true
         v.currentTime = maxWatchedRef.current
         return
@@ -258,6 +298,7 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     const onSeeking = () => {
       if (!requiredWatch) return
       if (v.currentTime > maxWatchedRef.current + 0.5) {
+        logBlockedSkip(maxWatchedRef.current, v.currentTime)
         programmaticSeekRef.current = true
         v.currentTime = maxWatchedRef.current
       }
@@ -345,18 +386,11 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     const v = videoRef.current
     if (!v) return
 
-    const state = {
-      lastPlayhead: 0,
-      segmentStart: null as number | null,
-      ranges: [] as Array<[number, number]>,
-      events: [] as Array<{ t: number; from: number; to: number }>,
-      firstPlayAt: null as number | null,
-      completed: false,
-      // Set by pointerdown/keydown/wheel/touchstart on the player. Cleared
-      // after each `seeked` so programmatic seeks (hls.js buffering nudges,
-      // requiredWatch auto-rewind) never get logged.
-      userInitiated: false,
-    }
+    // Shared component-level state — the requiredWatch enforcer effect
+    // above pushes blocked-skip events into it in real time, and this effect
+    // owns the watched-ranges + successful-seek log side. Both are emitted
+    // to the server together.
+    const state = watchStateRef.current
 
     const mergeRange = (start: number, end: number) => {
       if (!Number.isFinite(start) || !Number.isFinite(end)) return
