@@ -283,13 +283,14 @@ export async function POST(request: NextRequest) {
 
     logger.info('Session started', { sessionId: session.id, flowSlug, flowId: flow.id, preview: !!preview, source: effectiveSource, processId })
 
-    // Emit `flow_started` for candidates who genuinely started but haven't
-    // submitted. Skipped for pre-completed external-site submissions: the
-    // cancel wiring in fireAutomations would immediately void any queued
-    // flow_started step, and creating that skipped execution row is just
-    // noise. Site-widget submissions should be handled by a flow_completed
-    // rule instead.
-    if (!preview && effectiveSource !== 'test' && completed !== true) {
+    // Emit `flow_started` for every real candidate session. Started is a
+    // subset of completed — an external-site submission still, semantically,
+    // started. Delay=0 rules on pre-completed sessions send immediately.
+    // Delay>0 rules on pre-completed sessions get their queued step
+    // cancelled by the flow_completed dispatch that follows (via the
+    // lifecycle middleware); that leaves a cancelled execution row, which
+    // is honest audit trail — not noise.
+    if (!preview && effectiveSource !== 'test') {
       try {
         await emitAutomationEvent({
           workspaceId: flow.workspaceId,
