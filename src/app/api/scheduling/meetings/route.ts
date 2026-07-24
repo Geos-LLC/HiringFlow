@@ -9,11 +9,21 @@ export async function GET() {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
 
-  // Pull fresh state from Meet API for any stale meetings before listing —
-  // covers personal-Gmail tenants where Workspace Events doesn't deliver and
-  // Workspace tenants whose push delivery hiccupped. No-show automations fire
-  // here for any meetings that have crossed scheduledEnd + grace.
-  await syncWorkspaceMeetings(ws.workspaceId).catch((err) =>
+  // Kick off Meet API state sync in the background — DON'T await it. The
+  // list itself is answered from InterviewMeeting rows we already have; the
+  // sync only refreshes side-state (recording ready, no-show detection,
+  // transcript) that Google owns. Blocking on it made cold-cache page loads
+  // take 15–30s while we fanned out per-meeting Meet + Drive API calls.
+  //
+  // Coverage for a dropped background promise (Vercel can kill it after the
+  // response flushes — see project memory project_lifecycle_middleware_drops):
+  //   - the reconcile-automations cron re-fires lifecycle triggers every 15 min
+  //   - opening a candidate detail page re-runs syncMeetingFromMeetApi
+  //   - the Workspace Events webhook is the primary path when it delivers
+  // So the worst case is a just-ended meeting shows stale "processing"
+  // state for a few minutes on this page; the candidate detail view is
+  // always fresh and automations still fire via the cron.
+  void syncWorkspaceMeetings(ws.workspaceId).catch((err) =>
     console.error('[scheduling.meetings] syncWorkspaceMeetings failed:', err),
   )
 
