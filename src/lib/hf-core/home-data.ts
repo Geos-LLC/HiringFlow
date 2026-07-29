@@ -29,6 +29,7 @@ export interface HomeInterviewRow {
   meetingId: string
   candidateId: string
   candidateName: string
+  positionLabel: string | null
   scheduledStart: string
   scheduledEnd: string
   meetingUri: string | null
@@ -53,12 +54,34 @@ export interface HomeApplicantRow {
   startedAt: string
 }
 
+// Recent replies = candidate SMS confirms / cancels received through Sigcore.
+// v1 shows only the two kinds we actually process (metadata.source ===
+// 'candidate_sms'); anything else is silently ignored today. If we ever
+// persist non-keyword replies we can add a `text` field here.
+export interface HomeReplyRow {
+  candidateId: string
+  candidateName: string
+  positionLabel: string | null
+  kind: 'confirmed' | 'cancelled'
+  at: string
+}
+
+export interface HomeFinishedTrainingRow {
+  candidateId: string
+  candidateName: string
+  positionLabel: string | null
+  trainingTitle: string
+  completedAt: string
+}
+
 export interface HomeResponse {
   summary: HomeSummary
   todaysInterviews: HomeInterviewRow[]
   nextInterview: HomeInterviewRow | null
   needsAttention: HomeNeedsAttentionRow[]
   newApplicants: HomeApplicantRow[]
+  recentReplies: HomeReplyRow[]
+  justFinishedTraining: HomeFinishedTrainingRow[]
   recentActivity: TimelineEntry[]
 }
 
@@ -82,13 +105,19 @@ export async function getHomeData(opts: {
     select: {
       id: true, sessionId: true, scheduledStart: true, scheduledEnd: true,
       meetingUri: true, confirmedAt: true,
-      session: { select: { candidateName: true } },
+      session: {
+        select: {
+          candidateName: true,
+          ad: { select: { targetPosition: true } },
+        },
+      },
     },
   })
   const todaysInterviews: HomeInterviewRow[] = meetingRows.map(m => ({
     meetingId: m.id,
     candidateId: m.sessionId,
     candidateName: m.session.candidateName || 'Anonymous',
+    positionLabel: m.session.ad?.targetPosition ?? null,
     scheduledStart: m.scheduledStart.toISOString(),
     scheduledEnd: m.scheduledEnd.toISOString(),
     meetingUri: m.meetingUri,
@@ -284,12 +313,80 @@ export async function getHomeData(opts: {
   activity.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
   const recentActivity = activity.slice(0, 40)
 
+  // ── Recent replies (candidate SMS confirms / cancels, last 7d) ────────────
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 3600_000)
+  const replyRows = await prisma.schedulingEvent.findMany({
+    where: {
+      session: { workspaceId },
+      eventType: { in: ['meeting_confirmed', 'meeting_cancelled'] },
+      eventAt: { gte: sevenDaysAgo },
+    },
+    orderBy: { eventAt: 'desc' },
+    take: 40,
+    select: {
+      id: true, eventType: true, eventAt: true, sessionId: true, metadata: true,
+      session: {
+        select: {
+          candidateName: true,
+          ad: { select: { targetPosition: true } },
+        },
+      },
+    },
+  })
+  // Only surface events the candidate themselves triggered via SMS reply —
+  // recruiter-initiated cancels (calendar delete) shouldn't feel like a
+  // candidate "reply" on the home surface.
+  const recentReplies: HomeReplyRow[] = replyRows
+    .filter(e => {
+      const meta = e.metadata as Record<string, unknown> | null
+      return meta?.source === 'candidate_sms'
+    })
+    .map(e => ({
+      candidateId: e.sessionId,
+      candidateName: e.session.candidateName || 'Anonymous',
+      positionLabel: e.session.ad?.targetPosition ?? null,
+      kind: (e.eventType === 'meeting_confirmed' ? 'confirmed' : 'cancelled') as 'confirmed' | 'cancelled',
+      at: e.eventAt.toISOString(),
+    }))
+    .slice(0, 15)
+
+  // ── Just finished training (last 7d) ──────────────────────────────────────
+  const enrollmentRows = await prisma.trainingEnrollment.findMany({
+    where: {
+      session: { workspaceId },
+      completedAt: { not: null, gte: sevenDaysAgo },
+    },
+    orderBy: { completedAt: 'desc' },
+    take: 15,
+    select: {
+      id: true, completedAt: true, sessionId: true,
+      training: { select: { title: true } },
+      session: {
+        select: {
+          candidateName: true,
+          ad: { select: { targetPosition: true } },
+        },
+      },
+    },
+  })
+  const justFinishedTraining: HomeFinishedTrainingRow[] = enrollmentRows
+    .filter(e => e.sessionId && e.session)
+    .map(e => ({
+      candidateId: e.sessionId!,
+      candidateName: e.session!.candidateName || 'Anonymous',
+      positionLabel: e.session!.ad?.targetPosition ?? null,
+      trainingTitle: e.training.title,
+      completedAt: e.completedAt!.toISOString(),
+    }))
+
   return {
     summary,
     todaysInterviews,
     nextInterview,
     needsAttention,
     newApplicants,
+    recentReplies,
+    justFinishedTraining,
     recentActivity,
   }
 }
