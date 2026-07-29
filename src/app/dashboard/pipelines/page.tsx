@@ -618,12 +618,22 @@ export default function PipelinesPage() {
                     <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-grey-35 mb-1">Stage details</div>
                     <h2 className="font-semibold text-[16px] text-ink">{selectedStage.label}</h2>
                   </div>
-                  <button
-                    onClick={() => editorPipeline && setSetupTarget(editorPipeline)}
-                    className="text-[12px] px-2.5 py-1 rounded-[8px] border border-surface-border text-ink hover:bg-surface-light"
-                  >
-                    Edit in drawer →
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {editorPipeline && (
+                      <Link
+                        href={`/dashboard/pipelines/${editorPipeline.id}/stages/${encodeURIComponent(selectedStage.id)}`}
+                        className="text-[12px] px-2.5 py-1 rounded-[8px] bg-brand-500 text-white hover:bg-brand-600 font-medium"
+                      >
+                        Open full view →
+                      </Link>
+                    )}
+                    <button
+                      onClick={() => editorPipeline && setSetupTarget(editorPipeline)}
+                      className="text-[12px] px-2.5 py-1 rounded-[8px] border border-surface-border text-ink hover:bg-surface-light"
+                    >
+                      Edit in drawer →
+                    </button>
+                  </div>
                 </div>
 
                 <dl className="grid grid-cols-[120px_1fr] gap-y-2 text-[13px] mb-4">

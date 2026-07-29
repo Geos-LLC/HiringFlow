@@ -19,6 +19,9 @@ import {
   type CustomStatus,
 } from '@/lib/candidate-status'
 import { Badge } from '@/components/design'
+import { HealthBadge, Timeline } from '@/components/hf'
+import { candidateHealth } from '@/lib/hf-core/health'
+import { buildCandidateTimeline } from '@/lib/hf-core/timeline-adapters/candidate'
 import { InterviewPanel } from './_InterviewPanel'
 import { NotesPanel } from './_NotesPanel'
 import { CurrentActivityCard } from './_CurrentActivityCard'
@@ -845,228 +848,10 @@ export default function CandidateDetailPage() {
   const latestMeetingUrl = latestMeeting ? String((latestMeeting.metadata as Record<string, any>).meetingUrl) : null
   const latestMeetingAt = latestMeeting ? String((latestMeeting.metadata as Record<string, any>).scheduledAt || latestMeeting.eventAt) : null
 
-  // Build timeline events
-  type DeliveryBadge = {
-    status: 'processed' | 'delivered' | 'deferred' | 'bounce' | 'dropped' | 'blocked' | 'pending'
-    at: string | null
-    error: string | null
-  }
-  const timeline: { label: string; time: string; type: string; detail?: string; delivery?: DeliveryBadge }[] = []
-  timeline.push({ label: 'Applied / Flow started', time: candidate.startedAt, type: 'start' })
-  if (candidate.finishedAt) timeline.push({ label: `Flow ${candidate.outcome || 'completed'}`, time: candidate.finishedAt, type: candidate.outcome === 'passed' ? 'success' : candidate.outcome === 'failed' ? 'error' : 'info' })
-  // Stale-detection event — derived from Session.stalledAt so the cron itself
-  // doesn't need to write a separate event row. Idempotent for free: one
-  // stalledAt column = one timeline entry. Label is deliberately threshold-
-  // agnostic because the workspace setting could have changed since the
-  // stale flip; the disposition reason carries the structured "why".
-  if (candidate.stalledAt) {
-    const reasonLabel = candidate.dispositionReason
-      ? (DISPOSITION_DISPLAY[candidate.dispositionReason] || candidate.dispositionReason)
-      : null
-    timeline.push({
-      label: 'Candidate became stale — no forward progress',
-      detail: reasonLabel ? `Reason: ${reasonLabel}` : undefined,
-      time: candidate.stalledAt,
-      type: 'error',
-    })
-  }
-  candidate.trainingEnrollments.forEach(e => {
-    timeline.push({ label: `Training started: ${e.training.title}`, time: e.startedAt, type: 'info' })
-    // Per-section completion events — only enrollments saved after the
-    // sectionTimestamps shape was introduced will have these. Older
-    // enrollments fall through silently.
-    const stamps = e.progress?.sectionTimestamps || {}
-    const sections = e.training.sections || []
-    const sectionById = new Map(sections.map((s) => [s.id, s] as const))
-    for (const [sectionId, at] of Object.entries(stamps)) {
-      const section = sectionById.get(sectionId)
-      if (!section) continue
-      timeline.push({
-        label: `Training section completed: ${section.title}`,
-        detail: e.training.title,
-        time: at,
-        type: 'info',
-      })
-    }
-    if (e.completedAt) timeline.push({ label: `Training completed: ${e.training.title}`, time: e.completedAt, type: 'success' })
-  })
-  candidate.schedulingEvents.forEach(e => {
-    const labels: Record<string, string> = {
-      invite_sent: 'Scheduling invite sent',
-      link_clicked: 'Scheduling link clicked',
-      marked_scheduled: 'Marked as scheduled',
-      meeting_scheduled: 'Meeting scheduled',
-      meeting_rescheduled: 'Meeting rescheduled',
-      meeting_cancelled: 'Meeting cancelled',
-      meeting_confirmed: 'Candidate confirmed via SMS',
-      meeting_no_show: 'Candidate no-show',
-      nudge_sent: 'Manual "join now" nudge sent',
-      message_sent: 'Message sent',
-    }
-    const successTypes = new Set(['marked_scheduled', 'meeting_scheduled', 'meeting_rescheduled', 'meeting_confirmed', 'nudge_sent', 'message_sent'])
-    const errorTypes = new Set(['meeting_cancelled', 'meeting_no_show'])
-    const type = errorTypes.has(e.eventType) ? 'error' : successTypes.has(e.eventType) ? 'success' : 'info'
-    const meta = e.metadata || {}
-    const bits: string[] = []
-    if (meta.scheduledAt) bits.push(`When: ${new Date(meta.scheduledAt).toLocaleString()}`)
-    if (meta.meetingUrl) bits.push(`Link: ${meta.meetingUrl}`)
-    if (meta.notes) bits.push(`Notes: ${meta.notes}`)
-    if (e.eventType === 'nudge_sent') {
-      const channels: string[] = []
-      if (meta.emailOk) channels.push('email')
-      if (meta.smsOk) channels.push('SMS')
-      if (channels.length > 0) bits.push(`Channels: ${channels.join(' + ')}`)
-    }
-    timeline.push({ label: labels[e.eventType] || e.eventType, time: e.eventAt, type, detail: bits.join(' · ') || undefined })
-  })
-  ;(candidate.automationExecutions || []).forEach(e => {
-    const r = e.automationRule
-    const s = e.step
-    const destLabel = s?.emailDestination === 'company' ? 'Company'
-      : s?.emailDestination === 'specific' ? (s?.emailDestinationAddress || 'Specific')
-      : 'Applicant'
-    const chainSummary = (c: { name: string; steps: { delayMinutes: number }[] }) => {
-      const firstDelay = c.steps[0]?.delayMinutes ?? 0
-      return c.name + (firstDelay ? ` (+${firstDelay}m)` : '')
-    }
-    const nextStep = s?.nextStepType === 'training' && s?.training ? `Training — ${s.training.title}`
-      : s?.nextStepType === 'scheduling' && s?.schedulingConfig ? `Scheduling — ${s.schedulingConfig.name}`
-      : r.chainedBy.length > 0 ? `Chains to → ${r.chainedBy.map(chainSummary).join(', ')}`
-      : s?.nextStepType === 'email' ? 'Send email only'
-      : 'No follow-up'
-    const stepDelay = s?.delayMinutes ?? 0
-    const delayStr = stepDelay > 0
-      ? (stepDelay >= 1440 ? `${Math.round(stepDelay / 1440)}d` : stepDelay >= 60 ? `${Math.round(stepDelay / 60)}h` : `${stepDelay}m`)
-      : null
-    const sentChannel = e.channel || s?.channel || 'email'
-    const channelLabel = sentChannel === 'sms' ? 'SMS' : 'Email'
-    const bits = [
-      `Channel: ${channelLabel}`,
-      sentChannel === 'email' ? `To: ${destLabel}` : null,
-      sentChannel === 'email' && s?.emailTemplate ? `Template: ${s.emailTemplate.name}` : null,
-      `Next step: ${nextStep}`,
-      delayStr ? `Delay: ${delayStr}` : null,
-      s && s.order > 0 ? `Step ${s.order + 1}` : null,
-    ].filter(Boolean).join(' · ')
-    const base = `Automation: ${r.name}`
-    const sendVerb = sentChannel === 'sms' ? 'SMS sent' : 'email sent'
-    // Delivery badge applies only to email rows — SMS goes through Sigcore
-    // and has its own delivery telemetry path (or none, currently).
-    const deliveryBadge: DeliveryBadge | undefined = sentChannel === 'email' && e.status === 'sent'
-      ? {
-          status: (e.deliveryStatus as DeliveryBadge['status']) || 'pending',
-          at: e.deliveryStatusAt,
-          error: e.deliveryErrorMessage,
-        }
-      : undefined
-    if (e.status === 'sent') {
-      timeline.push({ label: `${base} — ${sendVerb}`, detail: bits, time: e.sentAt || e.createdAt, type: 'success', delivery: deliveryBadge })
-    } else if (e.status === 'failed') {
-      timeline.push({ label: `${base} — failed${e.errorMessage ? `: ${e.errorMessage}` : ''}`, detail: bits, time: e.createdAt, type: 'error' })
-    } else if (e.status === 'queued' && e.scheduledFor) {
-      timeline.push({ label: `${base} — scheduled`, detail: `${bits} · Fires at ${new Date(e.scheduledFor).toLocaleString()}`, time: e.scheduledFor, type: 'scheduled' })
-    } else if (e.status === 'cancelled') {
-      timeline.push({ label: `${base} — cancelled${e.errorMessage ? `: ${e.errorMessage}` : ''}`, detail: bits, time: e.createdAt, type: 'info' })
-    } else if (e.status?.startsWith('skipped_')) {
-      // skipped_wrong_stage / skipped_wrong_status / skipped_missing_prerequisite /
-      // skipped_duplicate / skipped_cancelled / skipped_ineligible — make the
-      // block reason visible so recruiters can tell at a glance why no email
-      // was sent (instead of seeing it linger as "pending" forever).
-      const reasonLabel = e.skipReason
-        ? e.skipReason.replace(/^skipped_/, '').replace(/_/g, ' ')
-        : 'skipped'
-      timeline.push({ label: `${base} — skipped (${reasonLabel})`, detail: bits, time: e.createdAt, type: 'error' })
-    } else {
-      timeline.push({ label: `${base} — pending`, detail: bits, time: e.createdAt, type: 'info' })
-    }
-  })
-
-  // ─── Synthetic candidate-step entries ──────────────────────────────────
-  // For each successfully-sent automation whose step expected the candidate
-  // to do something next (book a meeting, open training, complete a BG check),
-  // surface a derived timeline entry that goes:
-  //   waiting → completed (outcome event fired after sentAt) — silent, the
-  //             outcome event already shows up on its own
-  //   waiting → failed   (deadline elapsed, no outcome) — "Candidate didn't X"
-  //   waiting → pending  (deadline still ahead) — "Waiting for candidate to X"
-  //
-  // Deadlines are pulled from the flow's per-type timeouts (with platform
-  // defaults as fallback). Pure render-time logic — no DB writes, no cron.
-  const nowMs = Date.now()
-  const schedulingHours = candidate.flow?.schedulingTimeoutHours ?? DEFAULT_TIMEOUTS.schedulingTimeoutHours
-  const trainingDays = candidate.flow?.trainingTimeoutDays ?? DEFAULT_TIMEOUTS.trainingTimeoutDays
-  const bgCheckDays = candidate.flow?.backgroundCheckTimeoutDays ?? DEFAULT_TIMEOUTS.backgroundCheckTimeoutDays
-
-  const fmtRemaining = (msUntil: number) => {
-    const h = Math.round(msUntil / 3600_000)
-    if (h >= 24) return `${Math.round(h / 24)}d`
-    if (h >= 1) return `${h}h`
-    const m = Math.max(1, Math.round(msUntil / 60_000))
-    return `${m}m`
-  }
-
-  ;(candidate.automationExecutions || [])
-    .filter(e => e.status === 'sent' && e.sentAt && e.step?.nextStepType)
-    // Meeting-relative steps (timingMode='before_meeting'/'after_meeting')
-    // presuppose a meeting already exists. A "1h before meeting" reminder
-    // marked nextStepType='scheduling' is meant to RE-share the booking
-    // link as a courtesy, not gate on a fresh booking. Synthesising
-    // "Waiting for candidate to book" against those produces a row dated
-    // for after the meeting itself has already happened — pure noise.
-    .filter(e => {
-      const tm = e.step?.timingMode
-      return tm !== 'before_meeting' && tm !== 'after_meeting'
-    })
-    .forEach(e => {
-      const nextType = e.step!.nextStepType!
-      const sentAt = new Date(e.sentAt!).getTime()
-      let label = ''
-      let deadlineMs = 0
-      let completed = false
-
-      if (nextType === 'scheduling') {
-        label = 'book a meeting'
-        deadlineMs = sentAt + schedulingHours * 3600_000
-        // Once the candidate has any meeting on record, count this nextStep
-        // as satisfied regardless of when the meeting was created relative
-        // to sentAt. The "after sentAt" filter from the original design
-        // missed the case where a fresh scheduling-invite was sent against
-        // an already-booked candidate (e.g. rebooking flow).
-        completed = (candidate.interviewMeetings ?? []).length > 0
-          || candidate.schedulingEvents.some(ev => ev.eventType === 'meeting_scheduled')
-      } else if (nextType === 'training') {
-        label = 'open training'
-        deadlineMs = sentAt + trainingDays * 86400_000
-        completed = candidate.trainingEnrollments.some(en => en.status !== 'not_started' && new Date(en.startedAt).getTime() >= sentAt)
-      } else if (nextType === 'background_check') {
-        label = 'complete background check'
-        deadlineMs = sentAt + bgCheckDays * 86400_000
-        completed = (candidate.backgroundChecks ?? []).some(bc => bc.overallScore !== null && new Date(bc.createdAt).getTime() >= sentAt)
-      } else {
-        return // not a candidate-action nextStepType
-      }
-
-      if (completed) return // outcome event already renders elsewhere
-
-      const detail = `Automation: ${e.automationRule.name}`
-      if (nowMs > deadlineMs) {
-        timeline.push({
-          label: `Candidate didn't ${label}`,
-          detail: `${detail} · Expected within ${nextType === 'scheduling' ? `${schedulingHours}h` : nextType === 'training' ? `${trainingDays}d` : `${bgCheckDays}d`} of send`,
-          time: new Date(deadlineMs).toISOString(),
-          type: 'error',
-        })
-      } else {
-        timeline.push({
-          label: `Waiting for candidate to ${label}`,
-          detail: `${detail} · Expires in ${fmtRemaining(deadlineMs - nowMs)}`,
-          time: new Date(deadlineMs).toISOString(),
-          type: 'info',
-        })
-      }
-    })
-
-  timeline.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+  // Timeline entries — delegated to the shared adapter so any object surface
+  // (candidate, position, stage, home) renders the same rows with the same
+  // fidelity. See src/lib/hf-core/timeline-adapters/candidate.ts.
+  const timeline = buildCandidateTimeline(candidate)
 
   return (
     <div>
@@ -1085,6 +870,18 @@ export default function CandidateDetailPage() {
               {candidate.interestingAt ? '★' : '☆'}
             </button>
             <h1 className="text-2xl font-semibold text-grey-15">{candidate.candidateName || 'Anonymous'}</h1>
+            <HealthBadge
+              size="md"
+              health={candidateHealth({
+                status: candidate.status,
+                dispositionReason: candidate.dispositionReason,
+                stalledAt: candidate.stalledAt,
+                lostAt: candidate.lostAt,
+                hiredAt: candidate.hiredAt,
+                rejectionReason: candidate.rejectionReason,
+                pipelineStatus: candidate.pipelineStatus,
+              })}
+            />
             <button
               onClick={openProfileEditor}
               title="Edit candidate details"
@@ -2083,33 +1880,11 @@ export default function CandidateDetailPage() {
         )
       })()}
 
-      {/* Timeline tab */}
+      {/* Timeline tab — powered by the shared <Timeline> primitive over
+          the same TimelineEntry[] returned by buildCandidateTimeline(). */}
       {tab === 'timeline' && (
         <div className="bg-white rounded-[12px] border border-surface-border p-6">
-          <div className="space-y-0">
-            {timeline.map((event, i) => (
-              <div key={i} className="flex gap-4 pb-6 last:pb-0">
-                <div className="flex flex-col items-center">
-                  <div className={`w-3 h-3 rounded-full flex-shrink-0 ${
-                    event.type === 'success' ? 'bg-green-500' :
-                    event.type === 'error' ? 'bg-red-500' :
-                    event.type === 'start' ? 'bg-brand-500' :
-                    event.type === 'scheduled' ? 'bg-amber-400 ring-2 ring-amber-200' :
-                    'bg-gray-300'
-                  }`} />
-                  {i < timeline.length - 1 && <div className="w-px flex-1 bg-gray-200 mt-1" />}
-                </div>
-                <div className="pb-2 min-w-0 flex-1">
-                  <div className="text-sm text-grey-15 font-medium flex items-center gap-2 flex-wrap">
-                    <span>{event.label}</span>
-                    {event.delivery && <DeliveryBadgePill delivery={event.delivery} />}
-                  </div>
-                  {event.detail && <div className="text-xs text-grey-35 mt-0.5">{event.detail}</div>}
-                  <div className="text-xs text-grey-40 mt-0.5">{new Date(event.time).toLocaleString()}</div>
-                </div>
-              </div>
-            ))}
-          </div>
+          <Timeline entries={timeline} title="" />
         </div>
       )}
 

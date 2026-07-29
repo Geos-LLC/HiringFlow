@@ -33,11 +33,14 @@ import { DeliveryFailureToaster } from './_components/DeliveryFailureToaster'
 const NAV_ITEMS: TopNavItem[] = [
   {
     label: 'Recruiting',
-    href: '/dashboard/candidates',
+    href: '/dashboard',
     children: [
+      { label: 'Home',       href: '/dashboard' },
       { label: 'Candidates', href: '/dashboard/candidates' },
       { label: 'Pipeline',   href: '/dashboard/pipelines' },
-      { label: 'Campaigns',  href: '/dashboard/campaigns' },
+      // Positions is the ATS-standard label; /dashboard/campaigns remains
+      // as a working alias for existing bookmarks.
+      { label: 'Positions',  href: '/dashboard/positions', matches: ['/dashboard/campaigns'] },
     ],
   },
   {
