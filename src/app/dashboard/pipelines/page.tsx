@@ -16,6 +16,13 @@ import Link from 'next/link'
 import { PageHeader, Card, Button, WipBadge } from '@/components/design'
 import type { FunnelStage } from '@/lib/funnel-stages'
 import { StageSettingsDrawer } from '@/app/dashboard/candidates/_StageSettingsDrawer'
+import {
+  StageStrip,
+  StageSummaryCard,
+  StageInfoGrid,
+  StageSuggestions,
+} from './_stage-shell'
+import type { StageOverviewResponse } from '@/lib/hf-core/stage-overview'
 
 interface PipelineRow {
   id: string
@@ -149,6 +156,11 @@ export default function PipelinesPage() {
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null)
   const [stageCandidates, setStageCandidates] = useState<Array<{ id: string; candidateName: string | null; flow: { name: string } | null }>>([])
   const [stageCandidatesLoading, setStageCandidatesLoading] = useState(false)
+  // Stage overview (screen 2 top block): fetched via /api/hf/stages/... whenever
+  // the selected stage changes. Powers the new StageSummaryCard + info grid +
+  // Suggestions block above the legacy editor. Keeps the mock-matching top
+  // and the transitional editor below in sync.
+  const [stageOverview, setStageOverview] = useState<StageOverviewResponse | null>(null)
 
   // Stage details data (per-pipeline, re-fetched when the recruiter switches
   // pipelines). Each panel filters this in-memory by the currently selected
@@ -218,6 +230,22 @@ export default function PipelinesPage() {
       })
       .catch(() => setStageCandidates([]))
       .finally(() => setStageCandidatesLoading(false))
+  }, [editorPipelineId, selectedStageId])
+
+  // Fetch the stage overview payload for the new mock-matching top block.
+  // Kept separate from the legacy stageCandidates fetch above because the
+  // overview endpoint aggregates far more than a raw candidate list.
+  useEffect(() => {
+    if (!editorPipelineId || !selectedStageId) {
+      setStageOverview(null)
+      return
+    }
+    let cancelled = false
+    fetch(`/api/hf/stages/${editorPipelineId}/${encodeURIComponent(selectedStageId)}/overview`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: StageOverviewResponse | null) => { if (!cancelled) setStageOverview(d) })
+      .catch(() => { if (!cancelled) setStageOverview(null) })
+    return () => { cancelled = true }
   }, [editorPipelineId, selectedStageId])
 
   // Fetch transition rules + automations whenever the recruiter switches
@@ -505,12 +533,10 @@ export default function PipelinesPage() {
   return (
     <div>
       <PageHeader
-        eyebrow={editorPipeline ? `${editorPipeline.stages.length} stages` : `${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'}`}
-        title="Pipeline"
-        description="Configure the stages a candidate moves through. Each stage has its own movement rules and entry automations."
+        title="Pipelines"
+        description="Visualize and manage your hiring pipelines."
         actions={
           <div className="flex items-center gap-2">
-            {/* Pipeline selector. Drives the visual stage map below. */}
             <select
               value={editorPipelineId ?? ''}
               onChange={(e) => {
@@ -527,28 +553,20 @@ export default function PipelinesPage() {
                 </option>
               ))}
             </select>
-            <button
-              onClick={() => editorPipeline && setSetupTarget(editorPipeline)}
-              disabled={!editorPipeline}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-surface-border text-[13px] text-ink hover:bg-surface-light disabled:opacity-50"
-              title="Open the Stages drawer to add, rename, reorder, or delete stages"
-            >
-              + Add Stage
-            </button>
-            <button
-              disabled
-              title="Bulk save will land when the visual map editor is live. For now use the Stages drawer."
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-dashed border-grey-35 text-[13px] text-grey-35 cursor-not-allowed"
-            >
-              Save changes
-              <WipBadge label="WIP" />
-            </button>
             <Link
               href="/dashboard/candidates"
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border border-surface-border text-[13px] text-ink hover:bg-surface-light"
             >
               &larr; Kanban
             </Link>
+            <button
+              onClick={() => editorPipeline && setSetupTarget(editorPipeline)}
+              disabled={!editorPipeline}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-[10px] bg-brand-500 text-white text-[13px] font-medium hover:bg-brand-600 disabled:opacity-50"
+              title="Open the Stages drawer to add, rename, reorder, or delete stages"
+            >
+              + Add pipeline
+            </button>
           </div>
         }
       />
@@ -559,7 +577,45 @@ export default function PipelinesPage() {
         </div>
       )}
 
-      {/* === New editor section: visual map + details + candidates === */}
+      {/* Top-of-page: mock-matching stage strip + selected-stage summary.
+          Powered by /api/hf/stages/… (getStageOverview). The legacy editor
+          renders below inside a collapsed <details> so recruiters can still
+          configure V1/V2 rules while the mock-shaped surface leads the page. */}
+      {editorPipeline && (
+        <div className="flex flex-col gap-4 mb-6">
+          <StageStrip
+            pipelineId={editorPipeline.id}
+            stages={editorPipeline.stages}
+            selectedStageId={selectedStageId}
+            onSelect={setSelectedStageId}
+            countsByStageId={
+              stageOverview && selectedStageId
+                ? { [selectedStageId]: stageOverview.candidates.length }
+                : undefined
+            }
+          />
+          {stageOverview && (
+            <>
+              <StageSummaryCard data={stageOverview} />
+              <StageInfoGrid data={stageOverview} />
+              <StageSuggestions
+                candidates={stageOverview.candidates}
+                reminders={stageOverview.reminders}
+              />
+              <div className="text-right">
+                <Link
+                  href={`/dashboard/pipelines/${editorPipeline.id}/stages/${encodeURIComponent(selectedStageId!)}`}
+                  className="text-[12px] font-medium text-brand-600 hover:text-brand-700"
+                >
+                  View full details →
+                </Link>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* === Legacy editor section: visual map + details + candidates === */}
       {editorPipeline && (
         <>
           {/* Visual stage map. Placeholder rendering: a horizontal strip of

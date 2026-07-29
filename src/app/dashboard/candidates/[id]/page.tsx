@@ -853,13 +853,19 @@ export default function CandidateDetailPage() {
   // fidelity. See src/lib/hf-core/timeline-adapters/candidate.ts.
   const timeline = buildCandidateTimeline(candidate)
 
+  const activeStages: FunnelStage[] = candidate.pipeline?.stages ?? stages
+  const currentStageIdx = activeStages.findIndex(s => s.id === (candidate.pipelineStatus ?? activeStages[0]?.id))
+  const nextStage: FunnelStage | null = currentStageIdx >= 0 && currentStageIdx < activeStages.length - 1
+    ? activeStages[currentStageIdx + 1]
+    : null
+
   return (
     <div>
       {/* Back + Header */}
-      <div className="flex items-center gap-4 mb-6">
+      <div className="flex items-center gap-4 mb-4">
         <Link href="/dashboard/candidates" className="text-grey-40 hover:text-grey-15">&larr; Back</Link>
         <div className="flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={toggleInteresting}
               disabled={interestingBusy}
@@ -889,6 +895,14 @@ export default function CandidateDetailPage() {
             >
               Edit
             </button>
+            <div className="ml-auto flex items-center gap-2">
+              <AdvanceDropdown
+                stages={activeStages}
+                currentStageId={candidate.pipelineStatus}
+                nextStage={nextStage}
+                onSelect={(id) => updateStatus(id)}
+              />
+            </div>
           </div>
           <div className="flex items-center gap-3 mt-1 text-sm text-grey-40">
             {candidate.candidateEmail && <span>{candidate.candidateEmail}</span>}
@@ -927,6 +941,14 @@ export default function CandidateDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Progress dots strip — shows the candidate's position in the pipeline
+          at a glance (matches Design/4-candidate-email.png sub-header). */}
+      <ProgressDotsStrip
+        stages={activeStages}
+        currentStageId={candidate.pipelineStatus}
+        outcome={candidate.outcome}
+      />
 
       {/* Rejection reason editor */}
       {showReasonEditor && (
@@ -2111,5 +2133,100 @@ function DeliveryBadgePill({
     >
       {meta.label}
     </span>
+  )
+}
+
+// ─── Advance dropdown + progress dots (Screen 4 additions) ──────────────────
+
+function AdvanceDropdown({
+  stages, currentStageId, nextStage, onSelect,
+}: {
+  stages: FunnelStage[]
+  currentStageId: string | null
+  nextStage: FunnelStage | null
+  onSelect: (stageId: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const label = nextStage ? `Advance to ${nextStage.label}` : 'Advance'
+  return (
+    <div className="relative">
+      <div className="inline-flex rounded-[10px] overflow-hidden shadow-sm">
+        <button
+          onClick={() => nextStage && onSelect(nextStage.id)}
+          disabled={!nextStage}
+          className="text-[13px] font-medium px-4 py-2 bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-50"
+        >
+          {label}
+        </button>
+        <button
+          onClick={() => setOpen(o => !o)}
+          aria-label="Pick a stage"
+          className="text-[13px] px-2 py-2 bg-brand-600 text-white hover:bg-brand-700"
+        >
+          ▾
+        </button>
+      </div>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 z-30 min-w-[220px] bg-white border border-surface-border rounded-[10px] shadow-raised py-1">
+            {stages.map(s => (
+              <button
+                key={s.id}
+                onClick={() => { onSelect(s.id); setOpen(false) }}
+                className={`w-full text-left px-3 py-2 text-[13px] hover:bg-surface-light ${s.id === currentStageId ? 'text-grey-40' : 'text-ink'}`}
+              >
+                {s.label}{s.id === currentStageId ? ' (current)' : ''}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ProgressDotsStrip({
+  stages, currentStageId, outcome,
+}: {
+  stages: FunnelStage[]
+  currentStageId: string | null
+  outcome: string | null
+}) {
+  if (stages.length === 0) return null
+  const currentIdx = Math.max(0, stages.findIndex(s => s.id === currentStageId))
+  const terminalLoss = outcome === 'failed' || currentStageId === 'rejected'
+  return (
+    <div className="flex items-center gap-2 mb-6 overflow-x-auto py-2">
+      {stages.map((s, i) => {
+        const past = i < currentIdx
+        const current = i === currentIdx
+        return (
+          <div key={s.id} className="flex items-center gap-2 shrink-0">
+            {i > 0 && (
+              <span
+                aria-hidden
+                className="w-8 h-px"
+                style={{ background: past ? 'var(--success-fg)' : 'var(--surface-border, #EDE6D9)' }}
+              />
+            )}
+            <span
+              className="inline-flex items-center gap-2 text-[12px]"
+              style={{ color: current ? 'var(--brand-fg)' : past ? 'var(--success-fg)' : 'var(--grey-50, #808080)' }}
+            >
+              <span
+                aria-hidden
+                className="inline-block w-3 h-3 rounded-full"
+                style={{
+                  background: terminalLoss && current ? 'var(--danger-fg)' : current ? 'var(--brand-primary)' : past ? 'var(--success-fg)' : 'transparent',
+                  border: `2px solid ${terminalLoss && current ? 'var(--danger-fg)' : current ? 'var(--brand-primary)' : past ? 'var(--success-fg)' : 'var(--grey-60, #98989A)'}`,
+                }}
+              />
+              <span className={`whitespace-nowrap ${current ? 'font-medium' : ''}`}>{s.label}</span>
+            </span>
+          </div>
+        )
+      })}
+    </div>
   )
 }
