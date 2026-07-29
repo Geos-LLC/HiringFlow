@@ -144,10 +144,6 @@ export default function CaptionedVideo({
     ranges: Array<[number, number]>
     events: Array<{ t: number; from: number; to: number }>
     firstPlayAt: number | null
-    // Set on any pointer/keyboard/wheel input the user aims at the player.
-    // Cleared after the resulting `seeked` fires so programmatic seeks
-    // (hls.js buffering nudges, autoplay resume) don't get logged.
-    userInitiated: boolean
     completed: boolean
   }>({
     lastPlayhead: 0,
@@ -155,7 +151,6 @@ export default function CaptionedVideo({
     ranges: [],
     events: [],
     firstPlayAt: null,
-    userInitiated: false,
     completed: false,
   })
 
@@ -221,18 +216,20 @@ export default function CaptionedVideo({
     const handleSeeked = () => {
       const from = state.lastPlayhead
       const to = video.currentTime
-      // Filter: the initial 0→0 nudge fires before any real interaction, and
-      // programmatic seeks from hls.js / autoplay resume never come with a
-      // user-input flag. Only user-flagged seeks with a meaningful delta land
-      // in the event log.
-      if (state.userInitiated && Math.abs(to - from) >= 0.5 && state.firstPlayAt != null) {
+      // Filter: the initial 0→0 nudge fires before firstPlayAt is set, and
+      // programmatic seeks from hls.js segment-recovery are always tiny
+      // (< 1s). The delta gate below catches both. We previously required a
+      // pointerdown/keydown/wheel to have been dispatched to the <video>
+      // element first, but native seek-bar drags happen inside the browser
+      // controls' shadow DOM and don't always reach the video element on
+      // Chrome — so real user scrubs went unlogged. Dropping that gate.
+      if (Math.abs(to - from) >= 0.5 && state.firstPlayAt != null) {
         state.events.push({
           t: Date.now() - state.firstPlayAt,
           from,
           to,
         })
       }
-      state.userInitiated = false
       state.lastPlayhead = to
       // Only re-open a segment if the video was playing (paused seeks stay
       // closed until the user hits play again).
@@ -248,9 +245,6 @@ export default function CaptionedVideo({
       state.completed = true
       emit()
     }
-    // Any pointer / keyboard / wheel input on the player counts as user
-    // intent — the resulting seek gets logged; anything else is filtered.
-    const markUserInitiated = () => { state.userInitiated = true }
 
     video.addEventListener('playing', handlePlaying)
     video.addEventListener('timeupdate', handleTimeUpdate)
@@ -258,10 +252,6 @@ export default function CaptionedVideo({
     video.addEventListener('seeked', handleSeeked)
     video.addEventListener('pause', handlePause)
     video.addEventListener('ended', handleEnded)
-    video.addEventListener('pointerdown', markUserInitiated)
-    video.addEventListener('keydown', markUserInitiated)
-    video.addEventListener('wheel', markUserInitiated, { passive: true })
-    video.addEventListener('touchstart', markUserInitiated, { passive: true })
 
     return () => {
       closeSegment()
@@ -274,10 +264,6 @@ export default function CaptionedVideo({
       video.removeEventListener('seeked', handleSeeked)
       video.removeEventListener('pause', handlePause)
       video.removeEventListener('ended', handleEnded)
-      video.removeEventListener('pointerdown', markUserInitiated)
-      video.removeEventListener('keydown', markUserInitiated)
-      video.removeEventListener('wheel', markUserInitiated)
-      video.removeEventListener('touchstart', markUserInitiated)
     }
     // canPlay flips true after HLS/MSE attaches → the <video> ref becomes
     // real, so re-run the effect then. The callback is read through the ref

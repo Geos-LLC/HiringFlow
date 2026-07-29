@@ -129,7 +129,6 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     events: [] as Array<{ t: number; from: number; to: number; blocked?: boolean }>,
     firstPlayAt: null as number | null,
     completed: false,
-    userInitiated: false,
   })
   // Telemetry bookkeeping — tracks the lifecycle of THIS video instance so we
   // can compute "time to canplay" and throttle waiting/stalled noise.
@@ -164,7 +163,6 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
       events: [],
       firstPlayAt: null,
       completed: false,
-      userInitiated: false,
     }
   }, [src, hlsUrl, reloadKey])
 
@@ -442,17 +440,23 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
       const to = v.currentTime
       const isProgrammatic = programmaticSeekRef.current
       programmaticSeekRef.current = false
-      if (state.userInitiated && !isProgrammatic && Math.abs(to - from) >= 0.5 && state.firstPlayAt != null) {
+      // Log any seek with a meaningful delta unless it was the requiredWatch
+      // auto-rewind (isProgrammatic — the enforcer already logged the
+      // blocked attempt with a full from→to span). The delta gate handles
+      // the initial 0→0 nudge and hls.js segment-recovery hops. We used to
+      // additionally require a pointerdown/keydown/wheel on the video
+      // element, but the native seek bar lives inside the browser controls'
+      // shadow DOM and doesn't reliably propagate those events — real user
+      // scrubs went unlogged. Dropped that gate.
+      if (!isProgrammatic && Math.abs(to - from) >= 0.5 && state.firstPlayAt != null) {
         state.events.push({ t: Date.now() - state.firstPlayAt, from, to })
       }
-      state.userInitiated = false
       state.lastPlayhead = to
       if (!v.paused) state.segmentStart = to
       emit()
     }
     const handlePauseW = () => { closeSegment(); emit() }
     const handleEndedW = () => { closeSegment(); state.completed = true; emit() }
-    const markUserInitiated = () => { state.userInitiated = true }
 
     v.addEventListener('playing', handlePlaying)
     v.addEventListener('timeupdate', handleTimeUpdateW)
@@ -460,10 +464,6 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     v.addEventListener('seeked', handleSeekedW)
     v.addEventListener('pause', handlePauseW)
     v.addEventListener('ended', handleEndedW)
-    v.addEventListener('pointerdown', markUserInitiated)
-    v.addEventListener('keydown', markUserInitiated)
-    v.addEventListener('wheel', markUserInitiated, { passive: true })
-    v.addEventListener('touchstart', markUserInitiated, { passive: true })
 
     return () => {
       closeSegment()
@@ -476,10 +476,6 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
       v.removeEventListener('seeked', handleSeekedW)
       v.removeEventListener('pause', handlePauseW)
       v.removeEventListener('ended', handleEndedW)
-      v.removeEventListener('pointerdown', markUserInitiated)
-      v.removeEventListener('keydown', markUserInitiated)
-      v.removeEventListener('wheel', markUserInitiated)
-      v.removeEventListener('touchstart', markUserInitiated)
     }
     // Ties to src/reloadKey so a new lesson (or Retry) starts a fresh watch
     // record. enrollmentId/accessToken/slug/contentId are stable per lesson.
