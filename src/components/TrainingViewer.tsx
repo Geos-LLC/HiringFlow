@@ -405,7 +405,11 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     }
     const closeSegment = () => {
       if (state.segmentStart == null) return
-      mergeRange(state.segmentStart, v.currentTime)
+      // Use lastPlayhead — the last currentTime captured OUTSIDE of a
+      // seek. `v.currentTime` here is the seek destination (not yet
+      // watched), so extending the range to it would falsely paint
+      // unwatched territory green.
+      mergeRange(state.segmentStart, state.lastPlayhead)
       state.segmentStart = null
     }
     const emit = () => {
@@ -432,8 +436,15 @@ function LessonVideo({ src, hlsUrl, poster, slug, contentId, requiredWatch, auto
     const handlePlaying = () => {
       if (state.firstPlayAt == null) state.firstPlayAt = Date.now()
       state.segmentStart = v.currentTime
+      state.lastPlayhead = v.currentTime
     }
-    const handleTimeUpdateW = () => { state.lastPlayhead = v.currentTime }
+    const handleTimeUpdateW = () => {
+      // Skip while the browser is mid-seek. Otherwise timeupdate would
+      // stomp lastPlayhead with the destination position and the seeked
+      // handler would see delta=0.
+      if (v.seeking) return
+      state.lastPlayhead = v.currentTime
+    }
     const handleSeekingW = () => { closeSegment() }
     const handleSeekedW = () => {
       const from = state.lastPlayhead

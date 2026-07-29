@@ -187,7 +187,11 @@ export default function CaptionedVideo({
 
     const closeSegment = () => {
       if (state.segmentStart == null) return
-      mergeRange(state.segmentStart, video.currentTime)
+      // Use lastPlayhead — the last currentTime we captured OUTSIDE of a
+      // seek. `video.currentTime` at this point is the seek destination
+      // (which the user hasn't watched yet), so extending the range to it
+      // would falsely mark unwatched territory as watched.
+      mergeRange(state.segmentStart, state.lastPlayhead)
       state.segmentStart = null
     }
 
@@ -206,11 +210,21 @@ export default function CaptionedVideo({
     const handlePlaying = () => {
       if (state.firstPlayAt == null) state.firstPlayAt = Date.now()
       state.segmentStart = video.currentTime
+      state.lastPlayhead = video.currentTime
     }
     const handleTimeUpdate = () => {
+      // The browser fires `timeupdate` during a seek too — with the
+      // destination position — which would stomp lastPlayhead and make the
+      // `seeked` handler see delta=0 (from=lastPlayhead=destination,
+      // to=currentTime=destination). Skip while seeking so lastPlayhead
+      // stays at the pre-seek position for `seeked` to use as `from`.
+      if (video.seeking) return
       state.lastPlayhead = video.currentTime
     }
     const handleSeeking = () => {
+      // Fires with `video.currentTime` already at the destination — do NOT
+      // read it here. closeSegment uses state.lastPlayhead which is still
+      // the pre-seek position.
       closeSegment()
     }
     const handleSeeked = () => {
