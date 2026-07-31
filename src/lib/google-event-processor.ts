@@ -20,6 +20,7 @@ import { subscribeSpace, deleteSubscription } from './meet/workspace-events'
 import { archivePrimaryArtifacts } from './meet/artifacts'
 import { getAuthedClientForWorkspace, hasMeetScopes } from './google'
 import { resolveHostMembers, sendHostAssignmentInvites, promoteHostsToCohosts } from './scheduling/meeting-hosts'
+import { ensureHostIdentity } from './meet/sync-on-read'
 
 export interface ProcessEventResult {
   matched: boolean
@@ -250,6 +251,11 @@ async function adoptExternalMeet(
   const authed = await getAuthedClientForWorkspace(workspaceId)
   if (!authed) return
   if (!hasMeetScopes(authed.integration.grantedScopes)) return
+
+  // Cache googleUserId at adoption time so the no-show evaluator can
+  // identify the host in participants[] once the meeting ends. Best-effort.
+  await ensureHostIdentity(workspaceId).catch((err) =>
+    console.error('[AdoptMeet] ensureHostIdentity failed (non-fatal):', (err as Error).message))
 
   let space
   try {

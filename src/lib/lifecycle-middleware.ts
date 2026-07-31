@@ -255,6 +255,39 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
       if (!sessionId || !workspaceId) return
       if (await isTestSession(sessionId)) return
       if (isSet((data as Record<string, unknown>).actualEnd)) {
+        // Attendance gate: skip meeting_ended if the meeting is (or is about
+        // to be marked) a no-show. Personal-Gmail workspaces run on Recall
+        // where the same bot.call_ended handler writes actualEnd AND emits
+        // meeting_no_show — this middleware fires first (fire-and-forget on
+        // the actualEnd write) and used to race the no-show emit, sending
+        // "after meeting" emails to candidates who never joined.
+        //
+        // Two independent signals block the emit:
+        //   1. A meeting_no_show SchedulingEvent already exists for the
+        //      meeting (Recall handler writes it before the actualEnd update
+        //      since the fix, sync-on-read fallback writes it directly).
+        //   2. The stored participants[] shows only host / empty. Written by
+        //      the Recall handler in the same update as actualEnd, so the
+        //      middleware can read the fresh row.
+        const noShowExists = await prisma.schedulingEvent.findFirst({
+          where: {
+            sessionId,
+            eventType: 'meeting_no_show',
+            metadata: { path: ['interviewMeetingId'], equals: meetingId },
+          },
+          select: { id: true },
+        })
+        if (noShowExists) return
+        const fresh = await prisma.interviewMeeting.findUnique({
+          where: { id: meetingId },
+          select: { participants: true },
+        })
+        const participantList = Array.isArray(fresh?.participants)
+          ? (fresh!.participants as Array<Record<string, unknown>>)
+          : []
+        const nonHostPresent = participantList.some((p) => p && p.isHost === false)
+        const hostOnly = participantList.length > 0 && !nonHostPresent
+        if (hostOnly) return
         await emitAutomationEvent({
           workspaceId,
           sessionId,

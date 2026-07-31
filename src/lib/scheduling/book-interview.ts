@@ -41,6 +41,7 @@ import { scheduleBot, RecallApiError } from '../recall/client'
 import { logger } from '../logger'
 import { notifyRecallOutOfCredits } from '../alerts/recall-credits'
 import { sendMeetingConfirmation } from './meeting-confirmation'
+import { ensureHostIdentity } from '../meet/sync-on-read'
 import {
   resolveHostMembers,
   hostsAsCalendarAttendees,
@@ -140,6 +141,14 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   if (!hasMeetScopes(integration.grantedScopes)) {
     throw new BookInterviewError(409, 'reconnect_required', 'Reconnect Google account to enable Meet scheduling')
   }
+
+  // Populate googleUserId / googleDisplayName on the integration if either is
+  // missing — the no-show evaluator needs googleUserId to identify the host in
+  // participants[]. Doing this at schedule time (rather than only at
+  // sync-on-read) means the identifier is ready well before conference.ended
+  // fires, closing the "no-show never fired because host was unknown" gap.
+  await ensureHostIdentity(workspaceId).catch((err) =>
+    console.error('[bookInterview] ensureHostIdentity failed (non-fatal):', (err as Error).message))
 
   // 4. Recording capability
   let capabilityResult = NONE_CAP

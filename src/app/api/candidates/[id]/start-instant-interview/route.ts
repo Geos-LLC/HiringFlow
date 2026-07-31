@@ -46,6 +46,7 @@ import { scheduleBot, RecallApiError } from '@/lib/recall/client'
 import { statusTransitionPatch } from '@/lib/candidate-status'
 import { resolvePipelineForSession, stagesFor } from '@/lib/pipelines'
 import { findStageForEvent } from '@/lib/funnel-stages'
+import { ensureHostIdentity } from '@/lib/meet/sync-on-read'
 
 const NONE_CAP: CombinedCapability = {
   recording:    { capable: null, reason: 'probe_not_run', checkedAt: null, fromCache: true },
@@ -86,6 +87,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       { status: 409 },
     )
   }
+
+  // Populate googleUserId / googleDisplayName on the integration if missing —
+  // ties into no-show host identification. See bookInterview for context.
+  await ensureHostIdentity(ws.workspaceId).catch((err) =>
+    console.error('[start-instant-interview] ensureHostIdentity failed (non-fatal):', (err as Error).message))
 
   const start = new Date()
   const end = new Date(start.getTime() + durationMinutes * 60_000)

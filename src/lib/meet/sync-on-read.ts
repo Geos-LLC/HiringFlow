@@ -621,6 +621,28 @@ export async function applyAttendanceSignal(
   const happened = !!attendance || recordingPresent
   if (!happened) return false
 
+  // If a meeting_no_show has already been logged for this meeting (Recall
+  // detected only the host in the call, recruiter manually flipped, etc.),
+  // Gemini Notes / recording artifacts landing later must NOT resurrect the
+  // candidate to "meeting ended" — that would fire the "after meeting"
+  // automation for someone who never joined. The recording is the recruiter
+  // sitting alone on the call; the Gemini Notes doc is Google auto-creating
+  // one for the host's later access. Neither implies attendance.
+  const noShowExists = await prisma.schedulingEvent.findFirst({
+    where: {
+      sessionId: meeting.sessionId,
+      eventType: 'meeting_no_show',
+      metadata: { path: ['interviewMeetingId'], equals: meeting.id },
+    },
+    select: { id: true },
+  })
+  if (noShowExists) {
+    console.log('[Meet] meeting_ended fallback rejected (no_show already logged)', {
+      meetingId: meeting.id,
+    })
+    return false
+  }
+
   // End time: prefer the artifact's createdTime (recording or Gemini Notes
   // both finalize a few minutes after the meeting ends), else scheduledEnd.
   const endAt = attendance?.createdAt ?? driveOutcome.createdAt ?? meeting.scheduledEnd ?? new Date()
