@@ -229,3 +229,77 @@ describe('computeAvailableSlots — caps', () => {
     expect(slots).toHaveLength(5)
   })
 })
+
+describe('computeAvailableSlots — maxPerDay', () => {
+  it('drops entire day when booked count meets maxPerDay', () => {
+    // Now: Mon 2026-01-12 05:00 UTC = 0:00 EST. Mon+Tue in window.
+    const nowUtc = new Date('2026-01-12T05:00:00Z')
+    const slots = computeAvailableSlots({
+      rules: rules({
+        minNoticeHours: 0,
+        maxDaysOut: 2,
+        bufferAfterMinutes: 0,
+        maxPerDay: 2,
+      }),
+      recruiterTimezone: NY,
+      busyIntervals: [],
+      nowUtc,
+      bookedCountsByDay: {
+        '2026-01-12': 2, // Mon at cap
+        '2026-01-13': 1, // Tue below cap
+      },
+      maxSlots: 1000,
+    })
+    const dayKeys = new Set(slots.map((s) => zonedFromUtc(s.startUtc, NY).day))
+    expect(dayKeys.has(12)).toBe(false) // Mon dropped
+    expect(dayKeys.has(13)).toBe(true)  // Tue kept
+  })
+
+  it('is a no-op when maxPerDay is null', () => {
+    const nowUtc = new Date('2026-01-12T05:00:00Z')
+    const withCap = computeAvailableSlots({
+      rules: rules({ minNoticeHours: 0, maxDaysOut: 1, bufferAfterMinutes: 0, maxPerDay: null }),
+      recruiterTimezone: NY,
+      busyIntervals: [],
+      nowUtc,
+      bookedCountsByDay: { '2026-01-12': 99 }, // ignored
+    })
+    expect(withCap.length).toBe(16) // full Mon working day
+  })
+
+  it('treats booked count 0 as uncapped for that day', () => {
+    const nowUtc = new Date('2026-01-12T05:00:00Z')
+    const slots = computeAvailableSlots({
+      rules: rules({ minNoticeHours: 0, maxDaysOut: 1, bufferAfterMinutes: 0, maxPerDay: 3 }),
+      recruiterTimezone: NY,
+      busyIntervals: [],
+      nowUtc,
+      bookedCountsByDay: {}, // no rows for Mon
+    })
+    expect(slots.length).toBe(16)
+  })
+
+  it('bucket key uses recruiter timezone, not UTC', () => {
+    // A 22:00 EST slot on Mon 1/12 (03:00 UTC Tue 1/13) must count against
+    // Mon in EST, not Tue in UTC. Force late-night working hours.
+    const nowUtc = new Date('2026-01-12T05:00:00Z')
+    const r = rules({
+      minNoticeHours: 0,
+      maxDaysOut: 1,
+      bufferAfterMinutes: 0,
+      maxPerDay: 1,
+      workingHours: {
+        ...defaultBookingRules().workingHours,
+        mon: [{ start: '22:00', end: '23:30' }],
+      },
+    })
+    const slots = computeAvailableSlots({
+      rules: r,
+      recruiterTimezone: NY,
+      busyIntervals: [],
+      nowUtc,
+      bookedCountsByDay: { '2026-01-12': 1 }, // Mon EST — should drop even though the slot UTC is Tue
+    })
+    expect(slots).toHaveLength(0)
+  })
+})

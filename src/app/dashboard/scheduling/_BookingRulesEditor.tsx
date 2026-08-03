@@ -25,7 +25,7 @@ interface PreviewDay {
   workingRanges: WorkingHourRange[]
   busyIntervals: { start: string; end: string }[]
   slotCount: number
-  reason: 'off' | 'window_too_short' | 'min_notice' | 'past_max_days' | 'calendar_conflict' | 'available' | 'unknown'
+  reason: 'off' | 'window_too_short' | 'min_notice' | 'past_max_days' | 'calendar_conflict' | 'day_full' | 'available' | 'unknown'
 }
 
 interface PreviewResponse {
@@ -181,6 +181,12 @@ export function BookingRulesEditor({ value, onChange, configId }: Props) {
           tooltip="Furthest a candidate can book ahead. 14 = picker only shows the next 14 days."
           value={rules.maxDaysOut} min={1} max={365}
           onChange={(v) => update({ maxDaysOut: v })} />
+        <NullableNumberField
+          label="Max interviews / day"
+          tooltip="Cap on how many interviews can be booked through THIS link on any single calendar day (workspace timezone). Once the day hits the cap, the picker hides all remaining slots for that day. Leave empty for no cap."
+          value={rules.maxPerDay} min={1} max={100}
+          placeholder="No cap"
+          onChange={(v) => update({ maxPerDay: v })} />
       </div>
 
       <div>
@@ -368,6 +374,8 @@ function reasonLabel(reason: PreviewDay['reason'], busyCount: number): string {
       return 'beyond max-days-out window'
     case 'calendar_conflict':
       return busyCount === 1 ? 'calendar event blocks the window' : 'calendar events block the window'
+    case 'day_full':
+      return 'day is at the per-day interview cap'
     case 'unknown':
       return 'no fitting slot'
     case 'available':
@@ -406,6 +414,40 @@ function NumberField({ label, tooltip, value, min, max, onChange }: { label: str
         onChange={(e) => {
           const n = parseInt(e.target.value, 10)
           if (Number.isFinite(n)) onChange(n)
+        }}
+        className="w-full px-2 py-1.5 border border-surface-border rounded-[6px] text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+      />
+    </label>
+  )
+}
+
+function NullableNumberField({ label, tooltip, value, min, max, placeholder, onChange }: {
+  label: string
+  tooltip?: string
+  value: number | null
+  min: number
+  max: number
+  placeholder?: string
+  onChange: (v: number | null) => void
+}) {
+  return (
+    <label className="block">
+      <span className="eyebrow block mb-1 flex items-center gap-1">
+        {label}
+        {tooltip && <InfoIcon tooltip={tooltip} />}
+      </span>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={value ?? ''}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const raw = e.target.value.trim()
+          if (raw === '') { onChange(null); return }
+          const n = parseInt(raw, 10)
+          if (Number.isFinite(n) && n >= min && n <= max) onChange(n)
+          else if (Number.isFinite(n) && n === 0) onChange(null)
         }}
         className="w-full px-2 py-1.5 border border-surface-border rounded-[6px] text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-brand-500/40"
       />

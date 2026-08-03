@@ -42,6 +42,8 @@ import { logger } from '../logger'
 import { notifyRecallOutOfCredits } from '../alerts/recall-credits'
 import { sendMeetingConfirmation } from './meeting-confirmation'
 import { ensureHostIdentity } from '../meet/sync-on-read'
+import { parseBookingRulesOrDefault } from './booking-rules'
+import { countBookingsPerDay, dayKeyForUtc } from './daily-cap'
 import {
   resolveHostMembers,
   hostsAsCalendarAttendees,
@@ -281,14 +283,48 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   }))?.id ?? null
 
   let assignedMemberIds: string[] = []
+  let configBookingRulesRaw: unknown = null
+  let configTimezone: string | null = null
   if (configId) {
     const cfg = await prisma.schedulingConfig.findUnique({
       where: { id: configId },
-      select: { assignedMemberIds: true },
+      select: {
+        assignedMemberIds: true,
+        bookingRules: true,
+        workspace: { select: { timezone: true } },
+      },
     })
     assignedMemberIds = cfg?.assignedMemberIds ?? []
+    configBookingRulesRaw = cfg?.bookingRules ?? null
+    configTimezone = cfg?.workspace?.timezone ?? null
   }
   const hostMembers = await resolveHostMembers(workspaceId, assignedMemberIds)
+
+  // Per-day cap: server-side final guard. Run BEFORE the calendar event
+  // insert so a booking that exceeds the cap doesn't create a phantom event
+  // on the recruiter's calendar. Meet space above is disposable; Google
+  // reaps unused spaces automatically. Bypass when no config is bound (the
+  // operator manual-schedule flow with no per-config rules) or when the
+  // config's rules didn't set a cap.
+  if (configId && configTimezone) {
+    const bookingRules = parseBookingRulesOrDefault(configBookingRulesRaw)
+    if (bookingRules.maxPerDay != null) {
+      const counts = await countBookingsPerDay({
+        schedulingConfigId: configId,
+        timezone: configTimezone,
+        fromUtc: new Date(start.getTime() - 24 * 60 * 60_000),
+        toUtc: new Date(start.getTime() + 24 * 60 * 60_000),
+      })
+      const key = dayKeyForUtc(start, configTimezone)
+      if ((counts[key] ?? 0) >= bookingRules.maxPerDay) {
+        throw new BookInterviewError(
+          409,
+          'daily_cap_reached',
+          `This day is already at the maximum of ${bookingRules.maxPerDay} interview${bookingRules.maxPerDay === 1 ? '' : 's'} for this scheduling link.`,
+        )
+      }
+    }
+  }
 
   // 6. Create Calendar event
   const calendar = google.calendar({ version: 'v3', auth: client })

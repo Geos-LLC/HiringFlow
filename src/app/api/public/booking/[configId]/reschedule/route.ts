@@ -19,6 +19,7 @@ import { verifyBookingToken } from '@/lib/scheduling/booking-links'
 import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
 import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
+import { countBookingsPerDay, dayKeyForUtc } from '@/lib/scheduling/daily-cap'
 import { getAuthedClientForWorkspace, hasMeetScopes } from '@/lib/google'
 import { logSchedulingEvent } from '@/lib/scheduling'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
@@ -102,6 +103,26 @@ export async function POST(request: NextRequest, { params }: { params: { configI
   }
   // Filter out the current meeting's interval — it shows up as busy on its own calendar.
   const filteredBusy = busy.filter((b) => !(b.start.getTime() === meeting.scheduledStart.getTime() && b.end.getTime() === meeting.scheduledEnd.getTime()))
+
+  // Per-day cap on the NEW day. Exclude this candidate's own meeting from
+  // the count so moving from Mon to Mon doesn't count them twice, and moving
+  // Mon → Tue frees up their old Mon slot for someone else.
+  if (rules.maxPerDay != null) {
+    const dayCountMap = await countBookingsPerDay({
+      schedulingConfigId: config.id,
+      timezone: config.workspace.timezone,
+      fromUtc: new Date(slotStart.getTime() - 24 * 60 * 60_000),
+      toUtc: new Date(slotStart.getTime() + 24 * 60 * 60_000),
+      excludeInterviewMeetingId: meeting.id,
+    })
+    const key = dayKeyForUtc(slotStart, config.workspace.timezone)
+    if ((dayCountMap[key] ?? 0) >= rules.maxPerDay) {
+      return NextResponse.json({
+        error: 'daily_cap_reached',
+        message: bookingErrorMessage('daily_cap_reached'),
+      }, { status: 409 })
+    }
+  }
 
   const stillAvailable = computeAvailableSlots({
     rules,

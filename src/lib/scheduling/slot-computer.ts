@@ -43,6 +43,14 @@ export interface ComputeAvailableSlotsOpts {
   nowUtc: Date
   /** Hard cap on slots returned. Defaults to 200 to keep payloads small. */
   maxSlots?: number
+  /**
+   * Map of `YYYY-MM-DD` (in `recruiterTimezone`) → count of already-booked
+   * meetings on that day for this config. When `rules.maxPerDay` is set,
+   * days at or above the cap are skipped entirely. Caller (availability
+   * endpoint) queries `InterviewMeeting` filtered to the same
+   * `schedulingConfigId` and populates this map.
+   */
+  bookedCountsByDay?: Record<string, number>
 }
 
 const WEEKDAY_KEYS: Weekday[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
@@ -203,6 +211,9 @@ export function computeAvailableSlots(opts: ComputeAvailableSlotsOpts): Slot[] {
 
   const out: Slot[] = []
 
+  const bookedCounts = opts.bookedCountsByDay ?? {}
+  const dayCap = rules.maxPerDay
+
   // Iterate calendar days in the recruiter's timezone. Start from the
   // recruiter-local day of `fromUtc`; stop after maxDaysOut days or once we
   // pass `toUtc`.
@@ -222,6 +233,14 @@ export function computeAvailableSlots(opts: ComputeAvailableSlotsOpts): Slot[] {
     const weekdayKey = WEEKDAY_KEYS[weekdayInTz]
     const ranges: WorkingHourRange[] = rules.workingHours[weekdayKey] ?? []
     if (ranges.length === 0) continue
+
+    // Per-day cap: skip the entire day when this config already has
+    // `maxPerDay` non-cancelled meetings on this recruiter-local calendar
+    // day. Caller supplies bookedCountsByDay keyed by YYYY-MM-DD.
+    if (dayCap != null) {
+      const dayKey = `${Y}-${String(M).padStart(2, '0')}-${String(D).padStart(2, '0')}`
+      if ((bookedCounts[dayKey] ?? 0) >= dayCap) continue
+    }
 
     for (const range of ranges) {
       const startMin = parseHHMMToMinutes(range.start)

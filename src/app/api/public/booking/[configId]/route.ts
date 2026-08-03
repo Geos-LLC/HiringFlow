@@ -19,6 +19,7 @@ import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
 import { parseCustomFieldsOrEmpty, validateCustomFieldAnswers } from '@/lib/scheduling/custom-fields'
 import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots } from '@/lib/scheduling/slot-computer'
+import { countBookingsPerDay, dayKeyForUtc } from '@/lib/scheduling/daily-cap'
 import { bookInterview, BookInterviewError } from '@/lib/scheduling/book-interview'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
 import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
@@ -223,6 +224,27 @@ export async function POST(request: NextRequest, { params }: { params: { configI
       message: bookingErrorMessage('free_busy_failed', { contactEmail }),
       detail: (err as Error).message,
     }, { status: 502 })
+  }
+
+  // Per-day cap: hard-check the target day before we ask the slot computer.
+  // computeAvailableSlots below re-checks with the same map, but the
+  // dedicated check gives us a specific error code so the picker can render
+  // "This day is fully booked" instead of the generic "slot unavailable"
+  // which reads like a race-condition.
+  if (rules.maxPerDay != null) {
+    const dayCountMap = await countBookingsPerDay({
+      schedulingConfigId: config.id,
+      timezone: config.workspace.timezone,
+      fromUtc: new Date(slotStart.getTime() - 24 * 60 * 60_000),
+      toUtc: new Date(slotStart.getTime() + 24 * 60 * 60_000),
+    })
+    const key = dayKeyForUtc(slotStart, config.workspace.timezone)
+    if ((dayCountMap[key] ?? 0) >= rules.maxPerDay) {
+      return NextResponse.json({
+        error: 'daily_cap_reached',
+        message: bookingErrorMessage('daily_cap_reached'),
+      }, { status: 409 })
+    }
   }
 
   const stillAvailable = computeAvailableSlots({

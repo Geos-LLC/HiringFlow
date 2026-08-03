@@ -23,6 +23,7 @@ export type BookingErrorCode =
   | 'rate_limited'
   | 'invalid_window'
   | 'slot_unavailable'
+  | 'daily_cap_reached'
   | 'free_busy_failed'
   | 'name_required'
   | 'invalid_email'
@@ -121,6 +122,8 @@ export function bookingErrorMessage(code: BookingErrorCode | string, opts: Messa
     // ── Self-fixable: don't pollute with contact info ──
     case 'slot_unavailable':
       return 'That time was just taken by someone else. Please pick another time.'
+    case 'daily_cap_reached':
+      return 'That day is fully booked. Please pick another day.'
     case 'name_required':
       return 'Please enter your name.'
     case 'invalid_email':

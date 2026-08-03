@@ -32,6 +32,7 @@ import {
   zonedTimeToUtc,
   type BusyInterval,
 } from '@/lib/scheduling/slot-computer'
+import { countBookingsPerDay } from '@/lib/scheduling/daily-cap'
 
 const PREVIEW_DAY_CAP = 14
 
@@ -48,7 +49,7 @@ interface PerDay {
   workingRanges: WorkingHourRange[]
   busyIntervals: PerDayBusy[]
   slotCount: number
-  reason: 'off' | 'window_too_short' | 'min_notice' | 'past_max_days' | 'calendar_conflict' | 'available' | 'unknown'
+  reason: 'off' | 'window_too_short' | 'min_notice' | 'past_max_days' | 'calendar_conflict' | 'day_full' | 'available' | 'unknown'
 }
 
 function pad2(n: number): string {
@@ -202,6 +203,20 @@ export async function POST(request: NextRequest) {
 
   const busy = busyChunks.flat()
 
+  // Per-day cap: preview only reflects the cap when editing an existing
+  // config (need configId to count its own meetings). For a brand-new
+  // config the cap still gets validated at booking time but the preview
+  // shows the picker without it.
+  let bookedCountsByDay: Record<string, number> = {}
+  if (configId && rules.maxPerDay != null) {
+    bookedCountsByDay = await countBookingsPerDay({
+      schedulingConfigId: configId,
+      timezone: recruiterTimezone,
+      fromUtc: nowUtc,
+      toUtc,
+    })
+  }
+
   // Run the same slot computer the candidate-facing endpoint uses.
   const slots = computeAvailableSlots({
     rules,
@@ -211,6 +226,7 @@ export async function POST(request: NextRequest) {
     fromUtc: nowUtc,
     toUtc,
     maxSlots: 1000,
+    bookedCountsByDay,
   })
 
   console.log(`[preview-conflicts] result slotsTotal=${slots.length} busyTotal=${busy.length} failedCalendars=${failedCalendars}/${calendarIds.size}`)
@@ -286,7 +302,10 @@ export async function POST(request: NextRequest) {
     const count = slotCountByDate.get(dateKey) || 0
     let reason: PerDay['reason'] = 'available'
     if (count === 0) {
-      // Diagnose. Priority: window-too-short > past-max-days > min-notice > calendar.
+      // Diagnose. Priority: day-full > window-too-short > past-max-days > min-notice > calendar.
+      if (rules.maxPerDay != null && (bookedCountsByDay[dateKey] ?? 0) >= rules.maxPerDay) {
+        reason = 'day_full'
+      } else {
       const longestRangeMs = Math.max(...ranges.map(rangeMinutes)) * 60 * 1000
       if (longestRangeMs < durationMs) {
         reason = 'window_too_short'
@@ -317,6 +336,7 @@ export async function POST(request: NextRequest) {
         } else {
           reason = 'unknown'
         }
+      }
       }
     }
 

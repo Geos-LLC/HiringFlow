@@ -22,6 +22,7 @@ import { verifyBookingToken } from '@/lib/scheduling/booking-links'
 import { parseBookingRulesOrDefault } from '@/lib/scheduling/booking-rules'
 import { getBusyIntervals } from '@/lib/scheduling/free-busy'
 import { computeAvailableSlots, type BusyInterval } from '@/lib/scheduling/slot-computer'
+import { countBookingsPerDay } from '@/lib/scheduling/daily-cap'
 import { bookingErrorMessage } from '@/lib/scheduling/error-messages'
 import { notifyTenantOfBookingFailure } from '@/lib/google-auth-notifier'
 
@@ -202,6 +203,19 @@ export async function GET(request: NextRequest, { params }: { params: { configId
 
   const busy = busyChunks.flat()
 
+  // Per-day cap: count existing (non-cancelled) meetings on this config
+  // per recruiter-local day. When the cap is null this is unused, but the
+  // query is cheap enough to run unconditionally rather than branch on it.
+  let bookedCountsByDay: Record<string, number> = {}
+  if (rules.maxPerDay != null) {
+    bookedCountsByDay = await countBookingsPerDay({
+      schedulingConfigId: config.id,
+      timezone: recruiterTimezone,
+      fromUtc,
+      toUtc,
+    })
+  }
+
   const slots = computeAvailableSlots({
     rules,
     recruiterTimezone,
@@ -209,6 +223,7 @@ export async function GET(request: NextRequest, { params }: { params: { configId
     fromUtc,
     toUtc,
     nowUtc,
+    bookedCountsByDay,
   })
 
   return NextResponse.json({

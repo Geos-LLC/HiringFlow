@@ -25,6 +25,14 @@ export interface BookingRules {
   maxDaysOut: number
   slotIntervalMinutes: number
   workingHours: WorkingHours
+  /**
+   * Optional cap on interviews per calendar day (in the workspace timezone),
+   * counted per SchedulingConfig. When the day already has this many booked
+   * (non-cancelled) meetings, the picker hides all remaining slots for the
+   * day and the booking POST rejects with `daily_cap_reached`. `null` = no
+   * cap.
+   */
+  maxPerDay: number | null
 }
 
 const WEEKDAYS: Weekday[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
@@ -47,6 +55,7 @@ export function defaultBookingRules(): BookingRules {
       sat: [],
       sun: [],
     },
+    maxPerDay: null,
   }
 }
 
@@ -142,6 +151,13 @@ export function parseBookingRules(input: unknown): BookingRules {
   const minNoticeHours = int(input.minNoticeHours, 'minNoticeHours', 0, 30 * 24)
   const maxDaysOut = int(input.maxDaysOut, 'maxDaysOut', 1, 365)
   const workingHours = parseWorkingHours(input.workingHours)
+  // maxPerDay is optional and nullable — undefined / null / 0 all mean "no
+  // cap". Positive integer 1..100 caps the day. Historical rows written
+  // before this field existed omit it entirely; treat those as uncapped.
+  let maxPerDay: number | null = null
+  if (input.maxPerDay !== undefined && input.maxPerDay !== null && input.maxPerDay !== 0) {
+    maxPerDay = int(input.maxPerDay, 'maxPerDay', 1, 100)
+  }
   return {
     durationMinutes,
     slotIntervalMinutes,
@@ -150,6 +166,7 @@ export function parseBookingRules(input: unknown): BookingRules {
     minNoticeHours,
     maxDaysOut,
     workingHours,
+    maxPerDay,
   }
 }
 

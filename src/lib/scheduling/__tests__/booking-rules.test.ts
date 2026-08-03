@@ -8,6 +8,40 @@ describe('defaultBookingRules', () => {
     expect(round).toEqual(def)
   })
 
+  it('defaults maxPerDay to null (no cap)', () => {
+    expect(defaultBookingRules().maxPerDay).toBeNull()
+  })
+})
+
+describe('parseBookingRules — maxPerDay', () => {
+  const base = defaultBookingRules()
+
+  it('treats missing maxPerDay as null (back-compat with pre-cap rows)', () => {
+    const { maxPerDay: _, ...withoutCap } = base
+    const parsed = parseBookingRules(withoutCap)
+    expect(parsed.maxPerDay).toBeNull()
+  })
+
+  it('treats maxPerDay=0 as null', () => {
+    const parsed = parseBookingRules({ ...base, maxPerDay: 0 })
+    expect(parsed.maxPerDay).toBeNull()
+  })
+
+  it('accepts a positive integer within range', () => {
+    const parsed = parseBookingRules({ ...base, maxPerDay: 5 })
+    expect(parsed.maxPerDay).toBe(5)
+  })
+
+  it('rejects maxPerDay > 100', () => {
+    expect(() => parseBookingRules({ ...base, maxPerDay: 101 })).toThrow(/maxPerDay/)
+  })
+
+  it('rejects non-integer maxPerDay', () => {
+    expect(() => parseBookingRules({ ...base, maxPerDay: 3.5 })).toThrow(/maxPerDay/)
+  })
+})
+
+describe('defaultBookingRules — working hours', () => {
   it('mon-fri populated, sat-sun empty', () => {
     const def = defaultBookingRules()
     expect(def.workingHours.mon.length).toBe(1)
