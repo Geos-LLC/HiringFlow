@@ -36,9 +36,12 @@ const TRIGGER_LABELS: Record<string, string> = {
   automation_completed: 'After automation',
 }
 
+type RuleFilter = 'active' | 'all'
+
 export function RunAutomationModal({ candidateId, stageId, onClose, onFired }: RunAutomationModalProps) {
   const [rules, setRules] = useState<MatchedRule[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [filter, setFilter] = useState<RuleFilter>('active')
   const [perRule, setPerRule] = useState<Record<string, { firing?: boolean; result?: { ok: boolean; message: string } }>>({})
 
   useEffect(() => {
@@ -89,9 +92,30 @@ export function RunAutomationModal({ candidateId, stageId, onClose, onFired }: R
       <div className="bg-white rounded-[12px] shadow-2xl w-full max-w-[560px] p-6" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-base font-semibold text-grey-15 mb-1">Run automation</h3>
         <p className="text-xs text-grey-40 mb-4">
-          Active rules attached to this candidate&apos;s current stage. Each fires through the
+          Rules attached to this candidate&apos;s current stage. Each fires through the
           normal dispatch path (multi-step rules queue follow-ups via QStash).
         </p>
+        {rules && rules.length > 0 && (
+          <div className="inline-flex items-center gap-1 p-1 rounded-[8px] bg-surface-muted mb-3">
+            {(['active', 'all'] as const).map((key) => {
+              const count = key === 'active' ? rules.filter((r) => r.isActive).length : rules.length
+              const label = key === 'active' ? 'Active' : 'All rules'
+              const isSelected = filter === key
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setFilter(key)}
+                  className={`text-[11px] px-2.5 py-1 rounded-[6px] font-medium transition-colors ${
+                    isSelected ? 'bg-white text-grey-15 shadow-sm' : 'text-grey-40 hover:text-grey-15'
+                  }`}
+                >
+                  {label} <span className="text-grey-35">({count})</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         {!stageId ? (
           <div className="text-[12px] text-grey-40">Candidate is not assigned to a pipeline stage yet.</div>
         ) : loadError ? (
@@ -100,14 +124,28 @@ export function RunAutomationModal({ candidateId, stageId, onClose, onFired }: R
           <div className="text-[12px] text-grey-40">Loading rules…</div>
         ) : rules.length === 0 ? (
           <div className="text-[12px] text-grey-40">No automation rules are attached to this stage.</div>
-        ) : (
+        ) : (() => {
+          const visibleRules = filter === 'active' ? rules.filter((r) => r.isActive) : rules
+          if (visibleRules.length === 0) {
+            return (
+              <div className="text-[12px] text-grey-40">
+                No active rules. Switch to <button type="button" onClick={() => setFilter('all')} className="underline text-brand-600 hover:text-brand-700">All rules</button> to see paused ones.
+              </div>
+            )
+          }
+          return (
           <ul className="space-y-2 max-h-[50vh] overflow-y-auto">
-            {rules.map((r) => {
+            {visibleRules.map((r) => {
               const s = perRule[r.id]
               return (
                 <li key={r.id} className="flex items-center gap-2 border border-surface-border rounded-[8px] px-3 py-2">
                   <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink truncate">{r.name}</div>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="text-[13px] font-medium text-ink truncate">{r.name}</div>
+                      {!r.isActive && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-grey-95 text-grey-40 shrink-0">Paused</span>
+                      )}
+                    </div>
                     <div className="text-[11px] text-grey-35">
                       Trigger: {TRIGGER_LABELS[r.triggerType] || r.triggerType}
                     </div>
@@ -128,7 +166,8 @@ export function RunAutomationModal({ candidateId, stageId, onClose, onFired }: R
               )
             })}
           </ul>
-        )}
+          )
+        })()}
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="text-sm px-4 py-2 rounded-[8px] text-grey-40 hover:text-grey-15">Close</button>
         </div>
