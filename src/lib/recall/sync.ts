@@ -152,23 +152,35 @@ export async function handleBotInCallRecording(
 }
 
 /**
- * Handle the bot finishing the call. Pulls the full participant list from
- * Recall to decide whether the candidate showed up; sets actualEnd; fires
- * meeting_ended (someone joined besides the host) or meeting_no_show
- * (only the bot + host in the room).
+ * Handle the bot finishing the call. Emit ONE definitive attendance signal
+ * per meeting (meeting_ended or meeting_no_show) — never fire-then-revert.
  *
- * Recording-ready is handled separately in handleBotDone since some
- * `call_ended` deliveries arrive before the recording artifact finalizes.
+ * Decision matrix:
+ *   - Recall returned a non-empty participant list showing a non-host present
+ *     → meeting_ended (attended, proven). Fire + write actualEnd.
+ *   - Recall returned a non-empty participant list showing host-only
+ *     → meeting_no_show (confirmed no-show). Fire + write actualEnd.
+ *   - Recall returned NO participant data AND stored participants[] has no
+ *     non-host AND recording-duration fallback couldn't confirm attendance
+ *     → DEFER. Do NOT write actualEnd, do NOT fire any lifecycle event.
+ *     Log a `meeting_attendance_pending` audit event and return.
+ *     bot.done (arriving ~seconds later when a recording exists) will fire
+ *     meeting_ended. The reconcile-automations cron (Rule 4, 30min grace)
+ *     is the final safety net if bot.done never comes.
  *
- * No-show defense in depth (Shedrack Amadi 2026-05-27 incident): Recall's
- * participant list is sometimes empty or mislabels everyone as host when
- * polled milliseconds after bot.call_ended. We refuse to fire meeting_no_show
- * if ANY of these prove the candidate actually attended:
- *   1. occurredAt < scheduledEnd (bot.call_ended can fire when the host
- *      leaves first, mid-interview).
- *   2. InterviewMeeting.participants[] already has a non-host with a
- *      joinTime (an earlier Workspace Events Meet API sync saw them).
- * In either case we emit meeting_ended instead.
+ * Why defer instead of guess:
+ *   - Recall's `/bot/{id}/participants/` endpoint has an in-the-wild race
+ *     where it returns an empty list when polled milliseconds after
+ *     bot.call_ended even though the candidate clearly attended (recording
+ *     shows up a few seconds later via bot.done).
+ *   - The old code fired meeting_no_show eagerly on empty data, then
+ *     `reconcileFalseNoShow` reverted from bot.done. This produced a
+ *     "no-show → reverted" flip on every candidate's timeline and a
+ *     transient `status='lost' + automationsHaltedAt` window that raced
+ *     the "after meeting" automation dispatch.
+ *   - Deferring means the candidate sees ONE clean event, the halt/revert
+ *     dance goes away, and downstream automations dispatch off a stable
+ *     lifecycle signal instead of a reverted one.
  */
 export async function handleBotCallEnded(
   meetingId: string,
@@ -247,29 +259,40 @@ export async function handleBotCallEnded(
     }
   }
 
-  // Premature gate: Recall's bot.call_ended can fire BEFORE scheduledEnd if
-  // the host leaves first or wraps up the bot early. The original incident
-  // (Shedrack 2026-05-27) had Recall's participants endpoint return an
-  // empty/mislabeled list — there was no way to know if the candidate had
-  // joined. We protect that case by waiting for the cron stalled-detector.
+  // Defer decision when Recall's data is inconclusive. See function docstring
+  // for the full rationale. Two conditions must BOTH hold to defer:
+  //   1. We couldn't prove non-host presence from any signal (Recall
+  //      participants, stored participants, or recording-duration fallback).
+  //   2. Recall itself returned no participant data — the endpoint may have
+  //      raced the bot's finalize step and we should wait for bot.done.
   //
-  // BUT when Recall returned definitive data showing host-only (Ekaterine
-  // 2026-06-08, call_ended_by_host 5s before scheduledEnd), we KNOW it's a
-  // no-show. Trust the data and fire.
-  const premature =
-    !nonHostPresent &&
-    !recallReturnedData &&
-    meeting.scheduledEnd != null &&
-    occurredAt < meeting.scheduledEnd
-
-  if (premature) {
-    console.warn(
-      `[recall] suppressed premature meeting_no_show for ${meeting.id}: ` +
-      `occurredAt=${occurredAt.toISOString()} < scheduledEnd=${meeting.scheduledEnd!.toISOString()} ` +
-      `(no Recall participant data — waiting for cron)`,
+  // When Recall returned definitive host-only data (Ekaterine 2026-06-08),
+  // we DO fire meeting_no_show immediately — that's not a race, that's a
+  // confirmed absence.
+  if (!nonHostPresent && !recallReturnedData) {
+    await logSchedulingEvent({
+      sessionId: meeting.sessionId,
+      eventType: 'meeting_attendance_pending',
+      metadata: {
+        interviewMeetingId: meeting.id,
+        source: 'recall',
+        event: 'bot.call_ended',
+        at: occurredAt.toISOString(),
+        reason: 'recall_participants_empty',
+      },
+    }).catch((err) =>
+      console.error('[recall] logSchedulingEvent(meeting_attendance_pending) failed:', (err as Error).message),
     )
-    // Don't touch actualEnd — otherwise the lifecycle middleware would fire
-    // meeting_ended for a meeting we couldn't classify. Cron takes over.
+    console.warn(
+      `[recall] deferred attendance decision for ${meeting.id}: ` +
+      `occurredAt=${occurredAt.toISOString()} scheduledEnd=${meeting.scheduledEnd?.toISOString() ?? '?'} ` +
+      `(Recall returned no participant data — waiting for bot.done / cron)`,
+    )
+    // Don't touch actualEnd — the lifecycle middleware fires on that write
+    // and would emit meeting_ended for a meeting we haven't classified. If
+    // bot.done arrives with a recording, it will resolve to meeting_ended.
+    // If nothing arrives, the reconcile-automations cron (Rule 4) picks it
+    // up after MEETING_ENDED_RECOVERY_GRACE_MS (30 min).
     return
   }
 
@@ -311,14 +334,24 @@ export async function handleBotCallEnded(
 }
 
 /**
- * Handle bot.done — the recording is finalized and downloadable. Persist
- * the recording id on the meeting + write an artifact row, then fire
- * recording_ready so any waiting automations dispatch.
+ * Handle bot.done — the recording is finalized and downloadable. This is
+ * ALSO the definitive attendance signal for meetings that handleBotCallEnded
+ * deferred (Recall's participants API returned empty at bot.call_ended time).
+ * The presence of a finalized recording proves the meeting happened, so we
+ * write actualEnd + fire meeting_ended if no lifecycle event has fired yet.
+ *
+ * Ordering: fire meeting_ended BEFORE the actualEnd write so the lifecycle
+ * middleware's SchedulingEvent check finds the row and skips its own emit —
+ * same invariant handleBotCallEnded relies on.
  */
 export async function handleBotDone(meetingId: string, botId: string, occurredAt: Date): Promise<void> {
   const meeting = await prisma.interviewMeeting.findUnique({
     where: { id: meetingId },
-    select: { id: true, sessionId: true, recordingState: true, recallRecordingId: true },
+    select: {
+      id: true, sessionId: true, workspaceId: true,
+      recordingState: true, recallRecordingId: true,
+      actualEnd: true,
+    },
   })
   if (!meeting) {
     console.warn('[recall] bot.done for unknown meeting', meetingId)
@@ -336,11 +369,83 @@ export async function handleBotDone(meetingId: string, botId: string, occurredAt
     return
   }
 
+  // Resolve any deferred attendance decision from handleBotCallEnded. If
+  // actualEnd is still null AND no lifecycle event has fired yet, we now
+  // have to classify the meeting. Re-poll participants (Recall's endpoint
+  // is usually reliable by the time bot.done fires) and pick meeting_ended
+  // or meeting_no_show. Emit BEFORE writing actualEnd so the lifecycle
+  // middleware's no-op check sees the SchedulingEvent.
+  const recordingCompletedAt = recording.completed_at ? new Date(recording.completed_at) : occurredAt
+  let resolvedParticipantRows: StoredParticipantRow[] | null = null
+  if (!meeting.actualEnd) {
+    const alreadyClassified = await prisma.schedulingEvent.findFirst({
+      where: {
+        sessionId: meeting.sessionId,
+        eventType: { in: ['meeting_ended', 'meeting_no_show'] },
+        metadata: { path: ['interviewMeetingId'], equals: meeting.id },
+      },
+      select: { id: true },
+    })
+    if (!alreadyClassified) {
+      let laterParticipants: RecallParticipant[] = []
+      try {
+        laterParticipants = await listBotParticipants(botId)
+      } catch (err) {
+        console.error('[recall] listBotParticipants failed in done handler for', botId, ':', (err as Error).message)
+      }
+      const realLater = laterParticipants.filter((p) => !/^Interview Notes$|^Meeting Notetaker$/i.test(p.name || ''))
+      resolvedParticipantRows = realLater.map(participantToRow)
+      const nonHostPresent = resolvedParticipantRows.some((r) => !r.isHost)
+      // If Recall still returns nothing, use the recording duration as a
+      // heuristic. A ≥2min recording without a definitive host-only signal
+      // is treated as attended — matches the fallback in handleBotCallEnded.
+      // Anything shorter with no participant data → no-show.
+      let resolvedType: 'meeting_ended' | 'meeting_no_show'
+      let attendedSource: string
+      if (resolvedParticipantRows.length > 0) {
+        resolvedType = nonHostPresent ? 'meeting_ended' : 'meeting_no_show'
+        attendedSource = nonHostPresent ? 'participants_at_done' : 'host_only_at_done'
+      } else if (recording.started_at && recording.completed_at) {
+        const durMs = new Date(recording.completed_at).getTime() - new Date(recording.started_at).getTime()
+        if (durMs >= 2 * 60 * 1000) {
+          resolvedType = 'meeting_ended'
+          attendedSource = `recording_duration_${Math.round(durMs / 1000)}s`
+        } else {
+          resolvedType = 'meeting_no_show'
+          attendedSource = `short_recording_${Math.round(durMs / 1000)}s`
+        }
+      } else {
+        // No participant data, no recording timing — safest default is
+        // meeting_ended (recording exists at all). Cron already assumes
+        // attended for actualStart-without-actualEnd anyway.
+        resolvedType = 'meeting_ended'
+        attendedSource = 'default_recording_exists'
+      }
+      await emitLifecycleOnce(
+        meeting.id, meeting.sessionId, resolvedType, recordingCompletedAt,
+        { event: 'bot.done', attendedSource },
+      )
+      if (resolvedType === 'meeting_ended') {
+        await bumpSessionProgress(meeting.sessionId).catch(() => {})
+      }
+    }
+  }
+
   await prisma.interviewMeeting.update({
     where: { id: meeting.id },
     data: {
       recordingState: 'ready',
       recallRecordingId: recording.id,
+      // Backfill actualEnd for deferred meetings. Use recording.completed_at
+      // as the truthful "when did the call actually end" timestamp; falls
+      // back to bot.done's occurredAt if Recall didn't include it.
+      ...(meeting.actualEnd ? {} : { actualEnd: recordingCompletedAt }),
+      // If we re-fetched participants during deferral resolution and got a
+      // richer snapshot than what's stored, persist it. Otherwise leave the
+      // existing participants[] untouched.
+      ...(resolvedParticipantRows && resolvedParticipantRows.length > 0
+        ? { participants: resolvedParticipantRows as unknown as object }
+        : {}),
     },
   })
   await recordArtifact(meeting.id, 'recording', {
@@ -350,33 +455,23 @@ export async function handleBotDone(meetingId: string, botId: string, occurredAt
     driveCreatedTime: recording.completed_at ? new Date(recording.completed_at) : occurredAt,
   }).catch((err) => console.warn('[recall] recordArtifact failed:', (err as Error).message))
 
-  // A recording landing means the meeting actually happened. If bot.call_ended
-  // fired meeting_no_show earlier (Recall's participants list was empty or the
-  // duration fallback hadn't seen the recording yet), the candidate is stuck
-  // in a false rejected state — un-mark her here.
+  // Legacy revert path: kept as a defense-in-depth guard for cases where a
+  // no-show fired via sync-on-read / Meet webhook before this bot.done
+  // arrived. With handleBotCallEnded now deferring instead of eagerly
+  // firing, the common Recall path shouldn't produce a revert anymore.
   await reconcileFalseNoShow(meeting.id, 'recall_bot_done').catch((err) =>
     console.error('[recall] reconcileFalseNoShow failed:', (err as Error).message))
 
   if (meeting.recordingState !== 'ready') {
-    const meetingWithWs = await prisma.interviewMeeting.findUnique({
-      where: { id: meeting.id },
-      select: { workspaceId: true },
-    })
-    if (meetingWithWs) {
-      await emitAutomationEvent({
-        workspaceId: meetingWithWs.workspaceId,
-        sessionId: meeting.sessionId,
-        triggerType: 'recording_ready',
-        eventKey: eventKeys.recordingReadyMeet(meeting.id),
-        source: 'webhook',
-        payload: { interviewMeetingId: meeting.id, source: 'recall', recordingId: recording.id },
-        dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready'),
-      }).catch((err) => console.error('[recall] recording_ready emit failed:', err))
-    } else {
-      await fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready').catch((err) =>
-        console.error('[recall] recording_ready automations failed:', err),
-      )
-    }
+    await emitAutomationEvent({
+      workspaceId: meeting.workspaceId,
+      sessionId: meeting.sessionId,
+      triggerType: 'recording_ready',
+      eventKey: eventKeys.recordingReadyMeet(meeting.id),
+      source: 'webhook',
+      payload: { interviewMeetingId: meeting.id, source: 'recall', recordingId: recording.id },
+      dispatch: () => fireMeetingLifecycleAutomations(meeting.sessionId, 'recording_ready'),
+    }).catch((err) => console.error('[recall] recording_ready emit failed:', err))
   }
 }
 
@@ -402,20 +497,44 @@ export async function dispatchRecallEvent(input: {
       return
     case 'bot.fatal':
     case 'bot.recording_permission_denied': {
-      // Don't fire lifecycle — leave room for the Workspace Events /
-      // sync-on-read fallback to land an end signal from Drive artifacts.
-      // Record an audit event so recruiters can see why the recording
-      // doesn't exist.
+      // Record the audit event either way.
       const m = await prisma.interviewMeeting.findUnique({
         where: { id: input.meetingId },
-        select: { sessionId: true },
+        select: { id: true, sessionId: true, actualEnd: true },
       })
-      if (m) {
-        await logSchedulingEvent({
-          sessionId: m.sessionId,
-          eventType: 'recall_bot_failed',
-          metadata: { interviewMeetingId: input.meetingId, event: input.event, at: input.occurredAt.toISOString() },
-        }).catch(() => {})
+      if (!m) return
+      await logSchedulingEvent({
+        sessionId: m.sessionId,
+        eventType: 'recall_bot_failed',
+        metadata: { interviewMeetingId: input.meetingId, event: input.event, at: input.occurredAt.toISOString() },
+      }).catch(() => {})
+      // If handleBotCallEnded deferred the attendance decision and bot.done
+      // is never coming (because the bot crashed / lost recording perms),
+      // resolve to meeting_no_show now. Without this the deferred meeting
+      // sits in limbo until the reconcile-automations cron defaults it to
+      // meeting_ended after 30 min — wrong for a crashed bot with no proof
+      // of attendance. Workspace-plan customers still have the sync-on-read
+      // Drive-artifact fallback, which flips through reconcileFalseNoShow if
+      // a late recording lands.
+      if (!m.actualEnd) {
+        const alreadyClassified = await prisma.schedulingEvent.findFirst({
+          where: {
+            sessionId: m.sessionId,
+            eventType: { in: ['meeting_ended', 'meeting_no_show'] },
+            metadata: { path: ['interviewMeetingId'], equals: m.id },
+          },
+          select: { id: true },
+        })
+        if (!alreadyClassified) {
+          await emitLifecycleOnce(
+            m.id, m.sessionId, 'meeting_no_show', input.occurredAt,
+            { event: input.event, reason: 'recall_bot_failed' },
+          )
+          await prisma.interviewMeeting.update({
+            where: { id: m.id },
+            data: { actualEnd: input.occurredAt },
+          }).catch((err) => console.error('[recall] actualEnd write on bot.fatal failed:', (err as Error).message))
+        }
       }
       return
     }

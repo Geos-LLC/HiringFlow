@@ -69,6 +69,10 @@ export type SchedulingEventType =
   // denied by host). Audit only — no lifecycle event fires from this; the
   // Meet native auto-record path remains the fallback.
   | 'recall_bot_failed'
+  // handleBotCallEnded couldn't classify attendance (Recall's participants
+  // endpoint returned empty). Audit only — decision is deferred until
+  // bot.done arrives OR the reconcile-automations cron catches it.
+  | 'meeting_attendance_pending'
 
 export async function logSchedulingEvent(opts: {
   sessionId: string
