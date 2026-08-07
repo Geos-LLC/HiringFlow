@@ -10,17 +10,24 @@ export async function GET(request: NextRequest) {
   const kindParam = request.nextUrl.searchParams.get('kind')
   const kind = kindParam === 'interview' || kindParam === 'training' ? kindParam : null
 
-  const videos = await prisma.video.findMany({
-    where: { workspaceId: ws.workspaceId, ...(kind && { kind }) },
-    orderBy: { createdAt: 'desc' },
-  })
+  try {
+    const videos = await prisma.video.findMany({
+      where: { workspaceId: ws.workspaceId, ...(kind && { kind }) },
+      orderBy: { createdAt: 'desc' },
+    })
 
-  const videosWithUrls = videos.map((video) => ({
-    ...video,
-    url: getVideoUrl(video.storageKey),
-  }))
+    const videosWithUrls = videos.map((video) => ({
+      ...video,
+      url: getVideoUrl(video.storageKey),
+    }))
 
-  return NextResponse.json(videosWithUrls)
+    return NextResponse.json(videosWithUrls)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const stack = err instanceof Error ? err.stack : undefined
+    console.error('[api/videos GET] failed', { workspaceId: ws.workspaceId, kind, error: message, stack })
+    return NextResponse.json({ error: 'Failed to load videos', detail: message }, { status: 500 })
+  }
 }
 
 export async function POST(request: NextRequest) {

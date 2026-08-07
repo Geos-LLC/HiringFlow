@@ -7,34 +7,41 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
 
-  const training = await prisma.training.findFirst({
-    where: { id: params.id, workspaceId: ws.workspaceId },
-    include: {
-      sections: {
-        orderBy: { sortOrder: 'asc' },
-        include: {
-          contents: { orderBy: { sortOrder: 'asc' }, include: { video: true } },
-          quiz: { include: { questions: { orderBy: { sortOrder: 'asc' } } } },
+  try {
+    const training = await prisma.training.findFirst({
+      where: { id: params.id, workspaceId: ws.workspaceId },
+      include: {
+        sections: {
+          orderBy: { sortOrder: 'asc' },
+          include: {
+            contents: { orderBy: { sortOrder: 'asc' }, include: { video: true } },
+            quiz: { include: { questions: { orderBy: { sortOrder: 'asc' } } } },
+          },
         },
       },
-    },
-  })
+    })
 
-  if (!training) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!training) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // Add video URLs
-  const withUrls = {
-    ...training,
-    sections: training.sections.map((section) => ({
-      ...section,
-      contents: section.contents.map((content) => ({
-        ...content,
-        video: content.video ? { ...content.video, url: getVideoUrl(content.video.storageKey) } : null,
+    // Add video URLs
+    const withUrls = {
+      ...training,
+      sections: training.sections.map((section) => ({
+        ...section,
+        contents: section.contents.map((content) => ({
+          ...content,
+          video: content.video ? { ...content.video, url: getVideoUrl(content.video.storageKey) } : null,
+        })),
       })),
-    })),
-  }
+    }
 
-  return NextResponse.json(withUrls)
+    return NextResponse.json(withUrls)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const stack = err instanceof Error ? err.stack : undefined
+    console.error('[api/trainings/[id] GET] failed', { trainingId: params.id, workspaceId: ws.workspaceId, error: message, stack })
+    return NextResponse.json({ error: 'Failed to load training', detail: message }, { status: 500 })
+  }
 }
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
