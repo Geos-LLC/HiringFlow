@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
       filename: filename || 'video',
       storageKey: url,
       mimeType: mimeType || 'video/mp4',
-      sizeBytes: sizeBytes || 0,
+      sizeBytes: BigInt(Math.max(0, Math.floor(Number(sizeBytes) || 0))),
       kind: safeKind,
     },
   })

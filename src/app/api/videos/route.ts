@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
             filename,
             storageKey,
             mimeType,
-            sizeBytes,
+            sizeBytes: BigInt(Math.max(0, Math.floor(Number(sizeBytes) || 0))),
             kind,
           },
         })

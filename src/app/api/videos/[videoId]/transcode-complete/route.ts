@@ -75,7 +75,7 @@ export async function POST(
       // Lambda payload as the source of truth.
       ...(payload.originalUrl ? { storageKey: payload.originalUrl } : {}),
       ...(payload.durationSeconds && Number.isFinite(payload.durationSeconds) ? { durationSeconds: payload.durationSeconds } : {}),
-      ...(payload.sourceSizeBytes && Number.isFinite(payload.sourceSizeBytes) ? { sizeBytes: payload.sourceSizeBytes } : {}),
+      ...(payload.sourceSizeBytes && Number.isFinite(payload.sourceSizeBytes) ? { sizeBytes: BigInt(Math.max(0, Math.floor(payload.sourceSizeBytes))) } : {}),
       transcodeError: null,
     },
   })

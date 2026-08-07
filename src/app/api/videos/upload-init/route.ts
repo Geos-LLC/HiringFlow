@@ -18,7 +18,9 @@ export async function POST(request: NextRequest) {
   try { body = await request.json() } catch { /* allow empty */ }
   const filename = (body.filename || 'video.mp4').toString()
   const mimeType = (body.mimeType || 'video/mp4').toString()
-  const sizeBytes = Number.isFinite(body.sizeBytes) ? Number(body.sizeBytes) : 0
+  // BigInt at the DB level; store as bigint so files >2GB (INT4 max) work.
+  const sizeBytesNum = Number.isFinite(Number(body.sizeBytes)) ? Number(body.sizeBytes) : 0
+  const sizeBytes = BigInt(Math.max(0, Math.floor(sizeBytesNum)))
   const kind = body.kind === 'interview' ? 'interview' : 'training'
   console.log('[upload-init]', { workspaceId: ws.workspaceId, filename, mimeType, sizeBytes, kind })
 

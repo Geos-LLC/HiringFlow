@@ -20,6 +20,15 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
 
+  // JSON.stringify throws on bigint by default. Video.sizeBytes and any other
+  // BigInt Prisma column would break every NextResponse.json({ ...row }) call
+  // without this shim. File sizes fit comfortably in a JS Number (safe up to
+  // 9 petabytes), so returning a plain number keeps the wire format stable
+  // for clients that still declare `sizeBytes: number`.
+  ;(BigInt.prototype as unknown as { toJSON: () => number }).toJSON = function () {
+    return Number(this as unknown as bigint)
+  }
+
   // Load the client lazily so the import doesn't crash the runtime if the
   // package can't resolve for some reason (e.g. fresh checkout pre-install).
   let loghubLog: ((opts: Record<string, unknown>) => Promise<unknown>) | null = null

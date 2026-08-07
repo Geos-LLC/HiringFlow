@@ -634,7 +634,11 @@ model Video {
   filename         String
   storageKey       String            @map("storage_key")
   mimeType         String            @map("mime_type")
-  sizeBytes        Int               @map("size_bytes")
+  // BigInt (INT8) — training videos can exceed 2GB (INT4 max). Postgres
+  // widening from int4 to int8 is safe for all existing rows. Client-side
+  // reads still receive a JS number: the BigInt.prototype.toJSON polyfill in
+  // instrumentation.ts serializes bigint → number for JSON responses.
+  sizeBytes        BigInt            @map("size_bytes")
   durationSeconds  Float?            @map("duration_seconds")
   transcript       String?
   segments         Json?
