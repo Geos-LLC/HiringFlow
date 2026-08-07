@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { generateStagingPresignedPutUrl, stagingKeyForVideo, r2PublicBase } from '@/lib/transcode-pipeline'
+import { logger } from '@/lib/logger'
 import { randomUUID } from 'crypto'
 
 // Step 1 of the new R2/HLS upload flow. Creates a Video row in status='uploading'
@@ -29,19 +30,32 @@ export async function POST(request: NextRequest) {
   const sourceExt = (filename.split('.').pop() || 'mp4').toLowerCase()
   const finalOriginalUrl = `${r2PublicBase()}/videos/${videoId}/original.${sourceExt}`
 
-  const video = await prisma.video.create({
-    data: {
-      id: videoId,
-      workspaceId: ws.workspaceId,
-      createdById: ws.userId,
-      filename,
-      mimeType,
-      sizeBytes,
-      kind,
-      status: 'uploading',
-      storageKey: finalOriginalUrl,
-    },
-  })
+  // Wrap everything after auth in try/catch. Previously an unhandled throw
+  // (Prisma constraint, R2 credential rot, etc) returned a 500 with a
+  // non-JSON body, so the client showed the generic "Failed to initiate
+  // upload" toast with no way to diagnose. Log the actual failure to LogHub
+  // and return a structured `detail` so we can trace it end-to-end.
+  try {
+    await prisma.video.create({
+      data: {
+        id: videoId,
+        workspaceId: ws.workspaceId,
+        createdById: ws.userId,
+        filename,
+        mimeType,
+        sizeBytes,
+        kind,
+        status: 'uploading',
+        storageKey: finalOriginalUrl,
+      },
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.error('upload_init_video_create_failed', {
+      workspaceId: ws.workspaceId, videoId, filename, mimeType, sizeBytes, kind, error: message,
+    })
+    return NextResponse.json({ error: 'Upload record create failed', detail: message }, { status: 500 })
+  }
 
   let presignedPutUrl: string
   try {
@@ -51,6 +65,9 @@ export async function POST(request: NextRequest) {
     // a permanent 'uploading' ghost when R2 isn't configured yet.
     await prisma.video.delete({ where: { id: videoId } }).catch(() => {})
     const message = err instanceof Error ? err.message : 'r2_unavailable'
+    logger.error('upload_init_r2_presign_failed', {
+      workspaceId: ws.workspaceId, videoId, filename, mimeType, sizeBytes, kind, error: message,
+    })
     return NextResponse.json({ error: 'Upload service unavailable', detail: message }, { status: 503 })
   }
 
