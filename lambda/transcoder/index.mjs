@@ -118,11 +118,12 @@ async function transcodeOne(sourcePath, outputDir) {
       '-map', `[v${i}out]`,
       '-map', 'a:0?',
       '-c:v', 'libx264',
-      // veryfast (was medium): 3–5× encode speed so a 20+ min HD source
-      // finishes inside Lambda's 900 s hard timeout. Per-rung bitrate caps
-      // below already bound file size, so the efficiency loss vs medium
-      // shows as marginally worse quality *within* the cap, not larger files.
-      '-preset', 'veryfast',
+      // ultrafast (was medium → veryfast → ultrafast): x264's fastest preset,
+      // needed because Lambda's 900s hard cap can't finish 30+ min HD sources
+      // at any slower preset with a 3-rung ladder. Per-rung bitrate caps
+      // below already bound file size, so the efficiency loss shows only as
+      // marginally worse quality *within* the cap, not larger files.
+      '-preset', 'ultrafast',
       '-profile:v', 'main',
       '-crf', '23',
       '-b:v', `${r.videoBitrateK}k`,
