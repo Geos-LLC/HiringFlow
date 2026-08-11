@@ -1543,13 +1543,11 @@ function CandidatesPageInner() {
                             </div>
                           )}
                           {c.flow?.name && (
-                            <div className="mb-1.5">
-                              <span
-                                title={`Position: ${c.flow.name}`}
-                                className="inline-flex items-center max-w-full truncate text-[11px] px-2 py-0.5 rounded-full font-semibold bg-[color:var(--brand-primary)]/10 text-[color:var(--brand-primary)] border border-[color:var(--brand-primary)]/25"
-                              >
-                                {c.flow.name}
-                              </span>
+                            <div
+                              className="mb-1.5 text-[15px] font-semibold text-ink leading-tight truncate"
+                              title={`Position: ${c.flow.name}`}
+                            >
+                              {c.flow.name}
                             </div>
                           )}
                           {(c.source || c.ad?.source) && (
