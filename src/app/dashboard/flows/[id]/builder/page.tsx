@@ -901,32 +901,6 @@ export default function FlowBuilderPage() {
     })
   }
 
-  const changeEndStep = (newEndStepId: string) => {
-    markChanged()
-    if (!flow) return
-    const sorted = [...flow.steps].sort((a, b) => a.stepOrder - b.stepOrder)
-    if (sorted[sorted.length - 1]?.id === newEndStepId) return
-
-    // Give the new end step order maxOrder + 1 (after all others)
-    const maxOrder = Math.max(...flow.steps.map((s) => s.stepOrder)) + 1
-    setFlow((f) =>
-      f
-        ? {
-            ...f,
-            steps: f.steps.map((s) =>
-              s.id === newEndStepId ? { ...s, stepOrder: maxOrder } : s
-            ),
-          }
-        : null
-    )
-
-    fetch(`/api/steps/${newEndStepId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stepOrder: maxOrder }),
-    })
-  }
-
   const addOption = async (stepId: string) => {
     markChanged()
     const res = await fetch(`/api/steps/${stepId}/options`, {
@@ -1762,7 +1736,6 @@ export default function FlowBuilderPage() {
               }
             }}
             onChangeFirstStep={changeFirstStep}
-            onChangeEndStep={changeEndStep}
             onAddStep={addStep}
             onInsertStepOnArrow={insertStepOnArrow}
             onButtonConfigUpdate={(stepId, nextStepId) => {
