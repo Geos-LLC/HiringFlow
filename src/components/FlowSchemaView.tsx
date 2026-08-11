@@ -1760,9 +1760,17 @@ export default function FlowSchemaView({
     // DEBUG: log click info
     const nodeHit = hitTestNode(cx, cy)
 
+    console.error('[trace:flow-reconnect] mousedown', {
+      cx: Math.round(cx),
+      cy: Math.round(cy),
+      selectedArrow,
+      nodeHit,
+    })
+
     // Check node delete button first
     const deleteTarget = hitTestDeleteButton(cx, cy)
     if (deleteTarget) {
+      console.error('[trace:flow-reconnect] branch: node delete button', { deleteTarget })
       onDeleteStep?.(deleteTarget)
       return
     }
@@ -1775,6 +1783,7 @@ export default function FlowSchemaView({
         selectedArrow?.kind === 'start') &&
       hitTestArrowDelete(cx, cy)
     ) {
+      console.error('[trace:flow-reconnect] branch: arrow delete button', { kind: selectedArrow.kind })
       if (selectedArrow.kind === 'button') {
         onButtonConfigUpdate?.(selectedArrow.stepId, null)
       } else if (selectedArrow.kind === 'start') {
@@ -1789,6 +1798,7 @@ export default function FlowSchemaView({
     // Check arrow midpoint "+" insert button — splits the connection by inserting a new step
     const insertHit = hitTestArrowInsert(cx, cy)
     if (insertHit) {
+      console.error('[trace:flow-reconnect] branch: arrow insert "+"', { insertHit })
       onInsertStepOnArrow?.(insertHit)
       return
     }
@@ -1799,9 +1809,12 @@ export default function FlowSchemaView({
       if (firstPos) {
         const toX = firstPos.x
         const toY = firstPos.y + NODE_H / 2
-        if (dist(cx, cy, toX, toY) <= 18) {
+        const d = dist(cx, cy, toX, toY)
+        console.error('[trace:flow-reconnect] start-arrow endpoint check', { d, threshold: 18 })
+        if (d <= 18) {
           const sp = positions[START_ID]
           if (sp) {
+            console.error('[trace:flow-reconnect] → enter reconnecting_start')
             setMode({
               type: 'reconnecting_start',
               fromX: sp.x + SPECIAL_W,
@@ -1821,9 +1834,12 @@ export default function FlowSchemaView({
       if (stepPos) {
         const fromX = stepPos.x + NODE_W
         const fromY = stepPos.y + NODE_H / 2
-        if (dist(cx, cy, fromX, fromY) <= 18) {
+        const d = dist(cx, cy, fromX, fromY)
+        console.error('[trace:flow-reconnect] end-arrow source-endpoint check', { d, threshold: 18 })
+        if (d <= 18) {
           const ep = positions[END_ID]
           if (ep) {
+            console.error('[trace:flow-reconnect] → enter reconnecting_end')
             setMode({
               type: 'reconnecting_end',
               fromStepId: selectedArrow.stepId,
@@ -1847,9 +1863,15 @@ export default function FlowSchemaView({
         const targetPos = positions[btnNext]
         if (targetPos) {
           const inp = getInputPort(targetPos)
+          const dTarget = dist(cx, cy, inp.x, inp.y)
+          const out = getOutputPort(srcPos)
+          const dSource = dist(cx, cy, out.x, out.y)
+          console.error('[trace:flow-reconnect] button-arrow endpoint check', {
+            dTarget, dSource, threshold: 18,
+          })
           // Target endpoint
-          if (dist(cx, cy, inp.x, inp.y) <= 18) {
-            const out = getOutputPort(srcPos)
+          if (dTarget <= 18) {
+            console.error('[trace:flow-reconnect] → enter reconnecting_button (target drag)')
             setMode({
               type: 'reconnecting_button',
               fromStepId: selectedArrow.stepId,
@@ -1861,8 +1883,8 @@ export default function FlowSchemaView({
             return
           }
           // Source endpoint
-          const out = getOutputPort(srcPos)
-          if (dist(cx, cy, out.x, out.y) <= 18) {
+          if (dSource <= 18) {
+            console.error('[trace:flow-reconnect] → enter reconnecting_button_source (source drag)')
             setMode({
               type: 'reconnecting_button_source',
               oldFromStepId: selectedArrow.stepId,
@@ -1874,17 +1896,28 @@ export default function FlowSchemaView({
             })
             return
           }
+        } else {
+          console.error('[trace:flow-reconnect] button-arrow: target position missing', { btnNext })
         }
+      } else {
+        console.error('[trace:flow-reconnect] button-arrow: no draggable button connection', {
+          btnNext, hasSrcPos: !!srcPos,
+        })
       }
     }
 
     // Check option arrow target endpoint drag (arrowhead at target)
     if (selectedArrow?.kind === 'option') {
       const endpoint = hitTestArrowEndpoint(cx, cy)
+      console.error('[trace:flow-reconnect] option-arrow endpoint hit-test', {
+        selectedOptionId: selectedArrow.optionId,
+        endpoint,
+      })
       if (endpoint && endpoint.optionId === selectedArrow.optionId) {
         const pos = positions[endpoint.stepId]
         if (pos) {
           const out = getOutputPort(pos)
+          console.error('[trace:flow-reconnect] → enter reconnecting (option target drag)')
           setMode({
             type: 'reconnecting',
             optionId: endpoint.optionId,
@@ -1902,13 +1935,16 @@ export default function FlowSchemaView({
       const srcPos = positions[selectedArrow.stepId]
       if (srcPos) {
         const srcOut = getOutputPort(srcPos)
-        if (dist(cx, cy, srcOut.x, srcOut.y) <= 18) {
+        const dSource = dist(cx, cy, srcOut.x, srcOut.y)
+        console.error('[trace:flow-reconnect] option-arrow source-endpoint check', { dSource, threshold: 18 })
+        if (dSource <= 18) {
           const srcStep = steps.find((s) => s.id === selectedArrow.stepId)
           const option = srcStep?.options.find((o) => o.id === selectedArrow.optionId)
           if (option?.nextStepId) {
             const targetPos = positions[option.nextStepId]
             if (targetPos) {
               const inp = getInputPort(targetPos)
+              console.error('[trace:flow-reconnect] → enter reconnecting_source (option source drag)')
               setMode({
                 type: 'reconnecting_source',
                 optionId: selectedArrow.optionId,
@@ -1920,6 +1956,8 @@ export default function FlowSchemaView({
               })
               return
             }
+          } else {
+            console.error('[trace:flow-reconnect] option source drag: option has no nextStepId', { option })
           }
         }
       }
@@ -1966,6 +2004,7 @@ export default function FlowSchemaView({
     // Check arrow click for selection (before node check so arrows near nodes work)
     const arrow = hitTestArrow(cx, cy)
     if (arrow) {
+      console.error('[trace:flow-reconnect] branch: arrow click → select', { arrow })
       setSelectedArrow({ optionId: arrow.optionId, stepId: arrow.stepId, kind: arrow.kind })
       return
     }
@@ -2231,11 +2270,15 @@ export default function FlowSchemaView({
       const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
       // Accept drop on input port OR anywhere on a node
       let targetStep = hitTestInputPort(cx, cy)
-      if (!targetStep) {
-        const nodeId = hitTestNode(cx, cy)
-        if (nodeId && nodeId !== START_ID && nodeId !== END_ID) targetStep = nodeId
+      const nodeHit = targetStep ? null : hitTestNode(cx, cy)
+      if (!targetStep && nodeHit && nodeHit !== START_ID && nodeHit !== END_ID) {
+        targetStep = nodeHit
       }
 
+      console.error('[trace:flow-reconnect] mouseup reconnecting (option-target)', {
+        optionId: mode.optionId, fromStepId: mode.fromStepId, targetStep, nodeHit,
+        willFire: !!(targetStep && targetStep !== mode.fromStepId),
+      })
       if (targetStep && targetStep !== mode.fromStepId) {
         onOptionUpdate?.(mode.optionId, { nextStepId: targetStep })
       }
@@ -2248,8 +2291,12 @@ export default function FlowSchemaView({
     if (mode.type === 'reconnecting_source') {
       const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
       const outStepId = hitTestOutputPort(cx, cy)
-      if (outStepId && outStepId !== steps.find((s) => s.options.some((o) => o.id === mode.optionId))?.id) {
-        // Disconnect old option, create connection from new step
+      const oldSourceStepId = steps.find((s) => s.options.some((o) => o.id === mode.optionId))?.id
+      console.error('[trace:flow-reconnect] mouseup reconnecting_source (option-source)', {
+        optionId: mode.optionId, oldSourceStepId, outStepId, targetStepId: mode.targetStepId,
+        willFire: !!(outStepId && outStepId !== oldSourceStepId),
+      })
+      if (outStepId && outStepId !== oldSourceStepId) {
         onOptionUpdate?.(mode.optionId, { nextStepId: null })
         onConnectSteps?.(outStepId, mode.targetStepId)
       }
@@ -2266,6 +2313,9 @@ export default function FlowSchemaView({
       if (!targetStep && droppedNode && droppedNode !== START_ID && droppedNode !== END_ID) {
         targetStep = droppedNode
       }
+      console.error('[trace:flow-reconnect] mouseup reconnecting_button (button-target)', {
+        fromStepId: mode.fromStepId, targetStep, droppedNode,
+      })
       if (targetStep && targetStep !== mode.fromStepId) {
         onButtonConfigUpdate?.(mode.fromStepId, targetStep)
       } else if (droppedNode === END_ID) {
@@ -2280,8 +2330,10 @@ export default function FlowSchemaView({
     if (mode.type === 'reconnecting_button_source') {
       const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
       const outStepId = hitTestOutputPort(cx, cy)
+      console.error('[trace:flow-reconnect] mouseup reconnecting_button_source', {
+        oldFromStepId: mode.oldFromStepId, outStepId, targetStepId: mode.targetStepId,
+      })
       if (outStepId && outStepId !== mode.oldFromStepId) {
-        // Move buttonConfig.nextStepId from old source step to new source step
         onButtonConfigUpdate?.(mode.oldFromStepId, null)
         onButtonConfigUpdate?.(outStepId, mode.targetStepId)
       }
@@ -2298,6 +2350,7 @@ export default function FlowSchemaView({
         const nodeId = hitTestNode(cx, cy)
         if (nodeId && nodeId !== START_ID && nodeId !== END_ID) targetStep = nodeId
       }
+      console.error('[trace:flow-reconnect] mouseup reconnecting_start', { targetStep })
       if (targetStep) {
         onChangeFirstStep?.(targetStep)
       }
@@ -2310,6 +2363,9 @@ export default function FlowSchemaView({
     if (mode.type === 'reconnecting_end') {
       const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
       const nodeId = hitTestNode(cx, cy)
+      console.error('[trace:flow-reconnect] mouseup reconnecting_end', {
+        fromStepId: mode.fromStepId, nodeId,
+      })
       if (nodeId && nodeId !== START_ID && nodeId !== END_ID && nodeId !== mode.fromStepId) {
         onChangeEndStep?.(nodeId)
       }
