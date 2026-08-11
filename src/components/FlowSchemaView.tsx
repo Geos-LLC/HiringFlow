@@ -645,8 +645,40 @@ export default function FlowSchemaView({
       if (lane !== undefined) m.set(connKey(c), lane)
     }
 
-    // --- 3) Curve-clipping audit: sample every forward bezier at 60 points
-    //         and warn if any sample falls inside a non-endpoint card.
+    // --- 3) Curve-clip resolver: sample every forward bezier at 60 points;
+    //         if it passes inside a non-endpoint card, push the lane below
+    //         that card and re-check. Repeat up to 4 rounds. Silent when
+    //         clean — a lingering clip after 4 rounds is genuinely stuck.
+    const clipsCard = (out: {x: number; y: number}, inp: {x: number; y: number}, laneY: number | undefined, srcId: string, tgtId: string): { bottom: number } | null => {
+      const [c1x, c1y, c2x, c2y] = laneY !== undefined
+        ? (() => {
+            const span = Math.abs(inp.x - out.x)
+            const cpOff = Math.max(40, span * 0.4)
+            return [out.x + cpOff, laneY, inp.x - cpOff, laneY] as const
+          })()
+        : (() => {
+            const dx = Math.abs(inp.x - out.x)
+            const cpOff = Math.max(dx * 0.4, 40)
+            return [out.x + cpOff, out.y, inp.x - cpOff, inp.y] as const
+          })()
+      let worstBottom = -Infinity
+      for (let i = 1; i < 60; i++) {
+        const t = i / 60
+        const omt = 1 - t
+        const bx = omt*omt*omt*out.x + 3*omt*omt*t*c1x + 3*omt*t*t*c2x + t*t*t*inp.x
+        const by = omt*omt*omt*out.y + 3*omt*omt*t*c1y + 3*omt*t*t*c2y + t*t*t*inp.y
+        for (const s of steps) {
+          if (s.id === srcId || s.id === tgtId) continue
+          const p = positions[s.id]
+          if (!p) continue
+          if (bx >= p.x && bx <= p.x + NODE_W && by >= p.y && by <= p.y + NODE_H) {
+            const bot = p.y + NODE_H
+            if (bot > worstBottom) worstBottom = bot
+          }
+        }
+      }
+      return worstBottom > -Infinity ? { bottom: worstBottom } : null
+    }
     for (const c of allConnections) {
       const sp = positions[c.sourceId]
       const tp = positions[c.targetId]
@@ -654,38 +686,15 @@ export default function FlowSchemaView({
       if (tp.x <= sp.x) continue
       const out = getOutputPort(sp)
       const inp = getInputPort(tp)
-      const laneY = m.get(connKey(c))
-      const [c1x, c1y, c2x, c2y] = (() => {
-        if (laneY !== undefined) {
-          const span = Math.abs(inp.x - out.x)
-          const cpOff = Math.max(40, span * 0.4)
-          return [out.x + cpOff, laneY, inp.x - cpOff, laneY]
-        }
-        const dx = Math.abs(inp.x - out.x)
-        const cpOff = Math.max(dx * 0.4, 40)
-        return [out.x + cpOff, out.y, inp.x - cpOff, inp.y]
-      })()
-      const clips: Array<{step: string; x: number; y: number; t: number}> = []
-      for (let i = 1; i < 60; i++) {
-        const t = i / 60
-        const omt = 1 - t
-        const bx = omt*omt*omt*out.x + 3*omt*omt*t*c1x + 3*omt*t*t*c2x + t*t*t*inp.x
-        const by = omt*omt*omt*out.y + 3*omt*omt*t*c1y + 3*omt*t*t*c2y + t*t*t*inp.y
-        for (const s of steps) {
-          if (s.id === c.sourceId || s.id === c.targetId) continue
-          const p = positions[s.id]
-          if (!p) continue
-          if (bx >= p.x && bx <= p.x + NODE_W && by >= p.y && by <= p.y + NODE_H) {
-            clips.push({ step: s.title || s.id.slice(0, 6), x: Math.round(bx), y: Math.round(by), t: Math.round(t * 100) / 100 })
-            break
-          }
-        }
+      let laneY = m.get(connKey(c))
+      for (let round = 0; round < 4; round++) {
+        const clip = clipsCard(out, inp, laneY, c.sourceId, c.targetId)
+        if (!clip) break
+        // Push the lane below the worst-offending card, plus a gap. 44 px
+        // matches roughly one NODE_H/2 + comfortable clearance.
+        laneY = clip.bottom + 44
       }
-      if (clips.length > 0) {
-        // eslint-disable-next-line no-console
-        console.warn(`[clip] "${titleFor(c.sourceId)}" → "${titleFor(c.targetId)}" CURVE CLIPS ${clips.length}/60 samples. laneY=${laneY ?? 'none'} cps=[(${Math.round(c1x)},${Math.round(c1y)}),(${Math.round(c2x)},${Math.round(c2y)})]`)
-        console.table(clips.slice(0, 6))
-      }
+      if (laneY !== undefined) m.set(connKey(c), laneY)
     }
 
     return m
