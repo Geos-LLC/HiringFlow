@@ -1542,17 +1542,21 @@ function CandidatesPageInner() {
                               {c.candidateEmail}
                             </div>
                           )}
-                          <div className="flex items-center gap-2 mb-2 text-[11px] text-grey-35">
-                            {c.flow?.name && (
-                              <span className="truncate max-w-[130px]" title={c.flow.name}>{c.flow.name}</span>
-                            )}
-                            {(c.source || c.ad?.source) && (
-                              <>
-                                {c.flow?.name && <span className="text-grey-50">·</span>}
-                                <span className="capitalize">{c.ad?.source || c.source}</span>
-                              </>
-                            )}
-                          </div>
+                          {c.flow?.name && (
+                            <div className="mb-1.5">
+                              <span
+                                title={`Position: ${c.flow.name}`}
+                                className="inline-flex items-center max-w-full truncate text-[11px] px-2 py-0.5 rounded-full font-semibold bg-[color:var(--brand-primary)]/10 text-[color:var(--brand-primary)] border border-[color:var(--brand-primary)]/25"
+                              >
+                                {c.flow.name}
+                              </span>
+                            </div>
+                          )}
+                          {(c.source || c.ad?.source) && (
+                            <div className="flex items-center gap-2 mb-2 text-[11px] text-grey-35">
+                              <span className="capitalize">{c.ad?.source || c.source}</span>
+                            </div>
+                          )}
                           {c.nextMeetingAt && (
                             <div className="mb-2 text-[11px] text-grey-15">
                               <span className="text-grey-40">Interview:</span>{' '}

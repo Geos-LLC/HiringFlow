@@ -1550,7 +1550,7 @@ export default function CandidateDetailPage() {
       {/* Meet integration v2: in-app Google Meet scheduling (loosely coupled —
           the panel self-hides if the feature flag / scopes aren't active, so
           this never affects workspaces still on the Calendly flow) */}
-      <InterviewPanel candidateId={id} candidateEmail={candidate.candidateEmail} isRebook={candidate.isRebook} onCandidateChanged={loadCandidate} />
+      <InterviewPanel candidateId={id} candidateEmail={candidate.candidateEmail} isRebook={candidate.isRebook} positionLabel={candidate.flow?.name ?? null} onCandidateChanged={loadCandidate} />
 
       {/* Audio capture answers — first-class candidate activity. Self-hides
           when there are no recordings, so candidates who never hit a

@@ -76,7 +76,7 @@ function Spinner() {
   )
 }
 
-export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandidateChanged }: { candidateId: string; candidateEmail: string | null; isRebook?: boolean; onCandidateChanged?: () => void }) {
+export function InterviewPanel({ candidateId, candidateEmail, isRebook, positionLabel, onCandidateChanged }: { candidateId: string; candidateEmail: string | null; isRebook?: boolean; positionLabel?: string | null; onCandidateChanged?: () => void }) {
   const [meetings, setMeetings] = useState<InterviewMeeting[] | null>(null)
   const [showDialog, setShowDialog] = useState(false)
   const [featureOn, setFeatureOn] = useState<boolean | null>(null)
@@ -277,6 +277,11 @@ export function InterviewPanel({ candidateId, candidateEmail, isRebook, onCandid
               <div key={m.id} className="border border-surface-border rounded-[8px] p-3">
                 <div className="flex justify-between items-start">
                   <div>
+                    {positionLabel && (
+                      <div className="text-xs font-semibold uppercase tracking-wide text-[color:var(--brand-primary)] mb-0.5">
+                        Interview — {positionLabel}
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 flex-wrap">
                       <div className="text-sm font-medium text-grey-15">
                         {new Date(m.scheduledStart).toLocaleString()}

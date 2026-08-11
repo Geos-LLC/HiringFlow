@@ -122,10 +122,14 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   }
 
   // 2. Session belongs to workspace
-  const session = await prisma.session.findFirst({ where: { id: sessionId, workspaceId } })
+  const session = await prisma.session.findFirst({
+    where: { id: sessionId, workspaceId },
+    include: { flow: { select: { name: true } } },
+  })
   if (!session) {
     throw new BookInterviewError(404, 'session_not_found', 'Session not found in this workspace')
   }
+  const positionName = session.flow?.name?.trim() || null
   const attendeeEmail = opts.attendeeEmail ?? session.candidateEmail ?? null
 
   if (isNaN(scheduledAt.getTime())) {
@@ -330,6 +334,7 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   const calendar = google.calendar({ version: 'v3', auth: client })
   const descriptionParts: string[] = [
     `Interview with ${session.candidateName || 'candidate'}`,
+    positionName ? `\nPosition: ${positionName}` : '',
     notes ? `\nNotes: ${notes}` : '',
     `\n\n— HireFunnel (utm_content=${session.id})`,
   ]
@@ -339,7 +344,9 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
       calendarId: integration.calendarId,
       sendUpdates: 'all',
       requestBody: {
-        summary: `Interview — ${session.candidateName || 'Candidate'}`,
+        summary: positionName
+          ? `Interview — ${session.candidateName || 'Candidate'} — ${positionName}`
+          : `Interview — ${session.candidateName || 'Candidate'}`,
         description: descriptionParts.join(''),
         start: { dateTime: start.toISOString() },
         end: { dateTime: end.toISOString() },
