@@ -3,7 +3,6 @@ import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { getVideoUrl } from '@/lib/storage'
 import { validateCaptureConfig } from '@/lib/capture/capture-config'
-import { logger } from '@/lib/logger'
 
 export async function PATCH(
   request: NextRequest,
@@ -26,15 +25,6 @@ export async function PATCH(
   try {
     const body = await request.json()
     const { title, videoId, questionText, stepOrder, stepType, questionType, formEnabled, formConfig, infoContent, buttonConfig, combinedWithId, captionsEnabled, captionStyle, captureConfig, trainingId, schedulingConfigId } = body
-
-    if (buttonConfig !== undefined) {
-      logger.info('flow_schema_step_button_patch', {
-        stepId: params.stepId,
-        workspaceId: ws.workspaceId,
-        priorButtonNextStepId: (step as any).buttonConfig?.nextStepId ?? null,
-        newButtonNextStepId: buttonConfig?.nextStepId ?? null,
-      })
-    }
 
     // Validate captureConfig before write. Allow null to explicitly clear.
     let captureConfigPatch: { captureConfig: unknown } | null = null
@@ -112,10 +102,7 @@ export async function PATCH(
         : null,
     })
   } catch (error) {
-    logger.error('flow_schema_step_patch_failed', {
-      stepId: params.stepId,
-      error: error instanceof Error ? error.message : String(error),
-    })
+    console.error('Update step error:', error)
     return NextResponse.json({ error: 'Failed to update step' }, { status: 500 })
   }
 }

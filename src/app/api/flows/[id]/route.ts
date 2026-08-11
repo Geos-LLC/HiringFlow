@@ -3,7 +3,6 @@ import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { getVideoUrl } from '@/lib/storage'
 import { isCaptureStepsEnabledForWorkspace } from '@/lib/capture/capture-feature-flag'
-import { logger } from '@/lib/logger'
 
 export async function GET(
   request: NextRequest,
@@ -118,17 +117,6 @@ export async function PATCH(
       schedulingTimeoutHours, backgroundCheckTimeoutDays, pipelineId,
       canvasLayout, positionDescription, workflowType } = body
 
-    if (startMessage !== undefined || endMessage !== undefined) {
-      logger.info('flow_schema_flow_message_patch', {
-        flowId: params.id,
-        workspaceId: ws.workspaceId,
-        startMessageSet: startMessage !== undefined,
-        startMessageEmpty: startMessage === '',
-        endMessageSet: endMessage !== undefined,
-        endMessageEmpty: endMessage === '',
-      })
-    }
-
     const WORKFLOW_TYPES = ['application', 'interview', 'assessment', 'training', 'survey', 'custom']
     if (workflowType !== undefined && workflowType !== null && !WORKFLOW_TYPES.includes(workflowType)) {
       return NextResponse.json({ error: `workflowType must be one of: ${WORKFLOW_TYPES.join(', ')} or null` }, { status: 400 })
@@ -190,10 +178,7 @@ export async function PATCH(
 
     return NextResponse.json(updated)
   } catch (error) {
-    logger.error('flow_schema_flow_patch_failed', {
-      flowId: params.id,
-      error: error instanceof Error ? error.message : String(error),
-    })
+    console.error('Update flow error:', error)
     return NextResponse.json({ error: 'Failed to update flow' }, { status: 500 })
   }
 }

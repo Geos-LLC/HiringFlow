@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { toast } from 'sonner'
 
 interface Video {
   id: string
@@ -184,25 +185,7 @@ export default function FlowSchemaView({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const tag = (e.target as HTMLElement)?.tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-          console.error('[trace:flow-schema-delete] key ignored — focus in editable', { tag, key: e.key })
-          return
-        }
-
-        console.error('[trace:flow-schema-delete] key pressed', {
-          key: e.key,
-          hasSelectedArrow: !!selectedArrow,
-          arrowKind: selectedArrow?.kind,
-          arrow: selectedArrow,
-          selectedStepId,
-          callbacks: {
-            onOptionUpdate: !!onOptionUpdate,
-            onButtonConfigUpdate: !!onButtonConfigUpdate,
-            onClearStartScreen: !!onClearStartScreen,
-            onClearEndScreen: !!onClearEndScreen,
-            onDeleteStep: !!onDeleteStep,
-          },
-        })
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
         // Arrow selection wins over step selection — clicking an arrow
         // doesn't clear the previously-selected step, so if we let step
@@ -216,40 +199,29 @@ export default function FlowSchemaView({
             const src = steps.find((s) => s.id === selectedArrow.stepId)
             const isExplicitButtonToEnd =
               (src as any)?.buttonConfig?.nextStepId === '__end__'
-            console.error('[trace:flow-schema-delete] end-arrow branch', {
-              stepId: selectedArrow.stepId,
-              srcButtonNextStepId: (src as any)?.buttonConfig?.nextStepId ?? null,
-              isExplicitButtonToEnd,
-            })
             if (!isExplicitButtonToEnd) {
-              console.error('[trace:flow-schema-delete] implicit end arrow — nothing to delete, bailing silently')
+              // Implicit terminal — there's no stored connection to remove.
+              // Silently bailing looked broken to users; surface why.
               e.preventDefault()
+              toast('This connection is automatic', {
+                description: 'Steps with no next step are shown connecting to End. To remove the arrow, connect the step forward or delete the step itself.',
+              })
               return
             }
             e.preventDefault()
-            const ok = confirm('Remove this connection?')
-            console.error('[trace:flow-schema-delete] confirm(end-explicit)', { ok })
-            if (ok) {
-              console.error('[trace:flow-schema-delete] → onButtonConfigUpdate(null)', { stepId: selectedArrow.stepId })
+            if (confirm('Remove this connection?')) {
               onButtonConfigUpdate?.(selectedArrow.stepId, null)
               setSelectedArrow(null)
             }
             return
           }
           e.preventDefault()
-          const ok = confirm('Remove this connection?')
-          console.error('[trace:flow-schema-delete] confirm(main)', { ok, arrowKind: selectedArrow.kind })
-          if (ok) {
+          if (confirm('Remove this connection?')) {
             if (selectedArrow.kind === 'button') {
-              console.error('[trace:flow-schema-delete] → onButtonConfigUpdate(null)', { stepId: selectedArrow.stepId })
               onButtonConfigUpdate?.(selectedArrow.stepId, null)
             } else if (selectedArrow.kind === 'start') {
-              console.error('[trace:flow-schema-delete] → onClearStartScreen()')
               onClearStartScreen?.()
             } else if (selectedArrow.kind === 'option' || !selectedArrow.kind) {
-              console.error('[trace:flow-schema-delete] → onOptionUpdate(nextStepId=null)', {
-                optionId: (selectedArrow as any).optionId,
-              })
               onOptionUpdate?.((selectedArrow as any).optionId, { nextStepId: null })
             }
             setSelectedArrow(null)
@@ -2453,10 +2425,6 @@ export default function FlowSchemaView({
   }
 
   const handleDisconnect = () => {
-    console.error('[trace:flow-schema-delete] right-click Disconnect', {
-      contextMenu,
-      hasOnOptionUpdate: !!onOptionUpdate,
-    })
     if (contextMenu) {
       onOptionUpdate?.(contextMenu.optionId, { nextStepId: null })
       setContextMenu(null)
