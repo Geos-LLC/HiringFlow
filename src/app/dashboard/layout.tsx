@@ -21,6 +21,7 @@ import { SwipeTabs } from '@/components/design/SwipeTabs'
 import { TranscodeBanner } from './_components/TranscodeBanner'
 import { UploadProvider } from './_components/UploadProvider'
 import { DeliveryFailureToaster } from './_components/DeliveryFailureToaster'
+import { UpdateAvailableBanner } from './_components/UpdateAvailableBanner'
 
 // Grouped navigation. Row 1 shows the five group labels (Recruiting /
 // Process / Content / Insights / Admin); row 2 shows the active group's
@@ -123,6 +124,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
         <TranscodeBanner />
         <DeliveryFailureToaster />
+        <UpdateAvailableBanner />
         <Toaster position="bottom-right" richColors closeButton />
 
         <SwipeTabs items={NAV_ITEMS} disabledPaths={SWIPE_DISABLED}>

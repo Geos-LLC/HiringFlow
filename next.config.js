@@ -1,5 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    // Baked into the client bundle at build time so the "update available"
+    // banner can compare this-tab's version against /version.json served by
+    // the currently-live deploy. Falls back to 'dev' for local runs.
+    NEXT_PUBLIC_BUILD_VERSION:
+      (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'dev',
+  },
   experimental: {
     serverActions: {
       bodySizeLimit: '100mb',
