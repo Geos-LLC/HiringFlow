@@ -953,14 +953,28 @@ export default function FlowBuilderPage() {
     optionId: string,
     data: { optionText?: string; nextStepId?: string | null }
   ) => {
+    console.error('[trace:flow-schema-delete] updateOption fetch start', { optionId, data })
     markChanged()
-    const res = await fetch(`/api/options/${optionId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    })
+    let res: Response
+    try {
+      res = await fetch(`/api/options/${optionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+    } catch (err) {
+      console.error('[trace:flow-schema-delete] updateOption fetch threw', {
+        optionId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return
+    }
     if (res.ok) {
       const updated = await res.json()
+      console.error('[trace:flow-schema-delete] updateOption ok', {
+        optionId,
+        newNextStepId: updated?.nextStepId ?? null,
+      })
       setFlow((f) =>
         f
           ? {
@@ -972,6 +986,14 @@ export default function FlowBuilderPage() {
             }
           : null
       )
+    } else {
+      const bodyText = await res.text().catch(() => '')
+      console.error('[trace:flow-schema-delete] updateOption non-ok — state NOT rolled back', {
+        optionId,
+        status: res.status,
+        statusText: res.statusText,
+        body: bodyText.slice(0, 300),
+      })
     }
   }
 
@@ -1010,7 +1032,11 @@ export default function FlowBuilderPage() {
   }
 
   const updateButtonConfigNext = async (stepId: string, nextStepId: string | null) => {
-    if (!flow) return
+    console.error('[trace:flow-schema-delete] updateButtonConfigNext start', { stepId, nextStepId })
+    if (!flow) {
+      console.error('[trace:flow-schema-delete] updateButtonConfigNext bailed — flow not loaded')
+      return
+    }
     markChanged()
     const step = flow.steps.find((s) => s.id === stepId)
     const newButton = {
@@ -1027,11 +1053,31 @@ export default function FlowBuilderPage() {
           }
         : null
     )
-    await fetch(`/api/steps/${stepId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ buttonConfig: newButton }),
-    })
+    let res: Response
+    try {
+      res = await fetch(`/api/steps/${stepId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buttonConfig: newButton }),
+      })
+    } catch (err) {
+      console.error('[trace:flow-schema-delete] updateButtonConfigNext fetch threw — optimistic state left in place', {
+        stepId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return
+    }
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '')
+      console.error('[trace:flow-schema-delete] updateButtonConfigNext non-ok — optimistic state NOT rolled back', {
+        stepId,
+        status: res.status,
+        statusText: res.statusText,
+        body: bodyText.slice(0, 300),
+      })
+    } else {
+      console.error('[trace:flow-schema-delete] updateButtonConfigNext ok', { stepId })
+    }
   }
 
   const insertStepOnArrow = (
@@ -1048,8 +1094,29 @@ export default function FlowBuilderPage() {
   }
 
   const deleteOption = async (stepId: string, optionId: string) => {
+    console.error('[trace:flow-schema-delete] deleteOption start', { stepId, optionId })
     markChanged()
-    await fetch(`/api/options/${optionId}`, { method: 'DELETE' })
+    let res: Response
+    try {
+      res = await fetch(`/api/options/${optionId}`, { method: 'DELETE' })
+    } catch (err) {
+      console.error('[trace:flow-schema-delete] deleteOption fetch threw', {
+        optionId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return
+    }
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '')
+      console.error('[trace:flow-schema-delete] deleteOption non-ok — state NOT updated', {
+        optionId,
+        status: res.status,
+        statusText: res.statusText,
+        body: bodyText.slice(0, 300),
+      })
+      return
+    }
+    console.error('[trace:flow-schema-delete] deleteOption ok', { stepId, optionId })
     setFlow((f) =>
       f
         ? {
@@ -1065,16 +1132,36 @@ export default function FlowBuilderPage() {
   }
 
   const updateFlow = async (data: { startMessage?: string; endMessage?: string }) => {
+    console.error('[trace:flow-schema-delete] updateFlow start', { flowId, data })
     markChanged()
     setSaving(true)
-    const res = await fetch(`/api/flows/${flowId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    })
+    let res: Response
+    try {
+      res = await fetch(`/api/flows/${flowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+    } catch (err) {
+      console.error('[trace:flow-schema-delete] updateFlow fetch threw', {
+        flowId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      setSaving(false)
+      return
+    }
     if (res.ok) {
       const updated = await res.json()
+      console.error('[trace:flow-schema-delete] updateFlow ok', { flowId })
       setFlow((f) => (f ? { ...f, ...updated } : null))
+    } else {
+      const bodyText = await res.text().catch(() => '')
+      console.error('[trace:flow-schema-delete] updateFlow non-ok — state NOT updated', {
+        flowId,
+        status: res.status,
+        statusText: res.statusText,
+        body: bodyText.slice(0, 300),
+      })
     }
     setSaving(false)
   }
