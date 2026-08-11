@@ -604,36 +604,14 @@ export default function FlowSchemaView({
     const m = new Map<string, number>()
     if (allConnections.length === 0) return m
 
-    // --- 1) Backward edges: route below all cards in lanes by span. ---
-    const backward = allConnections.filter((c) => {
-      const sp = positions[c.sourceId]
-      const tp = positions[c.targetId]
-      if (!sp || !tp) return false
-      return tp.x < sp.x
-    })
-    let maxBottom = 0
-    for (const id of Object.keys(positions)) {
-      const p = positions[id]
-      const h = id === START_ID || id === END_ID ? SPECIAL_H : NODE_H
-      maxBottom = Math.max(maxBottom, p.y + h)
-    }
-    if (backward.length > 0) {
-      backward.sort((a, b) => {
-        const aSpan = Math.abs(positions[a.sourceId].x - positions[a.targetId].x)
-        const bSpan = Math.abs(positions[b.sourceId].x - positions[b.targetId].x)
-        return bSpan - aSpan
-      })
-      const laneBase = maxBottom + 80
-      const laneSpacing = 60
-      backward.forEach((c, idx) => {
-        m.set(connKey(c), laneBase + idx * laneSpacing)
-      })
-    }
-
-    // --- 2) Forward edges that would clip through intermediate cards. ---
+    // --- 1) Forward edges that would clip through intermediate cards. ---
+    // Backward edges get their natural swing bezier by default; the clip
+    // resolver below adds a lane only when the swing actually crosses a
+    // non-endpoint card. Previously all backward edges were dumped into a
+    // flow-wide sink at maxBottom+80, which for short local loops routed
+    // the curve far below all cards where the user couldn't see it.
     const titleFor = (id: string) => steps.find((s) => s.id === id)?.title ?? id.slice(0, 6)
     for (const c of allConnections) {
-      if (m.has(connKey(c))) continue // already routed (backward)
       const sp = positions[c.sourceId]
       const tp = positions[c.targetId]
       if (!sp || !tp) continue
@@ -686,7 +664,6 @@ export default function FlowSchemaView({
       const sp = positions[c.sourceId]
       const tp = positions[c.targetId]
       if (!sp || !tp) continue
-      if (tp.x <= sp.x) continue
       const out = getOutputPort(sp)
       const inp = getInputPort(tp)
       let laneY = m.get(connKey(c))
