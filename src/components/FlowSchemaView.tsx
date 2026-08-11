@@ -647,9 +647,8 @@ export default function FlowSchemaView({
 
     // --- 3) Curve-clip resolver: sample every forward bezier at 60 points;
     //         if it passes inside a non-endpoint card, push the lane below
-    //         that card and re-check. Repeat up to 4 rounds. Silent when
-    //         clean — a lingering clip after 4 rounds is genuinely stuck.
-    const clipsCard = (out: {x: number; y: number}, inp: {x: number; y: number}, laneY: number | undefined, srcId: string, tgtId: string): { bottom: number } | null => {
+    //         that card and re-check. Repeat up to 4 rounds.
+    const clipsCard = (out: {x: number; y: number}, inp: {x: number; y: number}, laneY: number | undefined, srcId: string, tgtId: string): { bottom: number; hit: string } | null => {
       const [c1x, c1y, c2x, c2y] = laneY !== undefined
         ? (() => {
             const span = Math.abs(inp.x - out.x)
@@ -662,6 +661,7 @@ export default function FlowSchemaView({
             return [out.x + cpOff, out.y, inp.x - cpOff, inp.y] as const
           })()
       let worstBottom = -Infinity
+      let worstTitle = ''
       for (let i = 1; i < 60; i++) {
         const t = i / 60
         const omt = 1 - t
@@ -673,11 +673,14 @@ export default function FlowSchemaView({
           if (!p) continue
           if (bx >= p.x && bx <= p.x + NODE_W && by >= p.y && by <= p.y + NODE_H) {
             const bot = p.y + NODE_H
-            if (bot > worstBottom) worstBottom = bot
+            if (bot > worstBottom) {
+              worstBottom = bot
+              worstTitle = s.title || s.id.slice(0, 6)
+            }
           }
         }
       }
-      return worstBottom > -Infinity ? { bottom: worstBottom } : null
+      return worstBottom > -Infinity ? { bottom: worstBottom, hit: worstTitle } : null
     }
     for (const c of allConnections) {
       const sp = positions[c.sourceId]
@@ -687,12 +690,19 @@ export default function FlowSchemaView({
       const out = getOutputPort(sp)
       const inp = getInputPort(tp)
       let laneY = m.get(connKey(c))
+      const trace: Array<{round: number; laneY: number | 'none'; hit: string; bottom: number | 'none'}> = []
+      let resolved = true
       for (let round = 0; round < 4; round++) {
         const clip = clipsCard(out, inp, laneY, c.sourceId, c.targetId)
+        trace.push({ round, laneY: laneY ?? 'none', hit: clip?.hit ?? '', bottom: clip?.bottom ?? 'none' })
         if (!clip) break
-        // Push the lane below the worst-offending card, plus a gap. 44 px
-        // matches roughly one NODE_H/2 + comfortable clearance.
         laneY = clip.bottom + 44
+        if (round === 3) resolved = false
+      }
+      if (trace.length > 1 || !resolved) {
+        // eslint-disable-next-line no-console
+        console.warn(`[clip-resolver] "${titleFor(c.sourceId)}" → "${titleFor(c.targetId)}" ${resolved ? 'resolved' : 'STUCK'} in ${trace.length} rounds`)
+        console.table(trace)
       }
       if (laneY !== undefined) m.set(connKey(c), laneY)
     }
