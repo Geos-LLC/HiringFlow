@@ -124,12 +124,18 @@ export async function bookInterview(opts: BookInterviewOpts): Promise<BookInterv
   // 2. Session belongs to workspace
   const session = await prisma.session.findFirst({
     where: { id: sessionId, workspaceId },
-    include: { flow: { select: { name: true } } },
+    include: {
+      flow: { select: { name: true } },
+      ad: { select: { targetPosition: true } },
+    },
   })
   if (!session) {
     throw new BookInterviewError(404, 'session_not_found', 'Session not found in this workspace')
   }
-  const positionName = session.flow?.name?.trim() || null
+  const positionName =
+    session.ad?.targetPosition?.trim()
+    || session.flow?.name?.trim()
+    || null
   const attendeeEmail = opts.attendeeEmail ?? session.candidateEmail ?? null
 
   if (isNaN(scheduledAt.getTime())) {

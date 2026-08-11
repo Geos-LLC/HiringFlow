@@ -241,7 +241,7 @@ export async function GET(request: NextRequest) {
     orderBy: { startedAt: 'desc' },
     include: {
       flow: { select: { id: true, name: true, slug: true } },
-      ad: { select: { id: true, name: true, source: true } },
+      ad: { select: { id: true, name: true, source: true, targetPosition: true } },
       answers: { select: { id: true } },
       submissions: { select: { id: true } },
       // The FlowStep the candidate was last viewing — used to label the

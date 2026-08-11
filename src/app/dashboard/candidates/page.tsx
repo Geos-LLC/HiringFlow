@@ -49,7 +49,7 @@ interface Candidate {
   trainingStatus: string | null; trainingCompletedAt: string | null
   schedulingEvents: number; lastSchedulingEvent: string | null
   flow: { id: string; name: string } | null
-  ad: { id: string; name: string; source: string } | null
+  ad: { id: string; name: string; source: string; targetPosition: string | null } | null
   isRebook?: boolean
   nextMeetingAt?: string | null
   interestingAt?: string | null
@@ -1542,14 +1542,19 @@ function CandidatesPageInner() {
                               {c.candidateEmail}
                             </div>
                           )}
-                          {c.flow?.name && (
-                            <div
-                              className="mb-1.5 text-[15px] font-semibold text-ink leading-tight truncate"
-                              title={`Position: ${c.flow.name}`}
-                            >
-                              {c.flow.name}
-                            </div>
-                          )}
+                          {(() => {
+                            const position = c.ad?.targetPosition?.trim() || null
+                            const positionLabel = position || c.flow?.name || null
+                            if (!positionLabel) return null
+                            return (
+                              <div
+                                className="mb-1.5 text-[15px] font-semibold text-ink leading-tight truncate"
+                                title={position ? `Position: ${position}` : `Flow: ${c.flow?.name ?? ''}`}
+                              >
+                                {positionLabel}
+                              </div>
+                            )
+                          })()}
                           {(c.source || c.ad?.source) && (
                             <div className="flex items-center gap-2 mb-2 text-[11px] text-grey-35">
                               <span className="capitalize">{c.ad?.source || c.source}</span>

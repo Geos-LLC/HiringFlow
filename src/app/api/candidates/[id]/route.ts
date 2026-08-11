@@ -37,7 +37,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       // Step the candidate is currently sitting on. Drives the "Step X of Y"
       // progress card on the dashboard. Null once the flow is finished.
       lastStep: { select: { id: true, title: true, stepOrder: true, stepType: true, questionType: true } },
-      ad: { select: { id: true, name: true, source: true } },
+      ad: { select: { id: true, name: true, source: true, targetPosition: true } },
       answers: {
         include: {
           step: { select: { id: true, title: true, questionText: true, stepType: true, questionType: true } },
