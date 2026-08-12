@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { toast } from 'sonner'
 
 interface Video {
   id: string
@@ -190,32 +189,22 @@ export default function FlowSchemaView({
         // deletion take priority, users trying to delete a connection
         // get asked about the unrelated step they'd clicked earlier.
         if (selectedArrow) {
-          // kind:'end' covers two shapes: (a) implicit terminals — the
-          // arrow is a render-only hint, nothing stored to delete;
-          // (b) explicit button→__end__ — clear buttonConfig.nextStepId.
-          if (selectedArrow.kind === 'end') {
-            const src = steps.find((s) => s.id === selectedArrow.stepId)
-            const isExplicitButtonToEnd =
-              (src as any)?.buttonConfig?.nextStepId === '__end__'
-            if (!isExplicitButtonToEnd) {
-              // Implicit terminal — there's no stored connection to remove.
-              // Silently bailing looked broken to users; surface why.
-              e.preventDefault()
-              toast('This connection is automatic', {
-                description: 'Steps with no next step are shown connecting to End. To remove the arrow, connect the step forward or delete the step itself.',
-              })
-              return
-            }
-            e.preventDefault()
-            if (confirm('Remove this connection?')) {
-              onButtonConfigUpdate?.(selectedArrow.stepId, null)
-              setSelectedArrow(null)
-            }
-            return
-          }
           e.preventDefault()
           if (confirm('Remove this connection?')) {
-            if (selectedArrow.kind === 'button') {
+            if (selectedArrow.kind === 'end') {
+              // Explicit button→__end__ just clears the button target.
+              // Implicit end arrows have no per-arrow data — the only way
+              // to "remove" them is to drop the End screen entirely. The
+              // publish-time guard enforces re-adding it before shipping.
+              const src = steps.find((s) => s.id === selectedArrow.stepId)
+              const isExplicitButtonToEnd =
+                (src as any)?.buttonConfig?.nextStepId === '__end__'
+              if (isExplicitButtonToEnd) {
+                onButtonConfigUpdate?.(selectedArrow.stepId, null)
+              } else {
+                onClearEndScreen?.()
+              }
+            } else if (selectedArrow.kind === 'button') {
               onButtonConfigUpdate?.(selectedArrow.stepId, null)
             } else if (selectedArrow.kind === 'start') {
               onClearStartScreen?.()

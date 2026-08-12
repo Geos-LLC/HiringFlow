@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { toast } from 'sonner'
 import FlowSchemaView from '@/components/FlowSchemaView'
 import StepEditorPanel from '@/components/StepEditorPanel'
 import StepPreviewModal from '@/components/StepPreviewModal'
@@ -1146,6 +1147,18 @@ export default function FlowBuilderPage() {
   }
 
   const handlePublish = async () => {
+    if (!flow) return
+    const missingStart = !flow.startMessage || flow.startMessage.trim() === ''
+    const missingEnd = !flow.endMessage || flow.endMessage.trim() === ''
+    if (missingStart || missingEnd) {
+      const parts: string[] = []
+      if (missingStart) parts.push('a Start screen')
+      if (missingEnd) parts.push('an End screen')
+      toast.error('The flow must start and end on the cards', {
+        description: `Add ${parts.join(' and ')} before publishing.`,
+      })
+      return
+    }
     const res = await fetch(`/api/flows/${flowId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
