@@ -125,9 +125,25 @@ export async function DELETE(
     return NextResponse.json({ error: 'Step not found' }, { status: 404 })
   }
 
-  await prisma.flowStep.delete({
-    where: { id: params.stepId },
-  })
+  // Historical candidate data references FlowStep with default onDelete
+  // (Restrict), so a bare `flowStep.delete` fails FK when candidates
+  // answered/watched/submitted this step. Cascade the dependent rows in
+  // a transaction — recruiter intentionally restructuring a flow accepts
+  // losing the per-step history rows (session-level history stays intact).
+  try {
+    await prisma.$transaction([
+      prisma.sessionAnswer.deleteMany({ where: { stepId: params.stepId } }),
+      prisma.sessionVideoWatch.deleteMany({ where: { stepId: params.stepId } }),
+      prisma.candidateSubmission.deleteMany({ where: { stepId: params.stepId } }),
+      prisma.flowStep.delete({ where: { id: params.stepId } }),
+    ])
+  } catch (error) {
+    console.error('Delete step failed', { stepId: params.stepId, error: error instanceof Error ? error.message : String(error) })
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to delete step' },
+      { status: 500 }
+    )
+  }
 
   return NextResponse.json({ success: true })
 }

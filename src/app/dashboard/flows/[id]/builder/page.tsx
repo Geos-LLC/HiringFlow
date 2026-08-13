@@ -868,7 +868,24 @@ export default function FlowBuilderPage() {
     if (popupStepId === stepId) setPopupStepId(null)
 
     // Server: delete the step (FK SetNull clears option.nextStepId automatically)
-    fetch(`/api/steps/${stepId}`, { method: 'DELETE' })
+    fetch(`/api/steps/${stepId}`, { method: 'DELETE' }).then(async (res) => {
+      flowTrace('api.deleteStep.result', { stepId, ok: res.ok, status: res.status })
+      if (!res.ok) {
+        // Roll back the optimistic removal — server rejected it (FK, 404,
+        // etc.). Re-fetch is the safest way to guarantee we're back in sync.
+        const body = await res.text().catch(() => '')
+        toast.error('Could not delete step', {
+          description: body.slice(0, 200) || `Server returned ${res.status}`,
+        })
+        fetchFlow()
+      }
+    }).catch((err) => {
+      flowTrace('api.deleteStep.threw', { stepId, error: err instanceof Error ? err.message : String(err) })
+      toast.error('Could not delete step', {
+        description: err instanceof Error ? err.message : String(err),
+      })
+      fetchFlow()
+    })
 
     // Server: clear non-FK references that the DB won't auto-clean
     for (const refId of buttonRefStepIds) {

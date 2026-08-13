@@ -69,6 +69,7 @@ type InteractionMode =
   | { type: 'panning'; startX: number; startY: number; panStartX: number; panStartY: number }
   | { type: 'dragging'; stepId: string; offsetX: number; offsetY: number; startScreenX: number; startScreenY: number }
   | { type: 'dragging_group'; stepIds: string[]; offsets: Record<string, { x: number; y: number }> }
+  | { type: 'marquee'; startCx: number; startCy: number; currentCx: number; currentCy: number }
   | { type: 'connecting'; fromStepId: string; fromX: number; fromY: number; mouseX: number; mouseY: number }
   | { type: 'reconnecting'; optionId: string; fromStepId: string; fromX: number; fromY: number; mouseX: number; mouseY: number }
   | { type: 'reconnecting_source'; optionId: string; targetStepId: string; toX: number; toY: number; mouseX: number; mouseY: number }
@@ -175,6 +176,9 @@ export default function FlowSchemaView({
   const [mode, setMode] = useState<InteractionMode>({ type: 'idle' })
   const [hoveredPort, setHoveredPort] = useState<string | null>(null)
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  // Cards selected via right-drag marquee. Persists after the drag ends so
+  // the user can then left-drag any one of them to move the whole group.
+  const [multiSelectedIds, setMultiSelectedIds] = useState<Set<string>>(new Set())
   const [hoveredArrow, setHoveredArrow] = useState<
     | { kind: 'option'; optionId: string; fromStepId: string }
     | { kind: 'button'; fromStepId: string }
@@ -1544,8 +1548,37 @@ export default function FlowSchemaView({
       drawConnection(ctx, (mode as any).mouseX, (mode as any).mouseY, (mode as any).fromX, (mode as any).fromY, '', true)
     }
 
+    // Highlight cards selected via right-drag marquee (drawn on top of nodes)
+    if (multiSelectedIds.size > 0) {
+      ctx.strokeStyle = SELECTED_COLOR
+      ctx.lineWidth = 2.5
+      ctx.setLineDash([])
+      multiSelectedIds.forEach((sid) => {
+        const p = positions[sid]
+        if (!p) return
+        ctx.beginPath()
+        ctx.roundRect(p.x - 2, p.y - 2, NODE_W + 4, NODE_H + 4, 10)
+        ctx.stroke()
+      })
+    }
+
+    // Draw the marquee rectangle itself while the user is dragging
+    if (mode.type === 'marquee') {
+      const minX = Math.min(mode.startCx, mode.currentCx)
+      const maxX = Math.max(mode.startCx, mode.currentCx)
+      const minY = Math.min(mode.startCy, mode.currentCy)
+      const maxY = Math.max(mode.startCy, mode.currentCy)
+      ctx.fillStyle = 'rgba(37, 99, 235, 0.12)'
+      ctx.strokeStyle = SELECTED_COLOR
+      ctx.lineWidth = 1.5
+      ctx.setLineDash([4, 3])
+      ctx.fillRect(minX, minY, maxX - minX, maxY - minY)
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY)
+      ctx.setLineDash([])
+    }
+
     ctx.restore()
-  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections, stageNumberByStep, computeDetourLane, endArrowGeomByStep])
+  }, [positions, thumbnails, screenImages, videoAspects, pan, scale, steps, selectedStepId, hoveredPort, hoveredArrow, mode, startMessage, endMessage, getEndStepIds, selectedArrow, allConnections, laneYByConn, connKey, debugConnections, stageNumberByStep, computeDetourLane, endArrowGeomByStep, multiSelectedIds])
 
   // Animation frame for smooth rendering
   useEffect(() => {
@@ -1797,7 +1830,22 @@ export default function FlowSchemaView({
 
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 2) return // right click handled separately
+    if (e.button === 2) {
+      // Right-click. If the cursor is on empty canvas (not on a node,
+      // arrow, or port), start a marquee selection. Otherwise let
+      // handleContextMenu deal with it (e.g. arrow disconnect menu).
+      const { x: rcx, y: rcy } = toCanvas(e.clientX, e.clientY)
+      const nodeAt = hitTestNode(rcx, rcy)
+      const arrowAt = hitTestArrowLine(rcx, rcy)
+      if (!nodeAt && !arrowAt) {
+        e.preventDefault()
+        setContextMenu(null)
+        setSelectedArrow(null)
+        setMultiSelectedIds(new Set())
+        setMode({ type: 'marquee', startCx: rcx, startCy: rcy, currentCx: rcx, currentCy: rcy })
+      }
+      return
+    }
     setContextMenu(null)
 
     const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
@@ -1807,6 +1855,20 @@ export default function FlowSchemaView({
     // DEBUG: log click info
     const nodeHit = hitTestNode(cx, cy)
 
+    // Left-click on a card that's part of the marquee multi-selection:
+    // drag the whole group instead of just this one.
+    if (nodeHit && multiSelectedIds.has(nodeHit) && multiSelectedIds.size > 1) {
+      const offsets: Record<string, { x: number; y: number }> = {}
+      const stepIds: string[] = []
+      multiSelectedIds.forEach((sid) => {
+        const p = positions[sid]
+        if (!p) return
+        offsets[sid] = { x: cx - p.x, y: cy - p.y }
+        stepIds.push(sid)
+      })
+      setMode({ type: 'dragging_group', stepIds, offsets })
+      return
+    }
 
     // Check node delete button first
     const deleteTarget = hitTestDeleteButton(cx, cy)
@@ -2117,8 +2179,10 @@ export default function FlowSchemaView({
       }
     }
 
-    // Clicking empty space deselects everything
+    // Clicking empty space deselects everything (including the marquee
+    // multi-selection — same as any single-select interaction).
     setSelectedArrow(null)
+    setMultiSelectedIds(new Set())
     setMode({
       type: 'panning',
       startX: e.clientX,
@@ -2160,6 +2224,11 @@ export default function FlowSchemaView({
         }
         return next
       })
+      return
+    }
+
+    if (mode.type === 'marquee') {
+      setMode({ ...mode, currentCx: cx, currentCy: cy })
       return
     }
 
@@ -2448,6 +2517,30 @@ export default function FlowSchemaView({
       onPositionsChange?.(positions)
     }
 
+    if (mode.type === 'marquee') {
+      const minX = Math.min(mode.startCx, mode.currentCx)
+      const maxX = Math.max(mode.startCx, mode.currentCx)
+      const minY = Math.min(mode.startCy, mode.currentCy)
+      const maxY = Math.max(mode.startCy, mode.currentCy)
+      // Tiny drag? Treat as a click on empty canvas — clear selection.
+      if (maxX - minX < 4 && maxY - minY < 4) {
+        setMultiSelectedIds(new Set())
+      } else {
+        const selected = new Set<string>()
+        for (const step of steps) {
+          const p = positions[step.id]
+          if (!p) continue
+          // Any overlap with the marquee rect counts.
+          if (p.x < maxX && p.x + NODE_W > minX && p.y < maxY && p.y + NODE_H > minY) {
+            selected.add(step.id)
+          }
+        }
+        setMultiSelectedIds(selected)
+      }
+      setMode({ type: 'idle' })
+      return
+    }
+
     if (mode.type === 'panning') {
       const dx = e.clientX - mode.startX
       const dy = e.clientY - mode.startY
@@ -2522,6 +2615,7 @@ export default function FlowSchemaView({
   const getCursor = () => {
     if (mode.type === 'panning') return 'grabbing'
     if (mode.type === 'dragging' || mode.type === 'dragging_group') return 'move'
+    if (mode.type === 'marquee') return 'crosshair'
     if (mode.type === 'connecting' || (mode as any).type === 'connecting_reverse' || mode.type === 'reconnecting' || mode.type === 'reconnecting_source' || mode.type === 'reconnecting_button' || mode.type === 'reconnecting_button_source' || mode.type === 'reconnecting_start' || mode.type === 'reconnecting_end') return 'crosshair'
     if (hoveredPort === '__delete__' || hoveredPort === '__arrow_delete__') return 'pointer'
     if (hoveredPort === '__arrow__') return 'pointer'
