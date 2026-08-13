@@ -447,12 +447,13 @@ export default function FlowSchemaView({
 
     const TIDY_H_GAP = 60
 
-    // Second rule: a secondary row should start at the COLUMN where its
-    // branch point sits, not at the leftmost column. If step X (row 0,
-    // column 5) has two branches → B goes into row 0, C starts row 1 —
-    // then C sits at column 6 (one past X), directly under B.
-    // We scan every step in every EARLIER row to see whether it points
-    // to this row's first step via option or button.
+    // Second rule: a secondary row starts DIRECTLY UNDER the column of
+    // the branching parent — not one column to the right. So if step X
+    // (row 0, col 5) has a branch to C, C sits at (row 1, col 5) —
+    // vertically aligned with X. If multiple ancestors point to this
+    // row's first card, use the RIGHTMOST one (so the branch stacks
+    // under the last decision that hits it, matching the "top the very
+    // right double connection" rule).
     const rowStartCol = new Map<number, number>()
     rowStartCol.set(0, 0)  // main chain starts at leftmost column
     for (let r = 1; r < rows.length; r++) {
@@ -465,7 +466,7 @@ export default function FlowSchemaView({
           const btn = (pStep as any).buttonConfig?.nextStepId
           const hits = btn === firstStepId ||
             pStep.options.some((o) => o.nextStepId === firstStepId)
-          if (hits) branchCol = Math.max(branchCol, pc + 1)
+          if (hits) branchCol = Math.max(branchCol, pc)
         }
       }
       rowStartCol.set(r, branchCol)
