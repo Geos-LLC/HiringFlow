@@ -2755,7 +2755,7 @@ export default function FlowSchemaView({
       e.preventDefault()
       const oldScale = scaleRef.current
       const delta = e.deltaY > 0 ? -0.08 : 0.08
-      const newScale = Math.min(2, Math.max(0.3, oldScale + delta))
+      const newScale = Math.min(2, Math.max(0.1, oldScale + delta))
       if (newScale === oldScale) return
       // Zoom around the cursor: keep the canvas point currently under the
       // cursor at the same on-screen position after the scale change.
