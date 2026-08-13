@@ -2480,13 +2480,36 @@ export default function FlowSchemaView({
     return () => ro.disconnect()
   }, [])
 
+  // Refs so the window listeners below always call the latest handlers
+  // without re-registering on every render.
+  const handleMouseMoveRef = useRef(handleMouseMove)
+  handleMouseMoveRef.current = handleMouseMove
+  const handleMouseUpRef = useRef(handleMouseUp)
+  handleMouseUpRef.current = handleMouseUp
+
+  // Capture mouse events at the window level while a mode is active — so
+  // a mouseup outside the container still ends the drag. Without this,
+  // fast drags leave the container mid-motion and the "hold" sticks
+  // because React never sees the release.
+  useEffect(() => {
+    if (mode.type === 'idle') return
+    const onMove = (e: MouseEvent) => handleMouseMoveRef.current(e as unknown as React.MouseEvent)
+    const onUp = (e: MouseEvent) => handleMouseUpRef.current(e as unknown as React.MouseEvent)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [mode.type])
+
   return (
     <div
       ref={containerRef}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={() => { setMode({ type: 'idle' }); setHoveredPort(null) }}
+      onMouseLeave={() => setHoveredPort(null)}
       onContextMenu={handleContextMenu}
       onDoubleClick={(e) => {
         const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
