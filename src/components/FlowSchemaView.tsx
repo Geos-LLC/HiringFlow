@@ -2416,22 +2416,29 @@ export default function FlowSchemaView({
     const delTarget = hitTestDeleteButton(cx, cy)
     if (delTarget) {
       setHoveredPort('__delete__')
+      // Delete button lives on a specific step — keep that step highlighted.
+      setHoveredNodeId(delTarget)
       return
     }
     const outStepHover = hitTestOutputPort(cx, cy)
     if (outStepHover) {
       setHoveredPort(`out_${outStepHover}`)
+      // Port belongs to a card — highlight the card as well so the visual
+      // feedback stays consistent left-vs-right of the card.
+      setHoveredNodeId(outStepHover)
       return
     }
     const inpStep = hitTestInputPort(cx, cy)
     if (inpStep) {
       setHoveredPort(`inp_${inpStep}`)
+      setHoveredNodeId(inpStep)
       return
     }
     // Arrow hover
     if (selectedArrow && hitTestArrowDelete(cx, cy)) {
       setHoveredPort('__arrow_delete__')
       setHoveredArrow(null)
+      setHoveredNodeId(null)
       return
     }
     // "+" insert button hover (always rendered, so check first regardless
@@ -2445,6 +2452,7 @@ export default function FlowSchemaView({
         insertHover.kind === 'start' ? '__insert_start' :
         `__insert_end_${insertHover.fromStepId}`
       setHoveredPort(portKey)
+      setHoveredNodeId(null)
       return
     }
     // Otherwise: hovering the line itself
