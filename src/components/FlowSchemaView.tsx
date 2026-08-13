@@ -1543,17 +1543,27 @@ export default function FlowSchemaView({
       const stageNum = stageNumberByStep.get(step.id) ?? (sorted.indexOf(step) + 1)
       drawNode(ctx, step, pos, step.id === selectedStepId, thumbnails[step.id], stageNum - 1, videoAspects[step.id], screenImages[step.id])
 
-      // Draw single OUTPUT port (right side)
+      // Draw single OUTPUT port (right side). A step is "outgoing" if any
+      // of its options has a nextStepId, OR its Continue button points to
+      // another step / End — otherwise the port stays hollow.
       const out = getOutputPort(pos)
       const isOutHovered = hoveredPort === `out_${step.id}`
-      const hasOutgoing = step.options.some((o) => o.nextStepId)
+      const buttonNext = (step as any).buttonConfig?.nextStepId
+      const hasOutgoing =
+        step.options.some((o) => o.nextStepId) ||
+        (!!buttonNext && (buttonNext === '__end__' || steps.some((s) => s.id === buttonNext)))
       drawPortCircle(ctx, out.x, out.y, isOutHovered, hasOutgoing)
 
-      // Draw single INPUT port (left side)
+      // Draw single INPUT port (left side). Same fix on the incoming side —
+      // a card can be a target via option.nextStepId OR another card's
+      // buttonConfig.nextStepId.
       const inp = getInputPort(pos)
       const isInpHovered = hoveredPort === `inp_${step.id}`
-      const hasIncoming = steps.some((s) => s.options.some((o) => o.nextStepId === step.id))
-        || step.id === sorted[0]?.id
+      const hasIncoming =
+        steps.some((s) =>
+          s.options.some((o) => o.nextStepId === step.id) ||
+          (s as any).buttonConfig?.nextStepId === step.id
+        ) || step.id === sorted[0]?.id
       drawPortCircle(ctx, inp.x, inp.y, isInpHovered, hasIncoming)
     }
 
