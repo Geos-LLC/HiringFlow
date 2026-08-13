@@ -446,26 +446,65 @@ export default function FlowSchemaView({
     const rows = [...rawRows].sort((a, b) => b.length - a.length)
 
     const TIDY_H_GAP = 60
-    const maxRowLen = rows.reduce((m, r) => Math.max(m, r.length), 0)
 
-    // Assign x/y based on (row, col).
+    // Second rule: a secondary row should start at the COLUMN where its
+    // branch point sits, not at the leftmost column. If step X (row 0,
+    // column 5) has two branches → B goes into row 0, C starts row 1 —
+    // then C sits at column 6 (one past X), directly under B.
+    // We scan every step in every EARLIER row to see whether it points
+    // to this row's first step via option or button.
+    const rowStartCol = new Map<number, number>()
+    rowStartCol.set(0, 0)  // main chain starts at leftmost column
+    for (let r = 1; r < rows.length; r++) {
+      const firstStepId = rows[r][0]
+      let branchCol = 0
+      for (let pr = 0; pr < r; pr++) {
+        for (let pc = 0; pc < rows[pr].length; pc++) {
+          const pStep = stepById.get(rows[pr][pc])
+          if (!pStep) continue
+          const btn = (pStep as any).buttonConfig?.nextStepId
+          const hits = btn === firstStepId ||
+            pStep.options.some((o) => o.nextStepId === firstStepId)
+          if (hits) branchCol = Math.max(branchCol, pc + 1)
+        }
+      }
+      rowStartCol.set(r, branchCol)
+    }
+
+    // Small rise per column so the main chain reads as a subtle
+    // staircase instead of a dead-flat line (matches user's reference).
+    // Bottom-left → top-right within each row: earliest columns sit
+    // lowest, later columns sit slightly higher.
+    const RISE_PER_COL = 24
+    const rowMaxCol = rows.map((row, r) => {
+      const startCol = rowStartCol.get(r) ?? 0
+      return startCol + row.length - 1
+    })
+
+    let maxCol = 0
     rows.forEach((row, r) => {
+      const startCol = rowStartCol.get(r) ?? 0
+      const chainRise = (rowMaxCol[r] - startCol) * RISE_PER_COL
       row.forEach((stepId, c) => {
+        const col = startCol + c
+        if (col > maxCol) maxCol = col
         posMap[stepId] = {
-          x: (c + 1) * (NODE_W + TIDY_H_GAP),  // col 0 reserved for Start
-          y: r * (NODE_H + V_GAP),
+          x: (col + 1) * (NODE_W + TIDY_H_GAP),  // col 0 reserved for Start
+          // Row's baseline y + stair-step within the row (chainRise at
+          // the leftmost column, 0 at the rightmost column of the row).
+          y: r * (NODE_H + V_GAP) + chainRise - c * RISE_PER_COL,
         }
       })
     })
 
-    // Start on the far left, End one column past the longest row —
-    // exactly what the user described: "if it's longer just move the
-    // End further right." Vertically center both against the row band.
+    // Start on the far left, End one column past the rightmost card —
+    // "if it's longer just move End further." Vertically center both
+    // against the row band.
     const totalRows = rows.length
     const midY = ((totalRows - 1) * (NODE_H + V_GAP)) / 2 + NODE_H / 2
     posMap[START_ID] = { x: 0, y: midY - SPECIAL_H / 2 }
     posMap[END_ID] = {
-      x: (maxRowLen + 1) * (NODE_W + TIDY_H_GAP),
+      x: (maxCol + 2) * (NODE_W + TIDY_H_GAP),
       y: midY - SPECIAL_H / 2,
     }
     return posMap
