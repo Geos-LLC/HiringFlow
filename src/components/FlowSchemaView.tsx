@@ -698,6 +698,14 @@ export default function FlowSchemaView({
       if (!sp || !tp) continue
       const out = getOutputPort(sp)
       const inp = getInputPort(tp)
+      // Anchor the "escape depth" at the deeper of source/target bottoms.
+      // Pushing lane to (blocker.bot + 44) alone doesn't work when the
+      // blocker sits at the same Y as the source: the bezier's DESCENT
+      // from source Y down to the lane still passes through the blocker's
+      // Y range at an X inside the blocker. Routing below the endpoints'
+      // deepest bottom forces the descent to happen well past the
+      // blocker's X range, so the curve clears cleanly.
+      const endpointFloor = Math.max(sp.y + NODE_H, tp.y + NODE_H)
       let laneY = m.get(connKey(c))
       const trace: Array<{round: number; laneY: number | 'none'; hit: string; bottom: number | 'none'}> = []
       let resolved = true
@@ -705,7 +713,7 @@ export default function FlowSchemaView({
         const clip = clipsCard(out, inp, laneY, c.sourceId, c.targetId)
         trace.push({ round, laneY: laneY ?? 'none', hit: clip?.hit ?? '', bottom: clip?.bottom ?? 'none' })
         if (!clip) break
-        laneY = clip.bottom + 44
+        laneY = Math.max(clip.bottom, endpointFloor) + 44
         if (round === 3) resolved = false
       }
       if (trace.length > 1 || !resolved) {
