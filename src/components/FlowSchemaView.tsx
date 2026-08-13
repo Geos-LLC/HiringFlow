@@ -1580,12 +1580,23 @@ export default function FlowSchemaView({
       }
     }
 
-    // Draw draft connection line while dragging
+    // Draw draft connection line while dragging — but only once the cursor
+    // has clearly moved off the port. Otherwise a click on/near a port
+    // briefly renders a tiny dashed "loop to the point" before mouseup
+    // resolves the click into the port-picker popup.
+    const DRAFT_MIN_DRIFT = 6
     if (mode.type === 'connecting') {
-      drawConnection(ctx, mode.fromX, mode.fromY, (mode as any).mouseX, (mode as any).mouseY, '', true)
+      const drift = Math.hypot((mode as any).mouseX - mode.fromX, (mode as any).mouseY - mode.fromY)
+      if (drift >= DRAFT_MIN_DRIFT) {
+        drawConnection(ctx, mode.fromX, mode.fromY, (mode as any).mouseX, (mode as any).mouseY, '', true)
+      }
     }
     if ((mode as any).type === 'connecting_reverse') {
-      drawConnection(ctx, (mode as any).mouseX, (mode as any).mouseY, (mode as any).fromX, (mode as any).fromY, '', true)
+      const m = mode as any
+      const drift = Math.hypot(m.mouseX - m.fromX, m.mouseY - m.fromY)
+      if (drift >= DRAFT_MIN_DRIFT) {
+        drawConnection(ctx, m.mouseX, m.mouseY, m.fromX, m.fromY, '', true)
+      }
     }
 
     // Highlight cards selected via right-drag marquee (drawn on top of nodes)
@@ -2658,6 +2669,10 @@ export default function FlowSchemaView({
     const container = containerRef.current
     if (!container) return
     const onWheel = (e: WheelEvent) => {
+      // Let scrollable popups (port picker, context menu) consume the
+      // wheel instead of zooming the canvas.
+      const t = e.target as HTMLElement | null
+      if (t && t.closest('[data-schema-popup]')) return
       e.preventDefault()
       const oldScale = scaleRef.current
       const delta = e.deltaY > 0 ? -0.08 : 0.08
@@ -2860,6 +2875,7 @@ export default function FlowSchemaView({
         <>
           <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} />
           <div
+            data-schema-popup="context-menu"
             className="fixed z-50 bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[160px]"
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
@@ -2884,6 +2900,7 @@ export default function FlowSchemaView({
           <>
             <div className="fixed inset-0 z-40" onClick={() => setPortPicker(null)} />
             <div
+              data-schema-popup="port-picker"
               className="fixed z-50 bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[220px] max-h-[320px] overflow-y-auto"
               style={{ left: portPicker.screenX, top: portPicker.screenY }}
             >
