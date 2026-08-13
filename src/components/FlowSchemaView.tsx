@@ -2693,33 +2693,35 @@ export default function FlowSchemaView({
       return
     }
 
+    // Node hover is computed up front so the card highlight stays on
+    // whenever the cursor sits inside a real step's rect — ports,
+    // insert buttons, and arrow lines that happen to overlap the card
+    // no longer drop hoveredNodeId to null. Special nodes (Start/End)
+    // don't count — they're not deletable / editable cards.
+    const nodeUnder = hitTestNode(cx, cy)
+    const isRealStep = nodeUnder && nodeUnder !== START_ID && nodeUnder !== END_ID
+    setHoveredNodeId(isRealStep ? nodeUnder : null)
+
     // Hover detection
     const delTarget = hitTestDeleteButton(cx, cy)
     if (delTarget) {
       setHoveredPort('__delete__')
-      // Delete button lives on a specific step — keep that step highlighted.
-      setHoveredNodeId(delTarget)
       return
     }
     const outStepHover = hitTestOutputPort(cx, cy)
     if (outStepHover) {
       setHoveredPort(`out_${outStepHover}`)
-      // Port belongs to a card — highlight the card as well so the visual
-      // feedback stays consistent left-vs-right of the card.
-      setHoveredNodeId(outStepHover)
       return
     }
     const inpStep = hitTestInputPort(cx, cy)
     if (inpStep) {
       setHoveredPort(`inp_${inpStep}`)
-      setHoveredNodeId(inpStep)
       return
     }
     // Arrow hover
     if (selectedArrow && hitTestArrowDelete(cx, cy)) {
       setHoveredPort('__arrow_delete__')
       setHoveredArrow(null)
-      setHoveredNodeId(null)
       return
     }
     // "+" insert button hover (always rendered, so check first regardless
@@ -2733,7 +2735,6 @@ export default function FlowSchemaView({
         insertHover.kind === 'start' ? '__insert_start' :
         `__insert_end_${insertHover.fromStepId}`
       setHoveredPort(portKey)
-      setHoveredNodeId(null)
       return
     }
     // Otherwise: hovering the line itself
@@ -2741,15 +2742,10 @@ export default function FlowSchemaView({
     if (lineHover) {
       setHoveredArrow(lineHover)
       setHoveredPort('__arrow__')
-      setHoveredNodeId(null)
       return
     }
-    // Not on a port, delete button, insert button, or arrow — check for
-    // a node under the cursor so the cursor can switch to pointer.
-    const nodeHover = hitTestNode(cx, cy)
     setHoveredArrow(null)
     setHoveredPort(null)
-    setHoveredNodeId(nodeHover)
   }
 
   const handleMouseUp = (e: React.MouseEvent) => {
