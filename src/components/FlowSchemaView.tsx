@@ -583,29 +583,60 @@ export default function FlowSchemaView({
 
     // Subtle rising staircase inside each row (matches reference).
     const RISE_PER_COL = 24
-    // Extra vertical gap between tidy rows so connection lines from row
-    // 0 to lower branch cards have room to route without visually
-    // clipping into the branch cards themselves. Bigger than the
-    // default V_GAP used elsewhere in the schema.
-    const TIDY_V_GAP = 140
+    // Base gap between rows; per-row extra padding is added on top when
+    // this row is a target for long-span connections (see below).
+    const TIDY_V_GAP_BASE = 100
+    // Extra vertical padding per column of horizontal connection span.
+    // A connection from col A to col B has to arc across |B - A| columns;
+    // longer spans need more vertical breathing room so the bezier
+    // clears earlier cards without clipping. 12 px per column tuned so
+    // a 5-col span adds ~60 px, a 10-col span adds ~120 px.
+    const SPAN_PAD_PER_COL = 12
 
     // Track the max bottom-Y placed in each column so far. A later row's
-    // baseline in each of its columns must clear this by at least
-    // TIDY_V_GAP. Without this the rise stagger from an earlier row
-    // (which pushes that row's cards further down at low col numbers)
-    // overlaps secondary rows.
+    // baseline in each of its columns must clear this.
     const colMaxBottom = new Map<number, number>()
-    const rowBaseline = new Map<number, number>()  // per-input-row baseline Y
+    const rowBaseline = new Map<number, number>()
+
+    // For each row, find the maximum horizontal-span of any incoming
+    // connection (source in an earlier row → target in this row).
+    // A wider incoming arc needs more vertical room — a bezier from
+    // (sx, sy) to (tx, ty) sweeps ~half the vertical delta at midpoint,
+    // so bigger horizontal span = wider arc = more room needed.
+    const rowIncomingSpan = new Map<number, number>()
+    for (let r = 1; r < rows.length; r++) {
+      let maxSpan = 0
+      for (const targetId of rows[r]) {
+        for (let pr = 0; pr < r; pr++) {
+          for (let pc = 0; pc < rows[pr].length; pc++) {
+            const pStep = stepById.get(rows[pr][pc])
+            if (!pStep) continue
+            const points =
+              (pStep as any).buttonConfig?.nextStepId === targetId ||
+              pStep.options.some((o) => o.nextStepId === targetId)
+            if (!points) continue
+            const parentInfo = rowInfo.get(pr) ?? { rowIdx: pr, startCol: 0 }
+            const parentCol = parentInfo.startCol + pc
+            const targetInfo = rowInfo.get(r) ?? { rowIdx: r, startCol: 0 }
+            const tc = rows[r].indexOf(targetId)
+            const targetCol = targetInfo.startCol + Math.max(0, tc)
+            const span = Math.abs(targetCol - parentCol)
+            if (span > maxSpan) maxSpan = span
+          }
+        }
+      }
+      rowIncomingSpan.set(r, maxSpan)
+    }
 
     let maxCol = 0
     let maxBaseline = 0
     rows.forEach((row, r) => {
       const info = rowInfo.get(r) ?? { rowIdx: r, startCol: 0 }
       const chainRise = (row.length - 1) * RISE_PER_COL
-      // For this row, each card c has y = baseline + chainRise - c*RISE.
-      // The top of card c is that y. We need top >= prior bottom at same
-      // col + TIDY_V_GAP → baseline >= (priorBottom + TIDY_V_GAP) - chainRise + c*RISE.
-      // Take the max requirement across the row's columns; row 0 anchors at 0.
+      // Row's effective vertical gap = base + extra padding for the
+      // widest incoming connection to this row.
+      const incomingSpan = rowIncomingSpan.get(r) ?? 0
+      const effectiveVGap = TIDY_V_GAP_BASE + incomingSpan * SPAN_PAD_PER_COL
       let baseline: number
       if (r === 0) {
         baseline = 0
@@ -615,7 +646,7 @@ export default function FlowSchemaView({
           const col = info.startCol + c
           const priorBottom = colMaxBottom.get(col) ?? -Infinity
           if (priorBottom === -Infinity) continue
-          const need = priorBottom + TIDY_V_GAP - chainRise + c * RISE_PER_COL
+          const need = priorBottom + effectiveVGap - chainRise + c * RISE_PER_COL
           if (need > req) req = need
         }
         baseline = req
