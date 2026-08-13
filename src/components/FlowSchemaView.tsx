@@ -583,12 +583,17 @@ export default function FlowSchemaView({
 
     // Subtle rising staircase inside each row (matches reference).
     const RISE_PER_COL = 24
+    // Extra vertical gap between tidy rows so connection lines from row
+    // 0 to lower branch cards have room to route without visually
+    // clipping into the branch cards themselves. Bigger than the
+    // default V_GAP used elsewhere in the schema.
+    const TIDY_V_GAP = 140
 
     // Track the max bottom-Y placed in each column so far. A later row's
-    // baseline in each of its columns must clear this by at least V_GAP.
-    // Without this the rise stagger from an earlier row (which pushes
-    // that row's cards further down at low col numbers) overlaps
-    // secondary rows sitting at fixed rowIdx*(NODE_H+V_GAP).
+    // baseline in each of its columns must clear this by at least
+    // TIDY_V_GAP. Without this the rise stagger from an earlier row
+    // (which pushes that row's cards further down at low col numbers)
+    // overlaps secondary rows.
     const colMaxBottom = new Map<number, number>()
     const rowBaseline = new Map<number, number>()  // per-input-row baseline Y
 
@@ -599,7 +604,7 @@ export default function FlowSchemaView({
       const chainRise = (row.length - 1) * RISE_PER_COL
       // For this row, each card c has y = baseline + chainRise - c*RISE.
       // The top of card c is that y. We need top >= prior bottom at same
-      // col + V_GAP → baseline >= (priorBottom + V_GAP) - chainRise + c*RISE.
+      // col + TIDY_V_GAP → baseline >= (priorBottom + TIDY_V_GAP) - chainRise + c*RISE.
       // Take the max requirement across the row's columns; row 0 anchors at 0.
       let baseline: number
       if (r === 0) {
@@ -610,7 +615,7 @@ export default function FlowSchemaView({
           const col = info.startCol + c
           const priorBottom = colMaxBottom.get(col) ?? -Infinity
           if (priorBottom === -Infinity) continue
-          const need = priorBottom + V_GAP - chainRise + c * RISE_PER_COL
+          const need = priorBottom + TIDY_V_GAP - chainRise + c * RISE_PER_COL
           if (need > req) req = need
         }
         baseline = req
