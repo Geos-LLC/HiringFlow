@@ -440,25 +440,23 @@ export default function FlowSchemaView({
       rawRows.push(row)
     }
 
-    // Per user request: longest row on top, shorter rows underneath so
-    // the layout reads as "main chain first, branches beneath."
-    // Ties broken by the row's original discovery order (stable sort).
+    // Sort rows longest-first so the main chain lands at index 0.
+    // Ties: stable sort keeps discovery order (which is stepOrder).
     const rows = [...rawRows].sort((a, b) => b.length - a.length)
 
     const TIDY_H_GAP = 60
 
-    // Second rule: a secondary row starts DIRECTLY UNDER the column of
-    // the branching parent — not one column to the right. So if step X
-    // (row 0, col 5) has a branch to C, C sits at (row 1, col 5) —
-    // vertically aligned with X. If multiple ancestors point to this
-    // row's first card, use the RIGHTMOST one (so the branch stacks
-    // under the last decision that hits it, matching the "top the very
-    // right double connection" rule).
-    const rowStartCol = new Map<number, number>()
-    rowStartCol.set(0, 0)  // main chain starts at leftmost column
+    // For each row (except 0), find its "branch parent" — a step in an
+    // earlier row that points to this row's first card via option/button.
+    // We record BOTH the parent's row index and its column so we can:
+    //   - vertically stack this row just below its parent
+    //   - horizontally align this row under the parent's column
+    // Use the RIGHTMOST parent (largest col) to match the user's rule
+    // "top the very right double connection."
+    const rowParent = new Map<number, { row: number; col: number }>()
     for (let r = 1; r < rows.length; r++) {
       const firstStepId = rows[r][0]
-      let branchCol = 0
+      let best: { row: number; col: number } | null = null
       for (let pr = 0; pr < r; pr++) {
         for (let pc = 0; pc < rows[pr].length; pc++) {
           const pStep = stepById.get(rows[pr][pc])
@@ -466,43 +464,70 @@ export default function FlowSchemaView({
           const btn = (pStep as any).buttonConfig?.nextStepId
           const hits = btn === firstStepId ||
             pStep.options.some((o) => o.nextStepId === firstStepId)
-          if (hits) branchCol = Math.max(branchCol, pc)
+          if (!hits) continue
+          if (!best || pc > best.col) best = { row: pr, col: pc }
         }
       }
-      rowStartCol.set(r, branchCol)
+      if (best) rowParent.set(r, best)
     }
 
-    // Small rise per column so the main chain reads as a subtle
-    // staircase instead of a dead-flat line (matches user's reference).
-    // Bottom-left → top-right within each row: earliest columns sit
-    // lowest, later columns sit slightly higher.
+    // Compute the effective ROW INDEX and COLUMN OFFSET for each row.
+    // Main chain: (rowIdx=0, startCol=0).
+    // Secondary: startCol = parent's col; rowIdx = parent's rowIdx + 1
+    //   PLUS a collision offset — if two branches want the same slot
+    //   and overlap horizontally, the later one gets pushed one row
+    //   deeper. This keeps every branch just below its parent while
+    //   preventing rows from stacking on top of each other.
+    const rowInfo = new Map<number, { rowIdx: number; startCol: number }>()
+    rowInfo.set(0, { rowIdx: 0, startCol: 0 })
+    // Occupancy: for each rowIdx, which column ranges are taken.
+    const rowOccupancy = new Map<number, Array<[number, number]>>()
+    const claimRow = (row: string[], startCol: number): number => {
+      const endCol = startCol + row.length - 1
+      // Find lowest rowIdx (>= 1) that has no overlap in [startCol..endCol].
+      // Row 0 is always taken by the main chain.
+      let ri = 1
+      while (true) {
+        const ranges = rowOccupancy.get(ri) ?? []
+        const overlaps = ranges.some(([a, b]) => !(endCol < a || startCol > b))
+        if (!overlaps) {
+          rowOccupancy.set(ri, [...ranges, [startCol, endCol]])
+          return ri
+        }
+        ri++
+      }
+    }
+    // Main chain claims row 0.
+    rowOccupancy.set(0, [[0, rows[0].length - 1]])
+    for (let r = 1; r < rows.length; r++) {
+      const parent = rowParent.get(r)
+      const startCol = parent ? parent.col : 0
+      const rowIdx = claimRow(rows[r], startCol)
+      rowInfo.set(r, { rowIdx, startCol })
+    }
+
+    // Subtle rising staircase inside each row (matches reference).
     const RISE_PER_COL = 24
-    const rowMaxCol = rows.map((row, r) => {
-      const startCol = rowStartCol.get(r) ?? 0
-      return startCol + row.length - 1
-    })
 
     let maxCol = 0
+    let maxRowIdx = 0
     rows.forEach((row, r) => {
-      const startCol = rowStartCol.get(r) ?? 0
-      const chainRise = (rowMaxCol[r] - startCol) * RISE_PER_COL
+      const info = rowInfo.get(r) ?? { rowIdx: r, startCol: 0 }
+      const chainRise = (row.length - 1) * RISE_PER_COL
+      if (info.rowIdx > maxRowIdx) maxRowIdx = info.rowIdx
       row.forEach((stepId, c) => {
-        const col = startCol + c
+        const col = info.startCol + c
         if (col > maxCol) maxCol = col
         posMap[stepId] = {
           x: (col + 1) * (NODE_W + TIDY_H_GAP),  // col 0 reserved for Start
-          // Row's baseline y + stair-step within the row (chainRise at
-          // the leftmost column, 0 at the rightmost column of the row).
-          y: r * (NODE_H + V_GAP) + chainRise - c * RISE_PER_COL,
+          y: info.rowIdx * (NODE_H + V_GAP) + chainRise - c * RISE_PER_COL,
         }
       })
     })
 
-    // Start on the far left, End one column past the rightmost card —
-    // "if it's longer just move End further." Vertically center both
-    // against the row band.
-    const totalRows = rows.length
-    const midY = ((totalRows - 1) * (NODE_H + V_GAP)) / 2 + NODE_H / 2
+    // Start on the far left, End one column past the rightmost card,
+    // both vertically centered against the row band.
+    const midY = (maxRowIdx * (NODE_H + V_GAP)) / 2 + NODE_H / 2
     posMap[START_ID] = { x: 0, y: midY - SPECIAL_H / 2 }
     posMap[END_ID] = {
       x: (maxCol + 2) * (NODE_W + TIDY_H_GAP),
