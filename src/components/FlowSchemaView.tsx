@@ -584,25 +584,56 @@ export default function FlowSchemaView({
     // Subtle rising staircase inside each row (matches reference).
     const RISE_PER_COL = 24
 
+    // Track the max bottom-Y placed in each column so far. A later row's
+    // baseline in each of its columns must clear this by at least V_GAP.
+    // Without this the rise stagger from an earlier row (which pushes
+    // that row's cards further down at low col numbers) overlaps
+    // secondary rows sitting at fixed rowIdx*(NODE_H+V_GAP).
+    const colMaxBottom = new Map<number, number>()
+    const rowBaseline = new Map<number, number>()  // per-input-row baseline Y
+
     let maxCol = 0
-    let maxRowIdx = 0
+    let maxBaseline = 0
     rows.forEach((row, r) => {
       const info = rowInfo.get(r) ?? { rowIdx: r, startCol: 0 }
       const chainRise = (row.length - 1) * RISE_PER_COL
-      if (info.rowIdx > maxRowIdx) maxRowIdx = info.rowIdx
+      // For this row, each card c has y = baseline + chainRise - c*RISE.
+      // The top of card c is that y. We need top >= prior bottom at same
+      // col + V_GAP → baseline >= (priorBottom + V_GAP) - chainRise + c*RISE.
+      // Take the max requirement across the row's columns; row 0 anchors at 0.
+      let baseline: number
+      if (r === 0) {
+        baseline = 0
+      } else {
+        let req = 0
+        for (let c = 0; c < row.length; c++) {
+          const col = info.startCol + c
+          const priorBottom = colMaxBottom.get(col) ?? -Infinity
+          if (priorBottom === -Infinity) continue
+          const need = priorBottom + V_GAP - chainRise + c * RISE_PER_COL
+          if (need > req) req = need
+        }
+        baseline = req
+      }
+      rowBaseline.set(r, baseline)
+      if (baseline > maxBaseline) maxBaseline = baseline
       row.forEach((stepId, c) => {
         const col = info.startCol + c
         if (col > maxCol) maxCol = col
+        const y = baseline + chainRise - c * RISE_PER_COL
         posMap[stepId] = {
           x: (col + 1) * (NODE_W + TIDY_H_GAP),  // col 0 reserved for Start
-          y: info.rowIdx * (NODE_H + V_GAP) + chainRise - c * RISE_PER_COL,
+          y,
         }
+        const bottom = y + NODE_H
+        const priorBottom = colMaxBottom.get(col) ?? -Infinity
+        if (bottom > priorBottom) colMaxBottom.set(col, bottom)
       })
     })
 
     // Start on the far left, End one column past the rightmost card,
     // both vertically centered against the row band.
-    const midY = (maxRowIdx * (NODE_H + V_GAP)) / 2 + NODE_H / 2
+    const midY = (maxBaseline) / 2 + NODE_H / 2
     posMap[START_ID] = { x: 0, y: midY - SPECIAL_H / 2 }
     posMap[END_ID] = {
       x: (maxCol + 2) * (NODE_W + TIDY_H_GAP),
