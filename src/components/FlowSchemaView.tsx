@@ -394,16 +394,10 @@ export default function FlowSchemaView({
     return null
   }, [steps, getEndStepIds])
 
-  // "Tidy" layout — matches VideoAsk-style rising staircase reference:
-  //   • Main chain (steps with a forward connection) marches left→right
-  //     across the canvas with each step placed slightly HIGHER than the
-  //     previous — a diagonal rise. First step sits bottom-left, last
-  //     step top-right of the chain band.
-  //   • Terminal / leaf steps (no forward connection) stack vertically in
-  //     one column past the main chain, centered against the middle Y of
-  //     the chain, so their lines to End each get their own row.
-  //   • Start snaps to the far left, End to the far right, both centered
-  //     against the combined bounds.
+  // "Tidy" layout — rising-staircase main chain, terminals placed NEAR
+  // their branching parent (not clustered on the far right). Reference
+  // was clean because branch lines are short — parents' terminals sit
+  // next to them so the arc is a small hop, not a long swoop.
   const computeTidyLayout = useCallback((): Record<string, NodePos> => {
     if (steps.length === 0) {
       return {
@@ -413,6 +407,8 @@ export default function FlowSchemaView({
     }
     const posMap: Record<string, NodePos> = {}
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
+    const idToIndex = new Map<string, number>()
+    sorted.forEach((s, i) => idToIndex.set(s.id, i))
 
     const isForwardConnected = (s: typeof sorted[0]) => {
       if (s.options.some((o) => o.nextStepId && o.nextStepId !== '__end__')) return true
@@ -420,39 +416,83 @@ export default function FlowSchemaView({
       if (btn && btn !== '__end__') return true
       return false
     }
+    const isTerminal = (s: typeof sorted[0]) => !isForwardConnected(s)
     const mainChain = sorted.filter(isForwardConnected)
-    const terminals = sorted.filter((s) => !isForwardConnected(s))
+    const terminals = sorted.filter(isTerminal)
 
-    // Tighter horizontal gap for tidy — reference has cards fairly close
-    // together on the X axis so the rising diagonal reads as one shape.
+    // Build a parent index for terminals: for each terminal, find the
+    // main-chain step whose option or button points to it. If multiple
+    // parents, pick the earliest (smallest stepOrder).
+    const parentOfTerminal = new Map<string, string>()
+    for (const t of terminals) {
+      let bestParent: typeof sorted[0] | null = null
+      let bestIdx = Infinity
+      for (const s of mainChain) {
+        const pointsHere =
+          s.options.some((o) => o.nextStepId === t.id) ||
+          (s as any).buttonConfig?.nextStepId === t.id
+        if (!pointsHere) continue
+        const idx = idToIndex.get(s.id) ?? Infinity
+        if (idx < bestIdx) {
+          bestIdx = idx
+          bestParent = s
+        }
+      }
+      if (bestParent) parentOfTerminal.set(t.id, bestParent.id)
+    }
+
     const TIDY_H_GAP = 60
-    // Vertical rise per column in the main chain. NODE_H / 4 gives a
-    // gentle staircase — enough to read as diagonal but not so steep
-    // that the chain becomes vertical.
     const RISE_PER_COL = Math.round(NODE_H / 4)
 
-    // Anchor: first main-chain card sits at the BOTTOM of the chain
-    // band, last one at the TOP. So step i's y = (last-i) * RISE.
+    // Chain: rise from bottom-left to top-right.
     const chainSpan = Math.max(0, mainChain.length - 1) * RISE_PER_COL
+    const chainCol = new Map<string, number>()  // step.id -> column index
     mainChain.forEach((step, i) => {
+      chainCol.set(step.id, i + 1)  // reserve col 0 for Start
       posMap[step.id] = {
         x: (i + 1) * (NODE_W + TIDY_H_GAP),
         y: chainSpan - i * RISE_PER_COL,
       }
     })
 
-    // Terminals stacked vertically in the column past the main chain,
-    // centered around the middle Y of the chain (chainSpan / 2).
-    const terminalCol = mainChain.length + 1
-    const terminalCount = terminals.length
-    const chainMidY = chainSpan / 2
-    const terminalYBase = chainMidY - ((terminalCount - 1) / 2) * (NODE_H + V_GAP)
-    terminals.forEach((step, i) => {
-      posMap[step.id] = {
-        x: terminalCol * (NODE_W + TIDY_H_GAP),
-        y: terminalYBase + i * (NODE_H + V_GAP),
-      }
+    // Terminals with a known parent: place immediately below the parent
+    // (one row down, same column as the parent's next slot). If several
+    // terminals share a parent, stack them.
+    // Terminals with no known parent: fall back to the far-right column,
+    // stacked vertically.
+    const orphanTerminals: typeof terminals = []
+    const parentBucket = new Map<string, string[]>()  // parentId -> [terminalId]
+    for (const t of terminals) {
+      const parentId = parentOfTerminal.get(t.id)
+      if (!parentId) { orphanTerminals.push(t); continue }
+      const list = parentBucket.get(parentId) ?? []
+      list.push(t.id)
+      parentBucket.set(parentId, list)
+    }
+    parentBucket.forEach((termIds, parentId) => {
+      const parentPos = posMap[parentId]
+      const parentColIdx = chainCol.get(parentId) ?? mainChain.length
+      // Place terminals one column to the right of parent, stacked
+      // downward starting just below parent's Y.
+      termIds.forEach((tid, k) => {
+        posMap[tid] = {
+          x: (parentColIdx + 1) * (NODE_W + TIDY_H_GAP),
+          y: parentPos.y + (k + 1) * (NODE_H + V_GAP),
+        }
+      })
     })
+
+    // Orphan terminals — no parent in the main chain. Rare; put them in
+    // the column past the last main-chain step, stacked below chain baseline.
+    if (orphanTerminals.length > 0) {
+      const orphanCol = mainChain.length + 1
+      orphanTerminals.forEach((t, k) => {
+        posMap[t.id] = {
+          x: orphanCol * (NODE_W + TIDY_H_GAP),
+          y: chainSpan + (k + 1) * (NODE_H + V_GAP),
+        }
+      })
+    }
 
     // Start on the far left, End on the far right, both vertically
     // centered against the combined bounds.
