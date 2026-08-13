@@ -91,6 +91,7 @@ interface SelectedArrow {
 
 const BUTTON_ARROW_SENTINEL = '__button_arrow__'
 const SELECTED_COLOR = '#2563eb' // blue-600 — clearly distinct from the orange default
+const HOVER_COLOR = '#111827'    // gray-900 — hover state, distinct from both default and selected
 
 // Trace helper for debugging user-reported flow builder issues. Every
 // mutation and mode transition is logged with a [flow] prefix and inline
@@ -749,18 +750,13 @@ export default function FlowSchemaView({
     const endPos = positions[END_ID]
     if (!endPos || endMessage === '') return m
 
-    const implicitEnds = getEndStepIds()
-    // Steps whose implicit End arrow was individually deleted by the
-    // recruiter (hideEndArrow=true) are excluded — the End card stays
-    // visible, other leaves' arrows stay put, only this arrow disappears.
-    const suppressed = new Set<string>(
-      steps.filter((s) => (s as any).hideEndArrow).map((s) => s.id)
-    )
+    // End arrows are opt-in: only draw for steps whose Continue button
+    // explicitly points to __end__. Implicit "leaf → End" arrows were
+    // removed on request — connecting a new card no longer auto-draws
+    // a line from its target to End. Recruiter must set buttonConfig
+    // .nextStepId = '__end__' (via reconnect to End node) to show one.
     const sourceIds = new Set<string>()
-    implicitEnds.forEach((id) => { if (!suppressed.has(id)) sourceIds.add(id) })
     for (const step of steps) {
-      // Explicit button→__end__ always renders (not affected by hideEndArrow
-      // which only governs the implicit variant).
       if ((step as any).buttonConfig?.nextStepId === '__end__') {
         sourceIds.add(step.id)
       }
@@ -1300,12 +1296,17 @@ export default function FlowSchemaView({
         const toY = firstPos.y + NODE_H / 2
         const startLane = computeDetourLane(fromX, fromY, toX, toY, new Set([sorted[0].id]))
         const isStartHovered = hoveredArrow?.kind === 'start'
-        drawConnection(ctx, fromX, fromY, toX, toY, '', false, isStartArrowSelected ? SELECTED_COLOR : '#FF9500', startLane, isStartHovered && !isStartArrowSelected)
+        const startLineColor = isStartArrowSelected
+          ? SELECTED_COLOR
+          : isStartHovered
+            ? HOVER_COLOR
+            : '#FF9500'
+        drawConnection(ctx, fromX, fromY, toX, toY, '', false, startLineColor, startLane, isStartHovered && !isStartArrowSelected, scale)
 
         const [sMidX, sMidY] = bezierMid(fromX, fromY, toX, toY, startLane)
 
         if (isStartArrowSelected) {
-          drawDragHandle(ctx, toX, toY)
+          drawDragHandle(ctx, toX, toY, SELECTED_COLOR)
           drawDeleteButton(ctx, sMidX, sMidY)
         } else {
           const isPlusHovered = hoveredPort === '__insert_start'
@@ -1349,14 +1350,18 @@ export default function FlowSchemaView({
           ? hoveredArrow.kind === 'button' && hoveredArrow.fromStepId === conn.sourceId
           : hoveredArrow.kind === 'option' && hoveredArrow.optionId === conn.optionId
         : false
-      const lineColor = isSelected ? SELECTED_COLOR : '#FF9500'
-      drawConnection(ctx, out.x, out.y, inp.x, inp.y, displayLabel, false, lineColor, laneY, isHovered && !isSelected)
+      const lineColor = isSelected
+        ? SELECTED_COLOR
+        : isHovered
+          ? HOVER_COLOR
+          : '#FF9500'
+      drawConnection(ctx, out.x, out.y, inp.x, inp.y, displayLabel, false, lineColor, laneY, isHovered && !isSelected, scale)
 
       const [midX, midY] = bezierMid(out.x, out.y, inp.x, inp.y, laneY)
 
       if (isSelected) {
-        drawDragHandle(ctx, inp.x, inp.y)
-        drawDragHandle(ctx, out.x, out.y)
+        drawDragHandle(ctx, inp.x, inp.y, SELECTED_COLOR)
+        drawDragHandle(ctx, out.x, out.y, SELECTED_COLOR)
         drawDeleteButton(ctx, midX, midY)
       } else {
         const portKey =
@@ -1391,14 +1396,19 @@ export default function FlowSchemaView({
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
         const isThisEndHovered =
           hoveredArrow?.kind === 'end' && hoveredArrow.fromStepId === stepId
-        const endLineColor = isThisEndSelected ? SELECTED_COLOR : '#FF9500'
+        const endLineColor = isThisEndSelected
+          ? SELECTED_COLOR
+          : isThisEndHovered
+            ? HOVER_COLOR
+            : '#FF9500'
         // Straight line, not a bezier: with a shared endpoint (End's
         // center), two lines from different sources can meet only at
         // that endpoint. Bezier attempts always weave (see 61fd3b9).
+        const s = scale > 0 ? scale : 1
         ctx.beginPath()
         ctx.strokeStyle = endLineColor
         ctx.lineWidth = isThisEndHovered && !isThisEndSelected ? 2.5 : 2
-        if (isThisEndHovered && !isThisEndSelected) ctx.setLineDash([5, 4])
+        if (isThisEndHovered && !isThisEndSelected) ctx.setLineDash([8 / s, 5 / s])
         else ctx.setLineDash([])
         ctx.moveTo(g.fromX, g.fromY)
         ctx.lineTo(g.toX, g.toY)
@@ -1418,7 +1428,7 @@ export default function FlowSchemaView({
         // Delete on an End-selected arrow is suppressed globally to avoid
         // clearing the End card by accident (see keyboard handler).
         if (isThisEndSelected) {
-          drawDragHandle(ctx, g.fromX, g.fromY)
+          drawDragHandle(ctx, g.fromX, g.fromY, SELECTED_COLOR)
         } else {
           const isPlusHovered = hoveredPort === `__insert_end_${stepId}`
           drawInsertButton(ctx, eMidX, eMidY, isPlusHovered)
@@ -1527,10 +1537,10 @@ export default function FlowSchemaView({
       if (selectedArrow.kind === 'start') {
         const sortedSteps = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
         const fp = sortedSteps[0] ? positions[sortedSteps[0].id] : null
-        if (fp) drawDragHandle(ctx, fp.x, fp.y + NODE_H / 2)
+        if (fp) drawDragHandle(ctx, fp.x, fp.y + NODE_H / 2, SELECTED_COLOR)
       } else if (selectedArrow.kind === 'end') {
         const sPos = positions[selectedArrow.stepId]
-        if (sPos) drawDragHandle(ctx, sPos.x + NODE_W, sPos.y + NODE_H / 2)
+        if (sPos) drawDragHandle(ctx, sPos.x + NODE_W, sPos.y + NODE_H / 2, SELECTED_COLOR)
       } else {
         // option or button: re-draw both source-out and target-in handles
         const sourceStep = steps.find((s) => s.id === selectedArrow.stepId)
@@ -1546,11 +1556,11 @@ export default function FlowSchemaView({
         const targetPos = targetStepId ? positions[targetStepId] : null
         if (sourcePos) {
           const o = getOutputPort(sourcePos)
-          drawDragHandle(ctx, o.x, o.y)
+          drawDragHandle(ctx, o.x, o.y, SELECTED_COLOR)
         }
         if (targetPos) {
           const i = getInputPort(targetPos)
-          drawDragHandle(ctx, i.x, i.y)
+          drawDragHandle(ctx, i.x, i.y, SELECTED_COLOR)
         }
       }
     }
@@ -2881,16 +2891,21 @@ function drawConnection(
   isDraft: boolean,
   color?: string,
   laneY?: number,
-  isHovered?: boolean
+  isHovered?: boolean,
+  scale: number = 1
 ) {
   const lineColor = color || '#FF9500'
   const [c1x, c1y, c2x, c2y] = bezierCps(fromX, fromY, toX, toY, laneY)
 
+  // Dashes get scaled by ctx.scale(), so at small zooms the pattern
+  // collapses into a solid line. Divide by scale so the on-screen dash
+  // size stays roughly constant regardless of zoom.
+  const s = scale > 0 ? scale : 1
   ctx.beginPath()
   ctx.strokeStyle = isDraft ? '#FF9500' : lineColor
   ctx.lineWidth = isDraft ? 2.5 : isHovered ? 2.5 : 2
-  if (isDraft) ctx.setLineDash([6, 4])
-  else if (isHovered) ctx.setLineDash([5, 4])
+  if (isDraft) ctx.setLineDash([6 / s, 4 / s])
+  else if (isHovered) ctx.setLineDash([8 / s, 5 / s])
   else ctx.setLineDash([])
 
   ctx.moveTo(fromX, fromY)
@@ -3335,10 +3350,10 @@ function drawPortCircle(
   ctx.stroke()
 }
 
-function drawDragHandle(ctx: CanvasRenderingContext2D, x: number, y: number) {
+function drawDragHandle(ctx: CanvasRenderingContext2D, x: number, y: number, color: string = '#FF9500') {
   ctx.beginPath()
   ctx.arc(x, y, 13, 0, Math.PI * 2)
-  ctx.fillStyle = '#FF9500'
+  ctx.fillStyle = color
   ctx.fill()
   ctx.strokeStyle = '#ffffff'
   ctx.lineWidth = 2.5
