@@ -2518,8 +2518,15 @@ export default function FlowSchemaView({
           onStepPreview?.(nodeId)
         }
       }}
-      className="relative overflow-hidden bg-gray-50 rounded-lg border border-gray-200"
-      style={{ cursor: getCursor(), width: '100%', height: '100%', minHeight: '500px' }}
+      onDragStart={(e) => e.preventDefault()}
+      className="relative overflow-hidden bg-gray-50 rounded-lg border border-gray-200 select-none"
+      style={{
+        cursor: getCursor(),
+        width: '100%',
+        height: '100%',
+        minHeight: '500px',
+        WebkitUserDrag: 'none',
+      } as React.CSSProperties}
     >
       <canvas
         ref={canvasRef}
