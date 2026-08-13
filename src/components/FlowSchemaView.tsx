@@ -238,6 +238,48 @@ export default function FlowSchemaView({
   // Guarded by a ref so we only auto-fit ONCE per mount — subsequent
   // step edits shouldn't yank the user's view.
   const hasAutoFittedRef = useRef(false)
+
+  // Combined-pair port re-anchoring. When step A is combined with a
+  // partner B (A.combinedWithId = B) and B sits to the right of A in
+  // the canvas, the visual "combined box" is [A ⋅ B]. Connections
+  // OUT of the pair should leave from B's right port (rightmost),
+  // connections IN should enter A's left port (leftmost). Data (which
+  // step owns the connection) is unchanged — only rendering shifts.
+  const getVisualRightmost = useCallback((stepId: string): string => {
+    const step = steps.find((s) => s.id === stepId)
+    if (!step) return stepId
+    const partnerId = (step as any).combinedWithId as string | null | undefined
+    if (partnerId) {
+      const sp = positions[stepId]
+      const pp = positions[partnerId]
+      if (sp && pp && pp.x > sp.x) return partnerId
+    }
+    // Also check reverse pairing: some other step declares us as its partner.
+    const reverse = steps.find((s) => (s as any).combinedWithId === stepId)
+    if (reverse) {
+      const sp = positions[stepId]
+      const rp = positions[reverse.id]
+      if (sp && rp && rp.x > sp.x) return reverse.id
+    }
+    return stepId
+  }, [steps, positions])
+  const getVisualLeftmost = useCallback((stepId: string): string => {
+    const step = steps.find((s) => s.id === stepId)
+    if (!step) return stepId
+    const partnerId = (step as any).combinedWithId as string | null | undefined
+    if (partnerId) {
+      const sp = positions[stepId]
+      const pp = positions[partnerId]
+      if (sp && pp && pp.x < sp.x) return partnerId
+    }
+    const reverse = steps.find((s) => (s as any).combinedWithId === stepId)
+    if (reverse) {
+      const sp = positions[stepId]
+      const rp = positions[reverse.id]
+      if (sp && rp && rp.x < sp.x) return reverse.id
+    }
+    return stepId
+  }, [steps, positions])
   // In-app confirmation modal. Replaces browser confirm() so the dialog
   // matches the app chrome instead of the OS/browser default.
   const [confirmDialog, setConfirmDialog] = useState<
@@ -1665,8 +1707,15 @@ export default function FlowSchemaView({
     // overlap (backward loopbacks), the lane-routing system below assigns
     // each its own bezier path.
     for (const conn of allConnections) {
-      const sourcePos = positions[conn.sourceId]
-      const targetPos = positions[conn.targetId]
+      // For combined pairs, the visual OUT anchors to the rightmost card
+      // of the pair (usually the question partner) and the visual IN
+      // anchors to the leftmost card (usually the video primary). Data
+      // is unchanged — only the port positions shift so lines leave/
+      // enter the "combined box" edge instead of an interior seam.
+      const visualSourceId = getVisualRightmost(conn.sourceId)
+      const visualTargetId = getVisualLeftmost(conn.targetId)
+      const sourcePos = positions[visualSourceId] ?? positions[conn.sourceId]
+      const targetPos = positions[visualTargetId] ?? positions[conn.targetId]
       if (!sourcePos || !targetPos) continue
       // Every arrow attaches to the step's single OUT and IN ports — same
       // point regardless of how many other arrows leave/enter the same node.
@@ -3218,7 +3267,13 @@ export default function FlowSchemaView({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={() => setHoveredPort(null)}
+      onMouseLeave={() => {
+        // Clear every hover state when the cursor leaves the container so
+        // the cursor doesn't stick as pointer/hand after moving away.
+        setHoveredPort(null)
+        setHoveredNodeId(null)
+        setHoveredArrow(null)
+      }}
       onContextMenu={handleContextMenu}
       onDoubleClick={(e) => {
         const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
