@@ -84,6 +84,7 @@ interface SelectedArrow {
 }
 
 const BUTTON_ARROW_SENTINEL = '__button_arrow__'
+const SELECTED_COLOR = '#2563eb' // blue-600 — clearly distinct from the orange default
 
 // Trace helper for debugging user-reported flow builder issues. Every
 // mutation and mode transition is logged with a [flow] prefix and inline
@@ -173,6 +174,7 @@ export default function FlowSchemaView({
   const [debugConnections, setDebugConnections] = useState(false)
   const [mode, setMode] = useState<InteractionMode>({ type: 'idle' })
   const [hoveredPort, setHoveredPort] = useState<string | null>(null)
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
   const [hoveredArrow, setHoveredArrow] = useState<
     | { kind: 'option'; optionId: string; fromStepId: string }
     | { kind: 'button'; fromStepId: string }
@@ -1278,7 +1280,8 @@ export default function FlowSchemaView({
         const toX = firstPos.x
         const toY = firstPos.y + NODE_H / 2
         const startLane = computeDetourLane(fromX, fromY, toX, toY, new Set([sorted[0].id]))
-        drawConnection(ctx, fromX, fromY, toX, toY, '', false, isStartArrowSelected ? '#FF9500' : '#FF9500', startLane)
+        const isStartHovered = hoveredArrow?.kind === 'start'
+        drawConnection(ctx, fromX, fromY, toX, toY, '', false, isStartArrowSelected ? SELECTED_COLOR : '#FF9500', startLane, isStartHovered && !isStartArrowSelected)
 
         const [sMidX, sMidY] = bezierMid(fromX, fromY, toX, toY, startLane)
 
@@ -1322,7 +1325,13 @@ export default function FlowSchemaView({
       // is redundant. Option arrows keep their answer text.
       const displayLabel = conn.kind === 'button' ? '' : conn.label
 
-      drawConnection(ctx, out.x, out.y, inp.x, inp.y, displayLabel, false, '#FF9500', laneY)
+      const isHovered = hoveredArrow
+        ? conn.kind === 'button'
+          ? hoveredArrow.kind === 'button' && hoveredArrow.fromStepId === conn.sourceId
+          : hoveredArrow.kind === 'option' && hoveredArrow.optionId === conn.optionId
+        : false
+      const lineColor = isSelected ? SELECTED_COLOR : '#FF9500'
+      drawConnection(ctx, out.x, out.y, inp.x, inp.y, displayLabel, false, lineColor, laneY, isHovered && !isSelected)
 
       const [midX, midY] = bezierMid(out.x, out.y, inp.x, inp.y, laneY)
 
@@ -1359,26 +1368,30 @@ export default function FlowSchemaView({
     const endPos = positions[END_ID]
     if (endPos && endMessage !== '') {
       endArrowGeomByStep.forEach((g, stepId) => {
+        const isThisEndSelected =
+          selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
+        const isThisEndHovered =
+          hoveredArrow?.kind === 'end' && hoveredArrow.fromStepId === stepId
+        const endLineColor = isThisEndSelected ? SELECTED_COLOR : '#FF9500'
         // Straight line, not a bezier: with a shared endpoint (End's
         // center), two lines from different sources can meet only at
         // that endpoint. Bezier attempts always weave (see 61fd3b9).
         ctx.beginPath()
-        ctx.strokeStyle = '#FF9500'
-        ctx.lineWidth = 2
-        ctx.setLineDash([])
+        ctx.strokeStyle = endLineColor
+        ctx.lineWidth = isThisEndHovered && !isThisEndSelected ? 2.5 : 2
+        if (isThisEndHovered && !isThisEndSelected) ctx.setLineDash([5, 4])
+        else ctx.setLineDash([])
         ctx.moveTo(g.fromX, g.fromY)
         ctx.lineTo(g.toX, g.toY)
         ctx.stroke()
+        ctx.setLineDash([])
         ctx.beginPath()
         ctx.arc(g.fromX, g.fromY, 5, 0, Math.PI * 2)
-        ctx.fillStyle = '#FF9500'
+        ctx.fillStyle = endLineColor
         ctx.fill()
         ctx.beginPath()
         ctx.arc(g.toX, g.toY, 5, 0, Math.PI * 2)
         ctx.fill()
-
-        const isThisEndSelected =
-          selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
         const eMidX = (g.fromX + g.toX) / 2
         const eMidY = (g.fromY + g.toY) / 2
 
@@ -2262,10 +2275,15 @@ export default function FlowSchemaView({
     if (lineHover) {
       setHoveredArrow(lineHover)
       setHoveredPort('__arrow__')
+      setHoveredNodeId(null)
       return
     }
+    // Not on a port, delete button, insert button, or arrow — check for
+    // a node under the cursor so the cursor can switch to pointer.
+    const nodeHover = hitTestNode(cx, cy)
     setHoveredArrow(null)
     setHoveredPort(null)
+    setHoveredNodeId(nodeHover)
   }
 
   const handleMouseUp = (e: React.MouseEvent) => {
@@ -2508,6 +2526,7 @@ export default function FlowSchemaView({
     if (hoveredPort === '__delete__' || hoveredPort === '__arrow_delete__') return 'pointer'
     if (hoveredPort === '__arrow__') return 'pointer'
     if (hoveredPort) return 'pointer'
+    if (hoveredNodeId) return 'pointer'
     return 'grab'
   }
 
@@ -2752,15 +2771,17 @@ function drawConnection(
   label: string,
   isDraft: boolean,
   color?: string,
-  laneY?: number
+  laneY?: number,
+  isHovered?: boolean
 ) {
   const lineColor = color || '#FF9500'
   const [c1x, c1y, c2x, c2y] = bezierCps(fromX, fromY, toX, toY, laneY)
 
   ctx.beginPath()
   ctx.strokeStyle = isDraft ? '#FF9500' : lineColor
-  ctx.lineWidth = isDraft ? 2.5 : 2
+  ctx.lineWidth = isDraft ? 2.5 : isHovered ? 2.5 : 2
   if (isDraft) ctx.setLineDash([6, 4])
+  else if (isHovered) ctx.setLineDash([5, 4])
   else ctx.setLineDash([])
 
   ctx.moveTo(fromX, fromY)
