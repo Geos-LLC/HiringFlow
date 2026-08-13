@@ -1518,8 +1518,15 @@ export default function FlowBuilderPage() {
 
   const renderEndEditor = () => renderScreenEditor('end')
 
+  const isSchemaFullscreen = viewMode === 'schema'
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)]">
+    <div
+      className={
+        isSchemaFullscreen
+          ? 'fixed inset-0 z-40 flex flex-col bg-white p-4'
+          : 'flex flex-col h-[calc(100vh-12rem)]'
+      }
+    >
       <VideoRecorderModal
         open={recorderTarget !== null}
         onClose={() => setRecorderTarget(null)}
