@@ -394,10 +394,14 @@ export default function FlowSchemaView({
     return null
   }, [steps, getEndStepIds])
 
-  // "Tidy" layout — rising-staircase main chain, terminals placed NEAR
-  // their branching parent (not clustered on the far right). Reference
-  // was clean because branch lines are short — parents' terminals sit
-  // next to them so the arc is a small hop, not a long swoop.
+  // "Tidy" layout — path decomposition.
+  //   Row 0: start from the earliest step (by stepOrder), follow its
+  //          primary successor chain (button → first option → nothing)
+  //          across the canvas until it terminates or hits a step
+  //          that's already placed.
+  //   Row 1..N: pick the next unplaced step and start a new chain
+  //          underneath. Rinse and repeat until every step has a slot.
+  //   Column count is the longest row; End sits one column past that.
   const computeTidyLayout = useCallback((): Record<string, NodePos> => {
     if (steps.length === 0) {
       return {
@@ -407,103 +411,56 @@ export default function FlowSchemaView({
     }
     const posMap: Record<string, NodePos> = {}
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
-    const idToIndex = new Map<string, number>()
-    sorted.forEach((s, i) => idToIndex.set(s.id, i))
+    const stepById = new Map(sorted.map((s) => [s.id, s]))
 
-    const isForwardConnected = (s: typeof sorted[0]) => {
-      if (s.options.some((o) => o.nextStepId && o.nextStepId !== '__end__')) return true
+    const primarySuccessor = (s: typeof sorted[0]): string | null => {
       const btn = (s as any).buttonConfig?.nextStepId
-      if (btn && btn !== '__end__') return true
-      return false
+      if (btn && btn !== '__end__' && stepById.has(btn)) return btn
+      const opt = s.options.find((o) => o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId))?.nextStepId
+      return opt ?? null
     }
-    const isTerminal = (s: typeof sorted[0]) => !isForwardConnected(s)
-    const mainChain = sorted.filter(isForwardConnected)
-    const terminals = sorted.filter(isTerminal)
 
-    // Build a parent index for terminals: for each terminal, find the
-    // main-chain step whose option or button points to it. If multiple
-    // parents, pick the earliest (smallest stepOrder).
-    const parentOfTerminal = new Map<string, string>()
-    for (const t of terminals) {
-      let bestParent: typeof sorted[0] | null = null
-      let bestIdx = Infinity
-      for (const s of mainChain) {
-        const pointsHere =
-          s.options.some((o) => o.nextStepId === t.id) ||
-          (s as any).buttonConfig?.nextStepId === t.id
-        if (!pointsHere) continue
-        const idx = idToIndex.get(s.id) ?? Infinity
-        if (idx < bestIdx) {
-          bestIdx = idx
-          bestParent = s
-        }
+    const placed = new Set<string>()
+    const rows: string[][] = []
+    for (const startStep of sorted) {
+      if (placed.has(startStep.id)) continue
+      const row: string[] = []
+      let current: typeof sorted[0] | null = startStep
+      // Walk the primary chain until it terminates or loops into a
+      // placed step. Guard against pathological cycles by also
+      // checking `row` (a step can appear at most once per row).
+      const rowSeen = new Set<string>()
+      while (current && !placed.has(current.id) && !rowSeen.has(current.id)) {
+        placed.add(current.id)
+        rowSeen.add(current.id)
+        row.push(current.id)
+        const nextId = primarySuccessor(current)
+        current = nextId ? (stepById.get(nextId) ?? null) : null
       }
-      if (bestParent) parentOfTerminal.set(t.id, bestParent.id)
+      rows.push(row)
     }
 
     const TIDY_H_GAP = 60
-    const RISE_PER_COL = Math.round(NODE_H / 4)
+    const maxRowLen = rows.reduce((m, r) => Math.max(m, r.length), 0)
 
-    // Chain: rise from bottom-left to top-right.
-    const chainSpan = Math.max(0, mainChain.length - 1) * RISE_PER_COL
-    const chainCol = new Map<string, number>()  // step.id -> column index
-    mainChain.forEach((step, i) => {
-      chainCol.set(step.id, i + 1)  // reserve col 0 for Start
-      posMap[step.id] = {
-        x: (i + 1) * (NODE_W + TIDY_H_GAP),
-        y: chainSpan - i * RISE_PER_COL,
-      }
-    })
-
-    // Terminals with a known parent: place immediately below the parent
-    // (one row down, same column as the parent's next slot). If several
-    // terminals share a parent, stack them.
-    // Terminals with no known parent: fall back to the far-right column,
-    // stacked vertically.
-    const orphanTerminals: typeof terminals = []
-    const parentBucket = new Map<string, string[]>()  // parentId -> [terminalId]
-    for (const t of terminals) {
-      const parentId = parentOfTerminal.get(t.id)
-      if (!parentId) { orphanTerminals.push(t); continue }
-      const list = parentBucket.get(parentId) ?? []
-      list.push(t.id)
-      parentBucket.set(parentId, list)
-    }
-    parentBucket.forEach((termIds, parentId) => {
-      const parentPos = posMap[parentId]
-      const parentColIdx = chainCol.get(parentId) ?? mainChain.length
-      // Place terminals one column to the right of parent, stacked
-      // downward starting just below parent's Y.
-      termIds.forEach((tid, k) => {
-        posMap[tid] = {
-          x: (parentColIdx + 1) * (NODE_W + TIDY_H_GAP),
-          y: parentPos.y + (k + 1) * (NODE_H + V_GAP),
+    // Assign x/y based on (row, col).
+    rows.forEach((row, r) => {
+      row.forEach((stepId, c) => {
+        posMap[stepId] = {
+          x: (c + 1) * (NODE_W + TIDY_H_GAP),  // col 0 reserved for Start
+          y: r * (NODE_H + V_GAP),
         }
       })
     })
 
-    // Orphan terminals — no parent in the main chain. Rare; put them in
-    // the column past the last main-chain step, stacked below chain baseline.
-    if (orphanTerminals.length > 0) {
-      const orphanCol = mainChain.length + 1
-      orphanTerminals.forEach((t, k) => {
-        posMap[t.id] = {
-          x: orphanCol * (NODE_W + TIDY_H_GAP),
-          y: chainSpan + (k + 1) * (NODE_H + V_GAP),
-        }
-      })
-    }
-
-    // Start on the far left, End on the far right, both vertically
-    // centered against the combined bounds.
-    const allTops = Object.values(posMap).map((p) => p.y)
-    const contentTop = Math.min(...allTops)
-    const contentBot = Math.max(...allTops) + NODE_H
-    const midY = (contentTop + contentBot) / 2
+    // Start on the far left, End one column past the longest row —
+    // exactly what the user described: "if it's longer just move the
+    // End further right." Vertically center both against the row band.
+    const totalRows = rows.length
+    const midY = ((totalRows - 1) * (NODE_H + V_GAP)) / 2 + NODE_H / 2
     posMap[START_ID] = { x: 0, y: midY - SPECIAL_H / 2 }
-    const rightmostX = Math.max(...Object.values(posMap).map((p) => p.x))
     posMap[END_ID] = {
-      x: rightmostX + NODE_W + TIDY_H_GAP,
+      x: (maxRowLen + 1) * (NODE_W + TIDY_H_GAP),
       y: midY - SPECIAL_H / 2,
     }
     return posMap
