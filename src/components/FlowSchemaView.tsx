@@ -85,6 +85,18 @@ interface SelectedArrow {
 
 const BUTTON_ARROW_SENTINEL = '__button_arrow__'
 
+// Trace helper for debugging user-reported flow builder issues. Every
+// mutation and mode transition is logged with a [flow] prefix and inline
+// JSON so the user can filter DevTools console and paste back. Rip these
+// out once the current investigation is done.
+const flowTrace = (topic: string, data?: unknown) => {
+  const payload = data !== undefined
+    ? ' ' + (() => { try { return JSON.stringify(data) } catch { return '[unserializable]' } })()
+    : ''
+  // eslint-disable-next-line no-console
+  console.log(`[flow] ${topic}${payload}`)
+}
+
 const NODE_W = 280
 const THUMB_H = 140
 const NODE_H = 30 + THUMB_H + 40 // 210: title bar + thumb + answer bar
@@ -184,13 +196,17 @@ export default function FlowSchemaView({
         const tag = (e.target as HTMLElement)?.tagName
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
+        flowTrace('key.delete', { selectedArrow, selectedStepId })
+
         // Arrow selection wins over step selection — clicking an arrow
         // doesn't clear the previously-selected step, so if we let step
         // deletion take priority, users trying to delete a connection
         // get asked about the unrelated step they'd clicked earlier.
         if (selectedArrow) {
           e.preventDefault()
-          if (confirm('Remove this connection?')) {
+          const confirmed = confirm('Remove this connection?')
+          flowTrace('key.delete.arrow.confirm', { kind: selectedArrow.kind, confirmed })
+          if (confirmed) {
             if (selectedArrow.kind === 'end') {
               // Explicit button→__end__ just clears the button target.
               // Implicit end arrows have no per-arrow data — the only way
@@ -199,16 +215,24 @@ export default function FlowSchemaView({
               const src = steps.find((s) => s.id === selectedArrow.stepId)
               const isExplicitButtonToEnd =
                 (src as any)?.buttonConfig?.nextStepId === '__end__'
+              flowTrace('key.delete.arrow.end', {
+                stepId: selectedArrow.stepId,
+                isExplicitButtonToEnd,
+                action: isExplicitButtonToEnd ? 'onButtonConfigUpdate(null)' : 'onClearEndScreen()',
+              })
               if (isExplicitButtonToEnd) {
                 onButtonConfigUpdate?.(selectedArrow.stepId, null)
               } else {
                 onClearEndScreen?.()
               }
             } else if (selectedArrow.kind === 'button') {
+              flowTrace('key.delete.arrow.button', { stepId: selectedArrow.stepId })
               onButtonConfigUpdate?.(selectedArrow.stepId, null)
             } else if (selectedArrow.kind === 'start') {
+              flowTrace('key.delete.arrow.start')
               onClearStartScreen?.()
             } else if (selectedArrow.kind === 'option' || !selectedArrow.kind) {
+              flowTrace('key.delete.arrow.option', { optionId: (selectedArrow as any).optionId })
               onOptionUpdate?.((selectedArrow as any).optionId, { nextStepId: null })
             }
             setSelectedArrow(null)
@@ -216,9 +240,14 @@ export default function FlowSchemaView({
         } else if (selectedStepId && selectedStepId !== START_ID && selectedStepId !== END_ID) {
           // Only delete if the step actually exists in the current steps array
           const stepExists = steps.some(s => s.id === selectedStepId)
-          if (!stepExists) return
+          if (!stepExists) {
+            flowTrace('key.delete.step.skipped', { reason: 'step not in current list', selectedStepId })
+            return
+          }
           e.preventDefault()
-          if (confirm('Delete this step?')) {
+          const confirmed = confirm('Delete this step?')
+          flowTrace('key.delete.step.confirm', { selectedStepId, confirmed })
+          if (confirmed) {
             onDeleteStep?.(selectedStepId)
           }
         }
@@ -227,6 +256,20 @@ export default function FlowSchemaView({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [selectedStepId, selectedArrow, onDeleteStep, onOptionUpdate, onButtonConfigUpdate, onClearStartScreen, onClearEndScreen])
+
+  // Trace selection changes so we know what's selected when the user hits Delete.
+  useEffect(() => {
+    flowTrace('selection.arrow', selectedArrow)
+  }, [selectedArrow])
+  useEffect(() => {
+    flowTrace('selection.step', { selectedStepId })
+  }, [selectedStepId])
+  // Trace mode transitions so we can tell if a drag/reconnect/pan actually
+  // ended (mode → idle) or is stuck. Only logs kind, not full mode object,
+  // to keep the stream readable.
+  useEffect(() => {
+    flowTrace('mode', { type: mode.type })
+  }, [mode.type])
 
   // Find terminal options (options with no nextStepId) and submission steps
   const getTerminalOptionIds = useCallback(() => {

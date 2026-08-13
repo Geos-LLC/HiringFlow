@@ -18,6 +18,17 @@ import CaptureStepConfigPanel from './_CaptureStepConfigPanel'
 import { useUploads } from '../../../_components/UploadProvider'
 import { videoBlobCache } from '@/lib/video-blob-cache'
 
+// Trace helper mirrored in FlowSchemaView — logs mutation calls with a
+// [flow] prefix so the user can filter DevTools and paste back. Temporary
+// instrumentation for active debugging; rip out when done.
+const flowTrace = (topic: string, data?: unknown) => {
+  const payload = data !== undefined
+    ? ' ' + (() => { try { return JSON.stringify(data) } catch { return '[unserializable]' } })()
+    : ''
+  // eslint-disable-next-line no-console
+  console.log(`[flow] ${topic}${payload}`)
+}
+
 interface Video {
   id: string
   filename: string
@@ -751,6 +762,7 @@ export default function FlowBuilderPage() {
   }
 
   const updateStep = async (stepId: string, data: Partial<Step>) => {
+    flowTrace('api.updateStep.start', { stepId, keys: Object.keys(data) })
     markChanged()
     setSaving(true)
     const res = await fetch(`/api/steps/${stepId}`, {
@@ -758,6 +770,7 @@ export default function FlowBuilderPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
+    flowTrace('api.updateStep.result', { stepId, ok: res.ok, status: res.status })
     if (res.ok) {
       const updated = await res.json()
       setFlow((f) =>
@@ -817,6 +830,7 @@ export default function FlowBuilderPage() {
   }
 
   const deleteStep = (stepId: string) => {
+    flowTrace('api.deleteStep.start', { stepId })
     markChanged()
 
     // Identify steps that reference the deleted one via JSON / non-FK fields,
@@ -827,6 +841,7 @@ export default function FlowBuilderPage() {
     const combinedRefStepIds = (flow?.steps ?? [])
       .filter((s) => s.id !== stepId && s.combinedWithId === stepId)
       .map((s) => s.id)
+    flowTrace('api.deleteStep.refs', { stepId, buttonRefStepIds, combinedRefStepIds })
 
     // Optimistic UI update — remove the step and clear every reference to it
     setFlow((f) =>
@@ -877,10 +892,14 @@ export default function FlowBuilderPage() {
   }
 
   const changeFirstStep = (newFirstStepId: string) => {
+    flowTrace('api.changeFirstStep.start', { newFirstStepId })
     markChanged()
-    if (!flow) return
+    if (!flow) { flowTrace('api.changeFirstStep.bail', { reason: 'no flow' }); return }
     const sorted = [...flow.steps].sort((a, b) => a.stepOrder - b.stepOrder)
-    if (sorted[0]?.id === newFirstStepId) return
+    if (sorted[0]?.id === newFirstStepId) {
+      flowTrace('api.changeFirstStep.noop', { reason: 'already first' })
+      return
+    }
 
     // Give the new first step order -1 (before all others) instead of swapping
     const minOrder = Math.min(...flow.steps.map((s) => s.stepOrder)) - 1
@@ -928,12 +947,14 @@ export default function FlowBuilderPage() {
     optionId: string,
     data: { optionText?: string; nextStepId?: string | null }
   ) => {
+    flowTrace('api.updateOption.start', { optionId, data })
     markChanged()
     const res = await fetch(`/api/options/${optionId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
+    flowTrace('api.updateOption.result', { optionId, ok: res.ok, status: res.status })
     if (res.ok) {
       const updated = await res.json()
       setFlow((f) =>
@@ -951,6 +972,7 @@ export default function FlowBuilderPage() {
   }
 
   const connectSteps = async (fromStepId: string, toStepId: string): Promise<string | null> => {
+    flowTrace('api.connectSteps.start', { fromStepId, toStepId })
     markChanged()
     // Create a new option on the source step pointing to the target
     const res = await fetch(`/api/steps/${fromStepId}/options`, {
@@ -958,14 +980,16 @@ export default function FlowBuilderPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ optionText: 'Continue' }),
     })
+    flowTrace('api.connectSteps.postOption', { fromStepId, ok: res.ok, status: res.status })
     if (res.ok) {
       const newOption = await res.json()
       // Set the nextStepId
-      await fetch(`/api/options/${newOption.id}`, {
+      const patchRes = await fetch(`/api/options/${newOption.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nextStepId: toStepId }),
       })
+      flowTrace('api.connectSteps.patchNext', { optionId: newOption.id, ok: patchRes.ok, status: patchRes.status })
       // Optimistic update
       setFlow((f) =>
         f
@@ -985,7 +1009,8 @@ export default function FlowBuilderPage() {
   }
 
   const updateButtonConfigNext = async (stepId: string, nextStepId: string | null) => {
-    if (!flow) return
+    flowTrace('api.updateButtonConfigNext.start', { stepId, nextStepId })
+    if (!flow) { flowTrace('api.updateButtonConfigNext.bail', { reason: 'no flow' }); return }
     markChanged()
     const step = flow.steps.find((s) => s.id === stepId)
     const newButton = {
@@ -1002,11 +1027,12 @@ export default function FlowBuilderPage() {
           }
         : null
     )
-    await fetch(`/api/steps/${stepId}`, {
+    const res = await fetch(`/api/steps/${stepId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ buttonConfig: newButton }),
     })
+    flowTrace('api.updateButtonConfigNext.result', { stepId, ok: res.ok, status: res.status })
   }
 
   const insertStepOnArrow = (
@@ -1023,8 +1049,10 @@ export default function FlowBuilderPage() {
   }
 
   const deleteOption = async (stepId: string, optionId: string) => {
+    flowTrace('api.deleteOption.start', { stepId, optionId })
     markChanged()
-    await fetch(`/api/options/${optionId}`, { method: 'DELETE' })
+    const res = await fetch(`/api/options/${optionId}`, { method: 'DELETE' })
+    flowTrace('api.deleteOption.result', { optionId, ok: res.ok, status: res.status })
     setFlow((f) =>
       f
         ? {
@@ -1040,6 +1068,7 @@ export default function FlowBuilderPage() {
   }
 
   const updateFlow = async (data: { startMessage?: string; endMessage?: string }) => {
+    flowTrace('api.updateFlow.start', { flowId, data })
     markChanged()
     setSaving(true)
     const res = await fetch(`/api/flows/${flowId}`, {
@@ -1047,6 +1076,7 @@ export default function FlowBuilderPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
+    flowTrace('api.updateFlow.result', { flowId, ok: res.ok, status: res.status })
     if (res.ok) {
       const updated = await res.json()
       setFlow((f) => (f ? { ...f, ...updated } : null))
