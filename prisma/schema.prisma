@@ -792,6 +792,13 @@ model FlowStep {
   infoContent      String?               @map("info_content")
   buttonConfig     Json?                 @map("button_config")
   combinedWithId   String?               @map("combined_with_id")
+  // Per-step suppression of the auto-drawn End arrow in the schema view.
+  // Only meaningful when the step is a leaf (no forward option/button). Set
+  // to true when the recruiter explicitly deletes the implicit End arrow
+  // for this step; other leaves' End arrows stay put. Publish guard treats
+  // a step with hideEndArrow=true the same as a step with a forward
+  // connection (i.e. not requiring the End arrow visible).
+  hideEndArrow     Boolean               @default(false) @map("hide_end_arrow")
   captionsEnabled  Boolean               @default(false) @map("captions_enabled")
   captionStyle     Json?                 @map("caption_style")
   // Validated by parseCaptureConfig (src/lib/capture/capture-config.ts). Shape:

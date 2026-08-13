@@ -68,6 +68,7 @@ interface Step {
   captureConfig?: unknown
   trainingId?: string | null
   schedulingConfigId?: string | null
+  hideEndArrow?: boolean
   options: Option[]
 }
 
@@ -1826,6 +1827,12 @@ export default function FlowBuilderPage() {
                 pushUndo({ run: () => updateFlow({ endMessage: prior }) })
               }
               updateFlow({ endMessage: '' })
+            }}
+            onSuppressEndArrow={(stepId) => {
+              const wasSuppressed = !!flow.steps.find((s) => s.id === stepId)?.hideEndArrow
+              if (wasSuppressed) return
+              pushUndo({ run: () => updateStep(stepId, { hideEndArrow: false } as Partial<Step>) })
+              updateStep(stepId, { hideEndArrow: true } as Partial<Step>)
             }}
             initialPositions={flow.canvasLayout ?? null}
             onPositionsChange={savePositions}

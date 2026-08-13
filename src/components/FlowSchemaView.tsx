@@ -25,6 +25,7 @@ interface Step {
   questionType: string
   combinedWithId?: string | null
   buttonConfig?: { enabled?: boolean; text?: string; nextStepId?: string | null } | null
+  hideEndArrow?: boolean
   options: Option[]
 }
 
@@ -49,6 +50,10 @@ interface FlowSchemaViewProps {
   onButtonConfigUpdate?: (stepId: string, nextStepId: string | null) => void
   onClearStartScreen?: () => void
   onClearEndScreen?: () => void
+  // Suppress THIS step's implicit End arrow (leaf step). Only affects the
+  // arrow for the given step — other leaves and the End card itself stay
+  // put. Called when the recruiter presses Delete on an implicit End arrow.
+  onSuppressEndArrow?: (stepId: string) => void
   selectedStepId?: string | null
   // Persisted canvas layout from the server: { [stepId | '__start__' | '__end__']: {x,y} }.
   // When provided on first render (or when the prop reference changes), those
@@ -147,6 +152,7 @@ export default function FlowSchemaView({
   onButtonConfigUpdate,
   onClearStartScreen,
   onClearEndScreen,
+  onSuppressEndArrow,
   selectedStepId,
   initialPositions,
   onPositionsChange,
@@ -215,21 +221,21 @@ export default function FlowSchemaView({
           if (confirmed) {
             if (selectedArrow.kind === 'end') {
               // Explicit button→__end__ just clears the button target.
-              // Implicit end arrows have no per-arrow data — the only way
-              // to "remove" them is to drop the End screen entirely. The
-              // publish-time guard enforces re-adding it before shipping.
+              // Implicit end arrow: set hideEndArrow=true on THIS step so
+              // only its arrow disappears; End card and other leaves' End
+              // arrows stay put.
               const src = steps.find((s) => s.id === selectedArrow.stepId)
               const isExplicitButtonToEnd =
                 (src as any)?.buttonConfig?.nextStepId === '__end__'
               flowTrace('key.delete.arrow.end', {
                 stepId: selectedArrow.stepId,
                 isExplicitButtonToEnd,
-                action: isExplicitButtonToEnd ? 'onButtonConfigUpdate(null)' : 'onClearEndScreen()',
+                action: isExplicitButtonToEnd ? 'onButtonConfigUpdate(null)' : 'onSuppressEndArrow(stepId)',
               })
               if (isExplicitButtonToEnd) {
                 onButtonConfigUpdate?.(selectedArrow.stepId, null)
               } else {
-                onClearEndScreen?.()
+                onSuppressEndArrow?.(selectedArrow.stepId)
               }
             } else if (selectedArrow.kind === 'button') {
               flowTrace('key.delete.arrow.button', { stepId: selectedArrow.stepId })
@@ -261,7 +267,7 @@ export default function FlowSchemaView({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedStepId, selectedArrow, onDeleteStep, onOptionUpdate, onButtonConfigUpdate, onClearStartScreen, onClearEndScreen])
+  }, [selectedStepId, selectedArrow, onDeleteStep, onOptionUpdate, onButtonConfigUpdate, onClearStartScreen, onClearEndScreen, onSuppressEndArrow])
 
   // Trace selection changes so we know what's selected when the user hits Delete.
   useEffect(() => {
@@ -744,8 +750,17 @@ export default function FlowSchemaView({
     if (!endPos || endMessage === '') return m
 
     const implicitEnds = getEndStepIds()
-    const sourceIds = new Set<string>(implicitEnds)
+    // Steps whose implicit End arrow was individually deleted by the
+    // recruiter (hideEndArrow=true) are excluded — the End card stays
+    // visible, other leaves' arrows stay put, only this arrow disappears.
+    const suppressed = new Set<string>(
+      steps.filter((s) => (s as any).hideEndArrow).map((s) => s.id)
+    )
+    const sourceIds = new Set<string>()
+    implicitEnds.forEach((id) => { if (!suppressed.has(id)) sourceIds.add(id) })
     for (const step of steps) {
+      // Explicit button→__end__ always renders (not affected by hideEndArrow
+      // which only governs the implicit variant).
       if ((step as any).buttonConfig?.nextStepId === '__end__') {
         sourceIds.add(step.id)
       }
