@@ -394,6 +394,76 @@ export default function FlowSchemaView({
     return null
   }, [steps, getEndStepIds])
 
+  // Clean "Tidy" layout: every step gets its own column, spaced uniformly
+  // left-to-right by stepOrder. Combined partners sit immediately to the
+  // right of their host. Terminal / leaf steps that go straight to End are
+  // stacked vertically in the last few columns so their lines to End
+  // don't all pile onto one Y. Used by the toolbar Tidy button.
+  const computeTidyLayout = useCallback((): Record<string, NodePos> => {
+    if (steps.length === 0) {
+      return {
+        [START_ID]: { x: 0, y: 0 },
+        [END_ID]: { x: SPECIAL_W + H_GAP, y: 0 },
+      }
+    }
+    const posMap: Record<string, NodePos> = {}
+    const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
+
+    // Classify: does this step have any forward connection to another
+    // step (option or button)? If not it's a terminal — draws an End
+    // arrow (or button→__end__) and needs its own row so lines to End
+    // don't overlap.
+    const isForwardConnected = (s: typeof sorted[0]) => {
+      if (s.options.some((o) => o.nextStepId && o.nextStepId !== '__end__')) return true
+      const btn = (s as any).buttonConfig?.nextStepId
+      if (btn && btn !== '__end__') return true
+      return false
+    }
+
+    // Main chain: everything with a forward connection, in stepOrder.
+    // Terminals: everything else, in stepOrder.
+    const mainChain = sorted.filter(isForwardConnected)
+    const terminals = sorted.filter((s) => !isForwardConnected(s))
+
+    // Place main chain in one horizontal row at y = 0.
+    mainChain.forEach((step, i) => {
+      posMap[step.id] = {
+        x: (i + 1) * (NODE_W + H_GAP),
+        y: 0,
+      }
+    })
+
+    // Terminals fan out vertically at the right, one column past the last
+    // main-chain step. Each terminal gets its own row so its line to End
+    // sits on its own Y — no overlap.
+    const terminalCol = mainChain.length + 1
+    const terminalCount = terminals.length
+    // Center the terminal stack vertically around y = 0 so it visually
+    // balances the main chain.
+    const terminalYBase = -((terminalCount - 1) / 2) * (NODE_H + V_GAP)
+    terminals.forEach((step, i) => {
+      posMap[step.id] = {
+        x: terminalCol * (NODE_W + H_GAP),
+        y: terminalYBase + i * (NODE_H + V_GAP),
+      }
+    })
+
+    // Start on the far left, End on the far right, both vertically
+    // centered against the overall content bounds.
+    const allY = Object.values(posMap).map((p) => p.y)
+    const midY = allY.length > 0 ? (Math.min(...allY) + Math.max(...allY) + NODE_H) / 2 : 0
+    posMap[START_ID] = {
+      x: 0,
+      y: midY - SPECIAL_H / 2,
+    }
+    const rightmostX = Math.max(...Object.values(posMap).map((p) => p.x))
+    posMap[END_ID] = {
+      x: rightmostX + NODE_W + H_GAP,
+      y: midY - SPECIAL_H / 2,
+    }
+    return posMap
+  }, [steps])
+
   // Compute initial layout
   const computeLayout = useCallback((): Record<string, NodePos> => {
     if (steps.length === 0) {
@@ -2979,16 +3049,19 @@ export default function FlowSchemaView({
         </button>
         <button
           onClick={() => {
-            // Recompute the canonical layout (BFS with uniform horizontal
-            // and vertical gaps) and persist so it survives reload — same
-            // as Reset but does NOT snap zoom/pan, so the current view
-            // stays put.
-            const laid = computeLayout()
+            // Clean linear cascade: each step in its own column at
+            // y = 0, terminals fanned vertically at the right column.
+            // Persisted so it survives reload. After laying out, refit
+            // so the new bounds fit on screen.
+            const laid = computeTidyLayout()
             setPositions(laid)
             onPositionsChange?.(laid)
+            // Deferred fit lets React commit the new positions first so
+            // fitToView sees the fresh bounds.
+            setTimeout(() => fitToView(), 0)
           }}
           className="px-2 py-1 text-gray-600 hover:text-gray-900 text-xs border-l border-gray-200 ml-1"
-          title="Rearrange cards on a uniform grid with even gaps"
+          title="Rearrange cards on a uniform grid: main chain across, terminals down"
         >
           Tidy
         </button>
