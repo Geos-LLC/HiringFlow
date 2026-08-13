@@ -440,9 +440,14 @@ export default function FlowSchemaView({
       rawRows.push(row)
     }
 
-    // Sort rows longest-first so the main chain lands at index 0.
-    // Ties: stable sort keeps discovery order (which is stepOrder).
-    const rows = [...rawRows].sort((a, b) => b.length - a.length)
+    // Row 0 = main chain (longest). Among the remaining branches, the
+    // SHORTER ones sit closer to the top per user rule ("the card
+    // beneath the top card is the card which has less connections").
+    // So: main first, then branches sorted length-ascending.
+    const rowsByLenDesc = [...rawRows].sort((a, b) => b.length - a.length)
+    const main = rowsByLenDesc[0]
+    const branchesShortFirst = rowsByLenDesc.slice(1).sort((a, b) => a.length - b.length)
+    const rows = main ? [main, ...branchesShortFirst] : rowsByLenDesc
 
     const TIDY_H_GAP = 60
 
@@ -469,6 +474,14 @@ export default function FlowSchemaView({
         }
       }
       if (best) rowParent.set(r, best)
+    }
+
+    // Per user: a branch sits under the card that comes AFTER the branch
+    // source in the main chain, not under the source itself. So the
+    // startCol for a branch is parent.col + 1.
+    const startColFor = (r: number): number => {
+      const p = rowParent.get(r)
+      return p ? p.col + 1 : 0
     }
 
     // Compute the effective ROW INDEX and COLUMN OFFSET for each row.
@@ -500,8 +513,7 @@ export default function FlowSchemaView({
     // Main chain claims row 0.
     rowOccupancy.set(0, [[0, rows[0].length - 1]])
     for (let r = 1; r < rows.length; r++) {
-      const parent = rowParent.get(r)
-      const startCol = parent ? parent.col : 0
+      const startCol = startColFor(r)
       const rowIdx = claimRow(rows[r], startCol)
       rowInfo.set(r, { rowIdx, startCol })
     }
