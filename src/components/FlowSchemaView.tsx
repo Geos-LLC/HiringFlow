@@ -228,6 +228,11 @@ export default function FlowSchemaView({
     startScreenY: number
   }
   const pendingPortRef = useRef<PendingPort | null>(null)
+  // Fit-on-mount: when the view opens (component mounts) fit the whole
+  // flow into the viewport so the user sees everything without hunting.
+  // Guarded by a ref so we only auto-fit ONCE per mount — subsequent
+  // step edits shouldn't yank the user's view.
+  const hasAutoFittedRef = useRef(false)
   // In-app confirmation modal. Replaces browser confirm() so the dialog
   // matches the app chrome instead of the OS/browser default.
   const [confirmDialog, setConfirmDialog] = useState<
@@ -2771,6 +2776,53 @@ export default function FlowSchemaView({
     }
   }
 
+  // Fit the whole flow into the viewport. Same math as the Fit button —
+  // extracted so the button click and the auto-fit-on-mount share one code
+  // path. Returns true if it actually applied a fit, so the caller can
+  // decide whether to mark hasAutoFittedRef.
+  const fitToView = useCallback((): boolean => {
+    const container = containerRef.current
+    if (!container) return false
+    const w = container.clientWidth
+    const h = container.clientHeight
+    if (w === 0 || h === 0) return false
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    for (const id of Object.keys(positions)) {
+      const p = positions[id]
+      const nodeW = id === START_ID || id === END_ID ? SPECIAL_W : NODE_W
+      const nodeH = id === START_ID || id === END_ID ? SPECIAL_H : NODE_H
+      if (p.x < minX) minX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.x + nodeW > maxX) maxX = p.x + nodeW
+      if (p.y + nodeH > maxY) maxY = p.y + nodeH
+    }
+    laneYByConn.forEach((laneY) => {
+      if (laneY > maxY) maxY = laneY + 30
+    })
+    if (minX === Infinity) return false
+    const contentW = Math.max(1, maxX - minX)
+    const contentH = Math.max(1, maxY - minY)
+    const padding = 40
+    const scaleX = (w - padding * 2) / contentW
+    const scaleY = (h - padding * 2) / contentH
+    const newScale = Math.max(0.1, Math.min(scaleX, scaleY, 1.5))
+    setScale(newScale)
+    setPan({
+      x: (w - contentW * newScale) / 2 - minX * newScale,
+      y: (h - contentH * newScale) / 2 - minY * newScale,
+    })
+    return true
+  }, [positions, laneYByConn])
+
+  // Auto-fit once when the view first has content + measured dimensions.
+  // Fires on mount → the user sees the whole flow immediately. Skipped
+  // after the first successful fit so later edits don't yank the view.
+  useEffect(() => {
+    if (hasAutoFittedRef.current) return
+    if (steps.length === 0) return
+    if (fitToView()) hasAutoFittedRef.current = true
+  }, [steps.length, fitToView])
+
   // Attach wheel listener to container (not canvas which has pointer-events: none)
   useEffect(() => {
     const container = containerRef.current
@@ -2919,38 +2971,7 @@ export default function FlowSchemaView({
           +
         </button>
         <button
-          onClick={() => {
-            const container = containerRef.current
-            if (!container) return
-            const w = container.clientWidth
-            const h = container.clientHeight
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-            for (const id of Object.keys(positions)) {
-              const p = positions[id]
-              const nodeW = id === START_ID || id === END_ID ? SPECIAL_W : NODE_W
-              const nodeH = id === START_ID || id === END_ID ? SPECIAL_H : NODE_H
-              if (p.x < minX) minX = p.x
-              if (p.y < minY) minY = p.y
-              if (p.x + nodeW > maxX) maxX = p.x + nodeW
-              if (p.y + nodeH > maxY) maxY = p.y + nodeH
-            }
-            // Also include backward-edge lane Ys so loopback paths fit too
-            laneYByConn.forEach((laneY) => {
-              if (laneY > maxY) maxY = laneY + 30
-            })
-            if (minX === Infinity) return
-            const contentW = Math.max(1, maxX - minX)
-            const contentH = Math.max(1, maxY - minY)
-            const padding = 40
-            const scaleX = (w - padding * 2) / contentW
-            const scaleY = (h - padding * 2) / contentH
-            const newScale = Math.max(0.1, Math.min(scaleX, scaleY, 1.5))
-            setScale(newScale)
-            setPan({
-              x: (w - contentW * newScale) / 2 - minX * newScale,
-              y: (h - contentH * newScale) / 2 - minY * newScale,
-            })
-          }}
+          onClick={() => fitToView()}
           className="px-2 py-1 text-gray-600 hover:text-gray-900 text-xs border-l border-gray-200 ml-1"
           title="Fit flow to screen"
         >
