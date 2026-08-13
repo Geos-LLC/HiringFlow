@@ -440,13 +440,34 @@ export default function FlowSchemaView({
       rawRows.push(row)
     }
 
-    // Row 0 = main chain (longest). Among the remaining branches, the
-    // SHORTER ones sit closer to the top per user rule ("the card
-    // beneath the top card is the card which has less connections").
-    // So: main first, then branches sorted length-ascending.
+    // Row 0 = main chain (longest). Among the remaining branches, sort
+    // by TOTAL DOWNSTREAM REACH of each branch's first card — not by
+    // local row length. Path decomposition truncates rows when they
+    // hit already-placed cards, so row.length underestimates how "big"
+    // a branch really is. downstreamReach walks every option/button
+    // from the branch source and counts reachable steps.
+    const downstreamReach = (startId: string): number => {
+      const seen = new Set<string>()
+      const queue: string[] = [startId]
+      while (queue.length) {
+        const id = queue.shift()!
+        if (seen.has(id)) continue
+        seen.add(id)
+        const s = stepById.get(id)
+        if (!s) continue
+        for (const o of s.options) {
+          if (o.nextStepId && o.nextStepId !== '__end__' && !seen.has(o.nextStepId)) queue.push(o.nextStepId)
+        }
+        const btn = (s as any).buttonConfig?.nextStepId
+        if (btn && btn !== '__end__' && !seen.has(btn)) queue.push(btn)
+      }
+      return seen.size
+    }
     const rowsByLenDesc = [...rawRows].sort((a, b) => b.length - a.length)
     const main = rowsByLenDesc[0]
-    const branchesShortFirst = rowsByLenDesc.slice(1).sort((a, b) => a.length - b.length)
+    const branchesShortFirst = rowsByLenDesc
+      .slice(1)
+      .sort((a, b) => downstreamReach(a[0]) - downstreamReach(b[0]))
     const rows = main ? [main, ...branchesShortFirst] : rowsByLenDesc
 
     const TIDY_H_GAP = 60
