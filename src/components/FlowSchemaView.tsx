@@ -394,11 +394,16 @@ export default function FlowSchemaView({
     return null
   }, [steps, getEndStepIds])
 
-  // Clean "Tidy" layout: every step gets its own column, spaced uniformly
-  // left-to-right by stepOrder. Combined partners sit immediately to the
-  // right of their host. Terminal / leaf steps that go straight to End are
-  // stacked vertically in the last few columns so their lines to End
-  // don't all pile onto one Y. Used by the toolbar Tidy button.
+  // "Tidy" layout — matches VideoAsk-style rising staircase reference:
+  //   • Main chain (steps with a forward connection) marches left→right
+  //     across the canvas with each step placed slightly HIGHER than the
+  //     previous — a diagonal rise. First step sits bottom-left, last
+  //     step top-right of the chain band.
+  //   • Terminal / leaf steps (no forward connection) stack vertically in
+  //     one column past the main chain, centered against the middle Y of
+  //     the chain, so their lines to End each get their own row.
+  //   • Start snaps to the far left, End to the far right, both centered
+  //     against the combined bounds.
   const computeTidyLayout = useCallback((): Record<string, NodePos> => {
     if (steps.length === 0) {
       return {
@@ -409,56 +414,56 @@ export default function FlowSchemaView({
     const posMap: Record<string, NodePos> = {}
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
 
-    // Classify: does this step have any forward connection to another
-    // step (option or button)? If not it's a terminal — draws an End
-    // arrow (or button→__end__) and needs its own row so lines to End
-    // don't overlap.
     const isForwardConnected = (s: typeof sorted[0]) => {
       if (s.options.some((o) => o.nextStepId && o.nextStepId !== '__end__')) return true
       const btn = (s as any).buttonConfig?.nextStepId
       if (btn && btn !== '__end__') return true
       return false
     }
-
-    // Main chain: everything with a forward connection, in stepOrder.
-    // Terminals: everything else, in stepOrder.
     const mainChain = sorted.filter(isForwardConnected)
     const terminals = sorted.filter((s) => !isForwardConnected(s))
 
-    // Place main chain in one horizontal row at y = 0.
+    // Tighter horizontal gap for tidy — reference has cards fairly close
+    // together on the X axis so the rising diagonal reads as one shape.
+    const TIDY_H_GAP = 60
+    // Vertical rise per column in the main chain. NODE_H / 4 gives a
+    // gentle staircase — enough to read as diagonal but not so steep
+    // that the chain becomes vertical.
+    const RISE_PER_COL = Math.round(NODE_H / 4)
+
+    // Anchor: first main-chain card sits at the BOTTOM of the chain
+    // band, last one at the TOP. So step i's y = (last-i) * RISE.
+    const chainSpan = Math.max(0, mainChain.length - 1) * RISE_PER_COL
     mainChain.forEach((step, i) => {
       posMap[step.id] = {
-        x: (i + 1) * (NODE_W + H_GAP),
-        y: 0,
+        x: (i + 1) * (NODE_W + TIDY_H_GAP),
+        y: chainSpan - i * RISE_PER_COL,
       }
     })
 
-    // Terminals fan out vertically at the right, one column past the last
-    // main-chain step. Each terminal gets its own row so its line to End
-    // sits on its own Y — no overlap.
+    // Terminals stacked vertically in the column past the main chain,
+    // centered around the middle Y of the chain (chainSpan / 2).
     const terminalCol = mainChain.length + 1
     const terminalCount = terminals.length
-    // Center the terminal stack vertically around y = 0 so it visually
-    // balances the main chain.
-    const terminalYBase = -((terminalCount - 1) / 2) * (NODE_H + V_GAP)
+    const chainMidY = chainSpan / 2
+    const terminalYBase = chainMidY - ((terminalCount - 1) / 2) * (NODE_H + V_GAP)
     terminals.forEach((step, i) => {
       posMap[step.id] = {
-        x: terminalCol * (NODE_W + H_GAP),
+        x: terminalCol * (NODE_W + TIDY_H_GAP),
         y: terminalYBase + i * (NODE_H + V_GAP),
       }
     })
 
     // Start on the far left, End on the far right, both vertically
-    // centered against the overall content bounds.
-    const allY = Object.values(posMap).map((p) => p.y)
-    const midY = allY.length > 0 ? (Math.min(...allY) + Math.max(...allY) + NODE_H) / 2 : 0
-    posMap[START_ID] = {
-      x: 0,
-      y: midY - SPECIAL_H / 2,
-    }
+    // centered against the combined bounds.
+    const allTops = Object.values(posMap).map((p) => p.y)
+    const contentTop = Math.min(...allTops)
+    const contentBot = Math.max(...allTops) + NODE_H
+    const midY = (contentTop + contentBot) / 2
+    posMap[START_ID] = { x: 0, y: midY - SPECIAL_H / 2 }
     const rightmostX = Math.max(...Object.values(posMap).map((p) => p.x))
     posMap[END_ID] = {
-      x: rightmostX + NODE_W + H_GAP,
+      x: rightmostX + NODE_W + TIDY_H_GAP,
       y: midY - SPECIAL_H / 2,
     }
     return posMap
