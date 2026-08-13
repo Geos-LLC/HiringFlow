@@ -2957,9 +2957,24 @@ export default function FlowSchemaView({
           Fit
         </button>
         <button
+          onClick={() => {
+            // Recompute the canonical layout (BFS with uniform horizontal
+            // and vertical gaps) and persist so it survives reload — same
+            // as Reset but does NOT snap zoom/pan, so the current view
+            // stays put.
+            const laid = computeLayout()
+            setPositions(laid)
+            onPositionsChange?.(laid)
+          }}
+          className="px-2 py-1 text-gray-600 hover:text-gray-900 text-xs border-l border-gray-200 ml-1"
+          title="Rearrange cards on a uniform grid with even gaps"
+        >
+          Tidy
+        </button>
+        <button
           onClick={() => { setPositions(computeLayout()); setPan({ x: 40, y: 40 }); setScale(1) }}
           className="px-2 py-1 text-gray-600 hover:text-gray-900 text-xs border-l border-gray-200 ml-1"
-          title="Reset layout"
+          title="Reset layout, zoom, and pan"
         >
           Reset
         </button>
