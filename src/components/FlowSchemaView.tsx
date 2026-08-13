@@ -228,6 +228,12 @@ export default function FlowSchemaView({
     startScreenY: number
   }
   const pendingPortRef = useRef<PendingPort | null>(null)
+  // In-app confirmation modal. Replaces browser confirm() so the dialog
+  // matches the app chrome instead of the OS/browser default.
+  const [confirmDialog, setConfirmDialog] = useState<
+    | { title: string; description?: string; confirmLabel: string; destructive?: boolean; onConfirm: () => void }
+    | null
+  >(null)
 
   // Keyboard: Delete/Backspace deletes selected step
   useEffect(() => {
@@ -244,39 +250,44 @@ export default function FlowSchemaView({
         // get asked about the unrelated step they'd clicked earlier.
         if (selectedArrow) {
           e.preventDefault()
-          const confirmed = confirm('Remove this connection?')
-          flowTrace('key.delete.arrow.confirm', { kind: selectedArrow.kind, confirmed })
-          if (confirmed) {
-            if (selectedArrow.kind === 'end') {
-              // Explicit button→__end__ just clears the button target.
-              // Implicit end arrow: set hideEndArrow=true on THIS step so
-              // only its arrow disappears; End card and other leaves' End
-              // arrows stay put.
-              const src = steps.find((s) => s.id === selectedArrow.stepId)
-              const isExplicitButtonToEnd =
-                (src as any)?.buttonConfig?.nextStepId === '__end__'
-              flowTrace('key.delete.arrow.end', {
-                stepId: selectedArrow.stepId,
-                isExplicitButtonToEnd,
-                action: isExplicitButtonToEnd ? 'onButtonConfigUpdate(null)' : 'onSuppressEndArrow(stepId)',
-              })
-              if (isExplicitButtonToEnd) {
-                onButtonConfigUpdate?.(selectedArrow.stepId, null)
-              } else {
-                onSuppressEndArrow?.(selectedArrow.stepId)
+          const arrow = selectedArrow
+          setConfirmDialog({
+            title: 'Remove this connection?',
+            confirmLabel: 'Remove',
+            destructive: true,
+            onConfirm: () => {
+              flowTrace('key.delete.arrow.confirm', { kind: arrow.kind })
+              if (arrow.kind === 'end') {
+                // Explicit button→__end__ just clears the button target.
+                // Implicit end arrow: set hideEndArrow=true on THIS step so
+                // only its arrow disappears; End card and other leaves' End
+                // arrows stay put.
+                const src = steps.find((s) => s.id === arrow.stepId)
+                const isExplicitButtonToEnd =
+                  (src as any)?.buttonConfig?.nextStepId === '__end__'
+                flowTrace('key.delete.arrow.end', {
+                  stepId: arrow.stepId,
+                  isExplicitButtonToEnd,
+                  action: isExplicitButtonToEnd ? 'onButtonConfigUpdate(null)' : 'onSuppressEndArrow(stepId)',
+                })
+                if (isExplicitButtonToEnd) {
+                  onButtonConfigUpdate?.(arrow.stepId, null)
+                } else {
+                  onSuppressEndArrow?.(arrow.stepId)
+                }
+              } else if (arrow.kind === 'button') {
+                flowTrace('key.delete.arrow.button', { stepId: arrow.stepId })
+                onButtonConfigUpdate?.(arrow.stepId, null)
+              } else if (arrow.kind === 'start') {
+                flowTrace('key.delete.arrow.start')
+                onClearStartScreen?.()
+              } else if (arrow.kind === 'option' || !arrow.kind) {
+                flowTrace('key.delete.arrow.option', { optionId: (arrow as any).optionId })
+                onOptionUpdate?.((arrow as any).optionId, { nextStepId: null })
               }
-            } else if (selectedArrow.kind === 'button') {
-              flowTrace('key.delete.arrow.button', { stepId: selectedArrow.stepId })
-              onButtonConfigUpdate?.(selectedArrow.stepId, null)
-            } else if (selectedArrow.kind === 'start') {
-              flowTrace('key.delete.arrow.start')
-              onClearStartScreen?.()
-            } else if (selectedArrow.kind === 'option' || !selectedArrow.kind) {
-              flowTrace('key.delete.arrow.option', { optionId: (selectedArrow as any).optionId })
-              onOptionUpdate?.((selectedArrow as any).optionId, { nextStepId: null })
-            }
-            setSelectedArrow(null)
-          }
+              setSelectedArrow(null)
+            },
+          })
         } else if (selectedStepId && selectedStepId !== START_ID && selectedStepId !== END_ID) {
           // Only delete if the step actually exists in the current steps array
           const stepExists = steps.some(s => s.id === selectedStepId)
@@ -285,11 +296,18 @@ export default function FlowSchemaView({
             return
           }
           e.preventDefault()
-          const confirmed = confirm('Delete this step?')
-          flowTrace('key.delete.step.confirm', { selectedStepId, confirmed })
-          if (confirmed) {
-            onDeleteStep?.(selectedStepId)
-          }
+          const sid = selectedStepId
+          const stepTitle = steps.find((s) => s.id === sid)?.title || 'this step'
+          setConfirmDialog({
+            title: 'Delete this step?',
+            description: `"${stepTitle}" and every connection touching it will be removed. Candidate history on this step will also be deleted.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+              flowTrace('key.delete.step.confirm', { selectedStepId: sid })
+              onDeleteStep?.(sid)
+            },
+          })
         }
       }
     }
@@ -2958,6 +2976,53 @@ export default function FlowSchemaView({
       <div className="absolute top-3 left-3 text-xs text-gray-400 pointer-events-none">
         Click to select &middot; Double-click to preview &middot; Drag to move &middot; Click arrow to select &middot; Drag arrowhead to reconnect
       </div>
+
+      {/* In-app confirm modal (replaces browser confirm()) */}
+      {confirmDialog && (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-black/40"
+            onClick={() => setConfirmDialog(null)}
+          />
+          <div
+            data-schema-popup="confirm"
+            role="dialog"
+            aria-modal="true"
+            className="fixed z-[70] top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-lg shadow-xl border border-gray-200 min-w-[340px] max-w-[440px] p-5"
+          >
+            <h3 className="text-base font-semibold text-gray-900">{confirmDialog.title}</h3>
+            {confirmDialog.description && (
+              <p className="mt-2 text-sm text-gray-600 leading-snug">{confirmDialog.description}</p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => {
+                  const cb = confirmDialog.onConfirm
+                  setConfirmDialog(null)
+                  cb()
+                }}
+                className={
+                  'px-3 py-1.5 text-sm rounded-md text-white ' +
+                  (confirmDialog.destructive
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-brand-500 hover:bg-brand-600')
+                }
+              >
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Context menu */}
       {contextMenu && (
