@@ -421,7 +421,7 @@ export default function FlowSchemaView({
     }
 
     const placed = new Set<string>()
-    const rows: string[][] = []
+    const rawRows: string[][] = []
     for (const startStep of sorted) {
       if (placed.has(startStep.id)) continue
       const row: string[] = []
@@ -437,8 +437,13 @@ export default function FlowSchemaView({
         const nextId = primarySuccessor(current)
         current = nextId ? (stepById.get(nextId) ?? null) : null
       }
-      rows.push(row)
+      rawRows.push(row)
     }
+
+    // Per user request: longest row on top, shorter rows underneath so
+    // the layout reads as "main chain first, branches beneath."
+    // Ties broken by the row's original discovery order (stable sort).
+    const rows = [...rawRows].sort((a, b) => b.length - a.length)
 
     const TIDY_H_GAP = 60
     const maxRowLen = rows.reduce((m, r) => Math.max(m, r.length), 0)
