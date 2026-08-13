@@ -151,9 +151,14 @@ export default function FlowBuilderPage() {
   const pushUndo = (entry: UndoEntry) => {
     undoStackRef.current.push(entry)
     if (undoStackRef.current.length > 50) undoStackRef.current.shift()
+    flowTrace('undo.push', { newLength: undoStackRef.current.length })
     setUndoVersion((v) => v + 1)
   }
   const handleUndo = async () => {
+    flowTrace('undo.click', {
+      inFlight: undoInFlightRef.current,
+      stackLength: undoStackRef.current.length,
+    })
     if (undoInFlightRef.current) return
     const entry = undoStackRef.current.pop()
     if (!entry) return
@@ -161,7 +166,9 @@ export default function FlowBuilderPage() {
     undoInFlightRef.current = true
     try {
       await entry.run()
+      flowTrace('undo.ok', { remaining: undoStackRef.current.length })
     } catch (err) {
+      flowTrace('undo.failed', { error: err instanceof Error ? err.message : String(err) })
       console.error('undo failed', err)
     } finally {
       undoInFlightRef.current = false
@@ -516,6 +523,13 @@ export default function FlowBuilderPage() {
 
       await fetchFlow()
       setSelectedStepId(newStep.id)
+      // Undo for "Add step" = delete the newly-created step. Cascade of
+      // wiring set up above (combine partner, insert-on-arrow rewire) is
+      // NOT individually reversed — the step delete cascade covers most
+      // of it, and the alternative is a per-op inverse chain that's much
+      // heavier than most flow-builder undos justify.
+      const newStepId: string = newStep.id
+      pushUndo({ run: () => { deleteStep(newStepId) } })
     }
   }
 
@@ -834,17 +848,41 @@ export default function FlowBuilderPage() {
     flowTrace('api.deleteStep.start', { stepId })
     markChanged()
 
+    // Compute the deleted step's "outgoing target" so we can auto-heal a
+    // middle-of-chain delete: 1 → 2 → 3, remove 2, get 1 → 3.
+    // Prefer the Continue-button target; fall back to the first option with
+    // a real nextStepId. '__end__' isn't a rewire target (it's a terminal),
+    // so null it. If the step is a leaf, no rewire — incoming refs go to null.
+    const deleted = flow?.steps.find((s) => s.id === stepId)
+    const outgoingTarget: string | null = (() => {
+      const btn = deleted?.buttonConfig?.nextStepId
+      if (btn && btn !== '__end__') return btn
+      const optNext = deleted?.options.find((o) => o.nextStepId && o.nextStepId !== '__end__')?.nextStepId
+      return optNext ?? null
+    })()
+
     // Identify steps that reference the deleted one via JSON / non-FK fields,
-    // so we can also clear those on the server (DB only auto-clears option.nextStepId).
+    // so we can also PATCH those on the server (DB only auto-clears option.nextStepId).
     const buttonRefStepIds = (flow?.steps ?? [])
       .filter((s) => s.id !== stepId && s.buttonConfig?.nextStepId === stepId)
       .map((s) => s.id)
     const combinedRefStepIds = (flow?.steps ?? [])
       .filter((s) => s.id !== stepId && s.combinedWithId === stepId)
       .map((s) => s.id)
-    flowTrace('api.deleteStep.refs', { stepId, buttonRefStepIds, combinedRefStepIds })
+    // Options that pointed at the deleted step — need explicit PATCHes to
+    // rewire to outgoingTarget. If outgoingTarget is null, the DB's FK
+    // SetNull cascade handles them and we skip the extra work.
+    const optionRewires = outgoingTarget
+      ? (flow?.steps ?? [])
+          .flatMap((s) => s.options)
+          .filter((o) => o.nextStepId === stepId)
+          .map((o) => o.id)
+      : []
+    flowTrace('api.deleteStep.refs', {
+      stepId, outgoingTarget, buttonRefStepIds, combinedRefStepIds, optionRewires,
+    })
 
-    // Optimistic UI update — remove the step and clear every reference to it
+    // Optimistic UI update — remove the step and rewire (or clear) refs.
     setFlow((f) =>
       f
         ? {
@@ -854,11 +892,11 @@ export default function FlowBuilderPage() {
               .map((s) => ({
                 ...s,
                 options: s.options.map((o) =>
-                  o.nextStepId === stepId ? { ...o, nextStepId: null } : o
+                  o.nextStepId === stepId ? { ...o, nextStepId: outgoingTarget } : o
                 ),
                 buttonConfig:
                   s.buttonConfig?.nextStepId === stepId
-                    ? { ...s.buttonConfig, nextStepId: null }
+                    ? { ...s.buttonConfig, nextStepId: outgoingTarget }
                     : s.buttonConfig,
                 combinedWithId: s.combinedWithId === stepId ? null : s.combinedWithId,
               })),
@@ -888,7 +926,7 @@ export default function FlowBuilderPage() {
       fetchFlow()
     })
 
-    // Server: clear non-FK references that the DB won't auto-clean
+    // Server: rewire (or clear) non-FK references.
     for (const refId of buttonRefStepIds) {
       const ref = flow?.steps.find((s) => s.id === refId)
       if (!ref) continue
@@ -896,7 +934,7 @@ export default function FlowBuilderPage() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          buttonConfig: { ...(ref.buttonConfig ?? {}), nextStepId: null },
+          buttonConfig: { ...(ref.buttonConfig ?? {}), nextStepId: outgoingTarget },
         }),
       })
     }
@@ -905,6 +943,16 @@ export default function FlowBuilderPage() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ combinedWithId: null }),
+      })
+    }
+    // Server: rewire options via PATCH BEFORE the FK SetNull kicks in on
+    // DELETE. If PATCH loses the race, the DB nulls the option and we re-
+    // set it on the next fetch cycle; either order converges.
+    for (const optId of optionRewires) {
+      fetch(`/api/options/${optId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nextStepId: outgoingTarget }),
       })
     }
   }
