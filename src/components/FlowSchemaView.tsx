@@ -413,11 +413,53 @@ export default function FlowSchemaView({
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
     const stepById = new Map(sorted.map((s) => [s.id, s]))
 
-    const primarySuccessor = (s: typeof sorted[0]): string | null => {
+    // Depth = length of the longest chain rooted at a given step. Follow
+    // every option/button (not just the first) and take the max, so the
+    // primary chain we walk below is truly the longest, not just the
+    // first-arrived. Cache + cycle-guarded.
+    const depthCache = new Map<string, number>()
+    const inProgress = new Set<string>()
+    const depth = (id: string): number => {
+      const cached = depthCache.get(id)
+      if (cached !== undefined) return cached
+      if (inProgress.has(id)) return 0  // cycle guard
+      inProgress.add(id)
+      const s = stepById.get(id)
+      if (!s) { inProgress.delete(id); depthCache.set(id, 0); return 0 }
+      let best = 0
+      for (const o of s.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) {
+          best = Math.max(best, depth(o.nextStepId))
+        }
+      }
       const btn = (s as any).buttonConfig?.nextStepId
-      if (btn && btn !== '__end__' && stepById.has(btn)) return btn
-      const opt = s.options.find((o) => o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId))?.nextStepId
-      return opt ?? null
+      if (btn && btn !== '__end__' && stepById.has(btn)) {
+        best = Math.max(best, depth(btn))
+      }
+      const d = 1 + best
+      inProgress.delete(id)
+      depthCache.set(id, d)
+      return d
+    }
+
+    // primarySuccessor picks whichever forward connection (button OR any
+    // option) leads to the DEEPEST downstream chain — that's how row 0
+    // becomes the longest possible path from the start, and how each
+    // subsequent row's walk stays as long as possible.
+    const primarySuccessor = (s: typeof sorted[0]): string | null => {
+      const candidates: string[] = []
+      const btn = (s as any).buttonConfig?.nextStepId
+      if (btn && btn !== '__end__' && stepById.has(btn)) candidates.push(btn)
+      for (const o of s.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) candidates.push(o.nextStepId)
+      }
+      let best: string | null = null
+      let bestDepth = -1
+      for (const c of candidates) {
+        const d = depth(c)
+        if (d > bestDepth) { bestDepth = d; best = c }
+      }
+      return best
     }
 
     const placed = new Set<string>()
