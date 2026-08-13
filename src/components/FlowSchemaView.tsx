@@ -201,6 +201,13 @@ export default function FlowSchemaView({
   posRef.current = positions
   const modeRef = useRef(mode)
   modeRef.current = mode
+  // Wheel handler is registered once (useEffect [] deps) but needs current
+  // pan/scale to zoom around the cursor position. Read via refs so we
+  // don't re-register on every pan/scale change.
+  const panRef = useRef(pan)
+  panRef.current = pan
+  const scaleRef = useRef(scale)
+  scaleRef.current = scale
 
   // Keyboard: Delete/Backspace deletes selected step
   useEffect(() => {
@@ -2630,8 +2637,26 @@ export default function FlowSchemaView({
     if (!container) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
+      const oldScale = scaleRef.current
       const delta = e.deltaY > 0 ? -0.08 : 0.08
-      setScale((s) => Math.min(2, Math.max(0.3, s + delta)))
+      const newScale = Math.min(2, Math.max(0.3, oldScale + delta))
+      if (newScale === oldScale) return
+      // Zoom around the cursor: keep the canvas point currently under the
+      // cursor at the same on-screen position after the scale change.
+      // Screen X in container coords → canvas X = (screenX - pan.x) / scale.
+      // After scale: newPan.x = screenX - canvasX * newScale.
+      const rect = container.getBoundingClientRect()
+      const containerX = e.clientX - rect.left
+      const containerY = e.clientY - rect.top
+      const oldPan = panRef.current
+      const canvasX = (containerX - oldPan.x) / oldScale
+      const canvasY = (containerY - oldPan.y) / oldScale
+      const newPan = {
+        x: containerX - canvasX * newScale,
+        y: containerY - canvasY * newScale,
+      }
+      setScale(newScale)
+      setPan(newPan)
     }
     container.addEventListener('wheel', onWheel, { passive: false })
     return () => container.removeEventListener('wheel', onWheel)
