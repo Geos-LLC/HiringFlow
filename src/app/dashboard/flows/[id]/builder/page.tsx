@@ -1882,6 +1882,14 @@ export default function FlowBuilderPage() {
               pushUndo({ run: () => updateStep(stepId, { hideEndArrow: false } as Partial<Step>) })
               updateStep(stepId, { hideEndArrow: true } as Partial<Step>)
             }}
+            onCombineSteps={(aId, bId) => {
+              const a = flow.steps.find((s) => s.id === aId)
+              const priorForward = a?.combinedWithId ?? null
+              // A is the earlier (by stepOrder) → gets combinedWithId=B.
+              // Undo restores A's prior combinedWithId.
+              pushUndo({ run: () => updateStep(aId, { combinedWithId: priorForward } as Partial<Step>) })
+              updateStep(aId, { combinedWithId: bId } as Partial<Step>)
+            }}
             initialPositions={flow.canvasLayout ?? null}
             onPositionsChange={savePositions}
           />

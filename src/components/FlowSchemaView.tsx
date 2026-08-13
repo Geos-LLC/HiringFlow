@@ -54,6 +54,10 @@ interface FlowSchemaViewProps {
   // arrow for the given step — other leaves and the End card itself stay
   // put. Called when the recruiter presses Delete on an implicit End arrow.
   onSuppressEndArrow?: (stepId: string) => void
+  // Combine two existing steps into a "combined" pair — one screen with
+  // both. Fires when the recruiter has multi-selected exactly 2 cards
+  // and clicks the Combine action.
+  onCombineSteps?: (aId: string, bId: string) => void
   selectedStepId?: string | null
   // Persisted canvas layout from the server: { [stepId | '__start__' | '__end__']: {x,y} }.
   // When provided on first render (or when the prop reference changes), those
@@ -154,6 +158,7 @@ export default function FlowSchemaView({
   onClearStartScreen,
   onClearEndScreen,
   onSuppressEndArrow,
+  onCombineSteps,
   selectedStepId,
   initialPositions,
   onPositionsChange,
@@ -2240,6 +2245,20 @@ export default function FlowSchemaView({
     // DEBUG: log click info
     const nodeHit = hitTestNode(cx, cy)
 
+    // Ctrl / Cmd + click on a card: toggle its membership in the multi
+    // selection instead of the normal single-select. Special nodes
+    // (Start / End) aren't selectable this way — they're not cards.
+    if (nodeHit && nodeHit !== START_ID && nodeHit !== END_ID && (e.ctrlKey || e.metaKey)) {
+      setMultiSelectedIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(nodeHit)) next.delete(nodeHit)
+        else next.add(nodeHit)
+        return next
+      })
+      setSelectedArrow(null)
+      return
+    }
+
     // Left-click on a card that's part of the marquee multi-selection:
     // drag the whole group instead of just this one.
     if (nodeHit && multiSelectedIds.has(nodeHit) && multiSelectedIds.size > 1) {
@@ -3231,6 +3250,61 @@ export default function FlowSchemaView({
         >
           <span className="text-lg leading-none">+</span> Add Step
         </button>
+      )}
+
+      {/* Multi-select action bar — appears when 2+ cards are selected
+          via marquee (right-drag) or Ctrl/Cmd+click. Shows the count
+          and, when exactly 2 are selected AND onCombineSteps is wired,
+          a Combine action that pairs them as one candidate-facing screen. */}
+      {multiSelectedIds.size >= 2 && (
+        <div
+          className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white rounded-md shadow-lg border border-gray-200 px-3 py-2 z-10"
+          data-schema-popup="multi-select-bar"
+        >
+          <span className="text-sm text-gray-700">
+            <span className="font-semibold text-gray-900">{multiSelectedIds.size}</span> cards selected
+          </span>
+          {multiSelectedIds.size === 2 && onCombineSteps && (() => {
+            // Sort by stepOrder so the earlier step becomes the primary
+            // and the later step becomes the partner (its combinedWithId).
+            const ids = Array.from(multiSelectedIds)
+            const sortedIds = ids
+              .map((id) => ({ id, order: steps.find((s) => s.id === id)?.stepOrder ?? 0 }))
+              .sort((a, b) => a.order - b.order)
+              .map((x) => x.id)
+            const [aId, bId] = sortedIds
+            const a = steps.find((s) => s.id === aId)
+            const b = steps.find((s) => s.id === bId)
+            const alreadyCombined =
+              (a as any)?.combinedWithId === bId || (b as any)?.combinedWithId === aId
+            return (
+              <button
+                type="button"
+                disabled={alreadyCombined}
+                onClick={() => {
+                  onCombineSteps(aId, bId)
+                  setMultiSelectedIds(new Set())
+                }}
+                className={
+                  'px-3 py-1 text-sm rounded-md text-white ' +
+                  (alreadyCombined
+                    ? 'bg-gray-300 cursor-not-allowed'
+                    : 'bg-brand-500 hover:bg-brand-600')
+                }
+                title={alreadyCombined ? 'Already combined' : 'Combine into one screen'}
+              >
+                {alreadyCombined ? 'Combined' : 'Combine'}
+              </button>
+            )
+          })()}
+          <button
+            type="button"
+            onClick={() => setMultiSelectedIds(new Set())}
+            className="px-3 py-1 text-sm rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50"
+          >
+            Clear
+          </button>
+        </div>
       )}
 
       {/* Zoom controls */}
