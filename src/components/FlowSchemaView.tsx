@@ -216,6 +216,18 @@ export default function FlowSchemaView({
   panRef.current = pan
   const scaleRef = useRef(scale)
   scaleRef.current = scale
+  // Port mousedown → pending state (no draft yet). Promotes to a proper
+  // `connecting` mode only after the cursor drifts past DRAFT_MIN_DRIFT.
+  // A quick click-and-release (no drift) resolves as the port picker.
+  type PendingPort = {
+    kind: 'out' | 'in'
+    stepId: string
+    startCx: number
+    startCy: number
+    startScreenX: number
+    startScreenY: number
+  }
+  const pendingPortRef = useRef<PendingPort | null>(null)
 
   // Keyboard: Delete/Backspace deletes selected step
   useEffect(() => {
@@ -1186,7 +1198,8 @@ export default function FlowSchemaView({
       const pos = posRef.current[step.id]
       if (!pos) continue
       const out = getOutputPort(pos)
-      if (dist(cx, cy, out.x, out.y) <= PORT_R + 4) {
+      // Full circle, generous radius so the click target is easy to hit.
+      if (dist(cx, cy, out.x, out.y) <= PORT_R + 10) {
         return step.id
       }
     }
@@ -1199,7 +1212,7 @@ export default function FlowSchemaView({
       const pos = posRef.current[step.id]
       if (!pos) continue
       const inp = getInputPort(pos)
-      if (dist(cx, cy, inp.x, inp.y) <= PORT_R + 4) {
+      if (dist(cx, cy, inp.x, inp.y) <= PORT_R + 10) {
         return step.id
       }
     }
@@ -1881,6 +1894,10 @@ export default function FlowSchemaView({
 
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent) => {
+    // Any new mousedown invalidates a stale pending-port from a prior
+    // interaction that ended outside the container. The port hit tests
+    // below re-set this ref when relevant.
+    pendingPortRef.current = null
     if (e.button === 2) {
       // Right-click. If the cursor is on empty canvas (not on a node,
       // arrow, or port), start a marquee selection. Otherwise let
@@ -2093,40 +2110,41 @@ export default function FlowSchemaView({
       }
     }
 
-    // Check output ports (right side — for starting a new connection)
+    // Check output ports (right side). Don't enter 'connecting' yet — a
+    // plain click should open the port picker without any draft line
+    // flashing. Movement past the threshold promotes to a real drag
+    // (see handleMouseMove below).
     const outPortStepId = hitTestOutputPort(cx, cy)
     if (outPortStepId) {
       const pos = positions[outPortStepId]
       if (pos) {
-        const out = getOutputPort(pos)
         setSelectedArrow(null)
-        setMode({
-          type: 'connecting',
-          fromStepId: outPortStepId,
-          fromX: out.x,
-          fromY: out.y,
-          mouseX: cx,
-          mouseY: cy,
-        })
+        pendingPortRef.current = {
+          kind: 'out',
+          stepId: outPortStepId,
+          startCx: cx,
+          startCy: cy,
+          startScreenX: e.clientX,
+          startScreenY: e.clientY,
+        }
         return
       }
     }
 
-    // Check input ports (left side — reverse connection: drag to find source)
+    // Check input ports (left side).
     const inpPortStepId = hitTestInputPort(cx, cy)
     if (inpPortStepId) {
       const pos = positions[inpPortStepId]
       if (pos) {
-        const inp = getInputPort(pos)
         setSelectedArrow(null)
-        setMode({
-          type: 'connecting_reverse',
-          targetStepId: inpPortStepId,
-          fromX: inp.x,
-          fromY: inp.y,
-          mouseX: cx,
-          mouseY: cy,
-        } as any)
+        pendingPortRef.current = {
+          kind: 'in',
+          stepId: inpPortStepId,
+          startCx: cx,
+          startCy: cy,
+          startScreenX: e.clientX,
+          startScreenY: e.clientY,
+        }
         return
       }
     }
@@ -2245,6 +2263,45 @@ export default function FlowSchemaView({
 
   const handleMouseMove = (e: React.MouseEvent) => {
     const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
+
+    // Promote a pending port interaction to a real connecting drag once
+    // the cursor has drifted past the threshold. Below threshold the
+    // pending state stays put and a mouseup will resolve as a click →
+    // port picker (no draft line ever renders).
+    const pending = pendingPortRef.current
+    if (pending) {
+      const drift = Math.hypot(cx - pending.startCx, cy - pending.startCy)
+      if (drift >= 6) {
+        const pos = positions[pending.stepId]
+        if (pos) {
+          if (pending.kind === 'out') {
+            const out = getOutputPort(pos)
+            setMode({
+              type: 'connecting',
+              fromStepId: pending.stepId,
+              fromX: out.x,
+              fromY: out.y,
+              mouseX: cx,
+              mouseY: cy,
+            })
+          } else {
+            const inp = getInputPort(pos)
+            setMode({
+              type: 'connecting_reverse',
+              targetStepId: pending.stepId,
+              fromX: inp.x,
+              fromY: inp.y,
+              mouseX: cx,
+              mouseY: cy,
+            } as any)
+          }
+        }
+        pendingPortRef.current = null
+        return
+      }
+      // Still within threshold — no mode change, no draft.
+      return
+    }
 
     if (mode.type === 'panning') {
       setPan({
@@ -2407,6 +2464,20 @@ export default function FlowSchemaView({
   }
 
   const handleMouseUp = (e: React.MouseEvent) => {
+    // Pending port click (mousedown on port with < threshold drift) → open
+    // the picker at the cursor. Ignores mode entirely — no draft was ever
+    // drawn, no connecting state entered.
+    const pending = pendingPortRef.current
+    if (pending) {
+      pendingPortRef.current = null
+      setPortPicker(
+        pending.kind === 'out'
+          ? { screenX: e.clientX, screenY: e.clientY, kind: 'out', fromStepId: pending.stepId }
+          : { screenX: e.clientX, screenY: e.clientY, kind: 'in', targetStepId: pending.stepId }
+      )
+      return
+    }
+
     if (mode.type === 'reconnecting') {
       const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
       // Accept drop on input port OR anywhere on a node
