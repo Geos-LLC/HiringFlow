@@ -2891,11 +2891,26 @@ export default function FlowSchemaView({
 
       {/* Port click → pick a target/source step from a list */}
       {portPicker && (() => {
-        const excludeId = portPicker.kind === 'out' ? portPicker.fromStepId : portPicker.targetStepId
-        const candidates = steps
-          .filter((s) => s.id !== excludeId)
-          .sort((a, b) => a.stepOrder - b.stepOrder)
+        const anchorId = portPicker.kind === 'out' ? portPicker.fromStepId : portPicker.targetStepId
+        const anchorPos = positions[anchorId]
+        const anchorX = anchorPos?.x ?? 0
+        // Order per user request:
+        //   1. End (out-picker only) at the top
+        //   2. Cards to the right of the anchor (natural forward targets) — leftmost first
+        //   3. Cards to the left of the anchor (backward loops) — rightmost first
+        const others = steps.filter((s) => s.id !== anchorId)
+        const rightOf: typeof others = []
+        const leftOf: typeof others = []
+        for (const s of others) {
+          const p = positions[s.id]
+          if (!p) { leftOf.push(s); continue }
+          if (p.x > anchorX) rightOf.push(s)
+          else leftOf.push(s)
+        }
+        rightOf.sort((a, b) => (positions[a.id]?.x ?? 0) - (positions[b.id]?.x ?? 0))
+        leftOf.sort((a, b) => (positions[b.id]?.x ?? 0) - (positions[a.id]?.x ?? 0))
         const heading = portPicker.kind === 'out' ? 'Connect to…' : 'Connect from…'
+        const isEmpty = rightOf.length + leftOf.length === 0
         return (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setPortPicker(null)} />
@@ -2907,18 +2922,31 @@ export default function FlowSchemaView({
               <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-gray-400 font-medium border-b border-gray-100">
                 {heading}
               </div>
-              {candidates.length === 0 && (
+              {portPicker.kind === 'out' && (
+                <button
+                  onClick={() => {
+                    onButtonConfigUpdate?.(portPicker.fromStepId, '__end__')
+                    setPortPicker(null)
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  End
+                </button>
+              )}
+              {isEmpty && (
                 <div className="px-3 py-2 text-sm text-gray-500">No other steps</div>
               )}
-              {candidates.map((s) => (
+              {rightOf.length > 0 && (
+                <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100">
+                  Downstream (to the right)
+                </div>
+              )}
+              {rightOf.map((s) => (
                 <button
                   key={s.id}
                   onClick={() => {
-                    if (portPicker.kind === 'out') {
-                      onConnectSteps?.(portPicker.fromStepId, s.id)
-                    } else {
-                      onConnectSteps?.(s.id, portPicker.targetStepId)
-                    }
+                    if (portPicker.kind === 'out') onConnectSteps?.(portPicker.fromStepId, s.id)
+                    else onConnectSteps?.(s.id, portPicker.targetStepId)
                     setPortPicker(null)
                   }}
                   className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors truncate"
@@ -2927,17 +2955,25 @@ export default function FlowSchemaView({
                   {s.title || s.id.slice(0, 8)}
                 </button>
               ))}
-              {portPicker.kind === 'out' && (
+              {leftOf.length > 0 && (
+                <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100">
+                  Upstream (to the left)
+                </div>
+              )}
+              {leftOf.map((s) => (
                 <button
+                  key={s.id}
                   onClick={() => {
-                    onButtonConfigUpdate?.(portPicker.fromStepId, '__end__')
+                    if (portPicker.kind === 'out') onConnectSteps?.(portPicker.fromStepId, s.id)
+                    else onConnectSteps?.(s.id, portPicker.targetStepId)
                     setPortPicker(null)
                   }}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors border-t border-gray-100"
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors truncate"
+                  title={s.title}
                 >
-                  End
+                  {s.title || s.id.slice(0, 8)}
                 </button>
-              )}
+              ))}
             </div>
           </>
         )
