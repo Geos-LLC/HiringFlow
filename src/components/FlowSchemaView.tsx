@@ -2301,6 +2301,13 @@ export default function FlowSchemaView({
 
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent) => {
+    // Clicks inside a floating popup (port picker, context menu,
+    // multi-select bar) shouldn't be treated as canvas clicks. Without
+    // this bail, the empty-space branch below clears the multi-selection
+    // between mousedown and mouseup, which unmounts the bar itself and
+    // the Combine button's onClick never fires.
+    const t = e.target as HTMLElement | null
+    if (t && t.closest('[data-schema-popup]')) return
     // Any new mousedown invalidates a stale pending-port from a prior
     // interaction that ended outside the container. The port hit tests
     // below re-set this ref when relevant.
