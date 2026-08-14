@@ -391,10 +391,12 @@ export default function FlowSchemaView({
   useEffect(() => {
     flowTrace('selection.step', { selectedStepId })
   }, [selectedStepId])
-  // Trace mode transitions so we can tell if a drag/reconnect/pan actually
-  // ended (mode → idle) or is stuck. Only logs kind, not full mode object,
-  // to keep the stream readable.
+  // Trace mode transitions — skip the ultra-common 'idle' and 'panning'
+  // states so the FixLoop stream isn't drowned by every mouse move. Only
+  // interesting mode entries (dragging, connecting, reconnecting_*,
+  // marquee, dragging_group) get emitted.
   useEffect(() => {
+    if (mode.type === 'idle' || mode.type === 'panning') return
     flowTrace('mode', { type: mode.type })
   }, [mode.type])
 
@@ -1016,7 +1018,6 @@ export default function FlowSchemaView({
         if (cardBot > blockerMaxBot) blockerMaxBot = cardBot
       }
       if (!hasBlocker) {
-        if (debugLabel) console.log(`[lane] ${debugLabel} no blocker → none`)
         return undefined
       }
       let laneY = blockerMaxBot + 90
@@ -1044,7 +1045,9 @@ export default function FlowSchemaView({
           mode = 'below-endpoint'
         }
       }
-      if (debugLabel) {
+      // Debug-only tracing — gated on the toolbar Debug toggle. Was
+      // spamming the console on every render before.
+      if (debugLabel && debugConnections) {
         // eslint-disable-next-line no-console
         console.log(`[lane] ${debugLabel} from=(${Math.round(fromX)},${Math.round(fromY)}) to=(${Math.round(toX)},${Math.round(toY)}) blockerBot=${Math.round(blockerMaxBot)} mode=${mode} → laneY=${Math.round(laneY)}`)
         if (dbg.length) console.table(dbg)
@@ -1138,7 +1141,10 @@ export default function FlowSchemaView({
         laneY = Math.max(clip.bottom, endpointFloor) + 44
         if (round === 3) resolved = false
       }
-      if (trace.length > 1 || !resolved) {
+      // Debug-only tracing — was warning on every render for stuck
+      // routes even when the result was visually fine. Only surface
+      // when the recruiter has flipped the Debug toggle on.
+      if ((trace.length > 1 || !resolved) && debugConnections) {
         // eslint-disable-next-line no-console
         console.warn(`[clip-resolver] "${titleFor(c.sourceId)}" → "${titleFor(c.targetId)}" ${resolved ? 'resolved' : 'STUCK'} in ${trace.length} rounds`)
         console.table(trace)
@@ -1147,7 +1153,7 @@ export default function FlowSchemaView({
     }
 
     return m
-  }, [allConnections, positions, connKey, computeDetourLane, steps])
+  }, [allConnections, positions, connKey, computeDetourLane, steps, debugConnections])
 
   // Fan-in geometry for every arrow that terminates at the End node.
   // Sources sorted by source Y (top first) → each enters End at a
