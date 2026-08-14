@@ -3388,12 +3388,15 @@ export default function FlowSchemaView({
             <span className="font-semibold text-gray-900">{multiSelectedIds.size}</span> cards selected
           </span>
           {multiSelectedIds.size === 2 && onCombineSteps && (() => {
-            // Sort by stepOrder so the earlier step becomes the primary
-            // and the later step becomes the partner (its combinedWithId).
+            // Sort by VISUAL X so the physically-left card becomes the
+            // primary and the physically-right card becomes the partner.
+            // Sorting by stepOrder was wrong — if the user positioned
+            // cards in a different order than the DB stepOrder, the
+            // snap would move the wrong card and flip the pair.
             const ids = Array.from(multiSelectedIds)
             const sortedIds = ids
-              .map((id) => ({ id, order: steps.find((s) => s.id === id)?.stepOrder ?? 0 }))
-              .sort((a, b) => a.order - b.order)
+              .map((id) => ({ id, x: posRef.current[id]?.x ?? 0 }))
+              .sort((a, b) => a.x - b.x)
               .map((x) => x.id)
             const [aId, bId] = sortedIds
             const a = steps.find((s) => s.id === aId)
