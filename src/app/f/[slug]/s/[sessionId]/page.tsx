@@ -357,6 +357,28 @@ export default function SessionPlayerPage() {
     setSubmitting(false)
   }
 
+  // Open-text answer: reuses the existing text-answer contract on the
+  // /answer endpoint (server already saves it as a CandidateSubmission).
+  const submitTextAnswer = async () => {
+    if (!step || !textMessage.trim()) return
+    setSubmitting(true)
+    const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stepId: step.stepId,
+        textAnswer: textMessage.trim(),
+        formData: formSubmitted ? formValues : undefined,
+      }),
+    })
+    if (res.ok) {
+      const data = await res.json()
+      if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
+      else { setTextMessage(''); fetchStep() }
+    }
+    setSubmitting(false)
+  }
+
   const submitSubmission = async () => {
     if (!step || (!textMessage && !recordedVideo)) return
     setSubmitting(true)
@@ -566,6 +588,31 @@ export default function SessionPlayerPage() {
                     <span className="font-medium text-sm">{option.text}</span>
                   </button>
                 ))}
+              </div>
+            )}
+
+            {/* Open text answer */}
+            {step.questionType === 'text' && (
+              <div className="space-y-3">
+                <textarea
+                  value={textMessage}
+                  onChange={(e) => setTextMessage(e.target.value)}
+                  disabled={submitting || (!showOptions && !!step.videoUrl)}
+                  placeholder="Type your answer…"
+                  rows={5}
+                  className={`w-full px-4 py-3 rounded-xl border-2 text-sm ${
+                    overlay
+                      ? 'bg-white/10 border-white/30 text-white placeholder-white/50 focus:border-white/60'
+                      : 'bg-white border-gray-200 text-gray-900 focus:border-brand-500'
+                  } focus:outline-none disabled:opacity-50`}
+                />
+                <button
+                  onClick={submitTextAnswer}
+                  disabled={!textMessage.trim() || submitting || (!showOptions && !!step.videoUrl)}
+                  className="w-full py-3 bg-brand-500 text-white rounded-xl font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-brand-600 transition-colors"
+                >
+                  {submitting ? 'Submitting…' : 'Continue'}
+                </button>
               </div>
             )}
 

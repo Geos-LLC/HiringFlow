@@ -2041,14 +2041,47 @@ export default function FlowBuilderPage() {
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-grey-20 mb-1.5">Question Type</label>
-                          <div className="grid grid-cols-3 gap-2">
-                            {[{ v: 'single', l: 'Single Choice' }, { v: 'multiselect', l: 'Multi Choice' }, { v: 'yesno', l: 'Yes / No' }].map(({ v, l }) => (
+                          <div className="grid grid-cols-4 gap-2">
+                            {[{ v: 'single', l: 'Single Choice' }, { v: 'multiselect', l: 'Multi Choice' }, { v: 'yesno', l: 'Yes / No' }, { v: 'text', l: 'Text field' }].map(({ v, l }) => (
                               <button key={v} onClick={() => updateStep(popupStep.id, { questionType: v })} className={`py-2 text-xs rounded-[8px] border font-medium ${popupStep.questionType === v ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-surface-border text-grey-35'}`}>{l}</button>
                             ))}
                           </div>
                         </div>
-                        {/* Options */}
-                        {popupStep.questionType !== 'yesno' && (
+                        {/* Text-field companion pickers — quick links that
+                            create an audio-answer (Capture) or video-answer
+                            (Submission) step and combine it with this one so
+                            the candidate can supplement the typed answer. */}
+                        {popupStep.questionType === 'text' && (
+                          <div className="rounded-[8px] border border-surface-border bg-brand-50/40 p-3 space-y-2">
+                            <p className="text-xs text-grey-40">
+                              Candidate types an open text answer. Add a recording alongside so they can also speak or show it:
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  createStep('capture', undefined, { combineSourceId: popupStep.id })
+                                  setPopupStepId(null)
+                                }}
+                                className="text-xs px-3 py-1.5 rounded-[6px] border border-brand-300 text-brand-700 bg-white hover:bg-brand-100 font-medium"
+                              >
+                                + Add audio recording
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  createStep('submission', undefined, { combineSourceId: popupStep.id })
+                                  setPopupStepId(null)
+                                }}
+                                className="text-xs px-3 py-1.5 rounded-[6px] border border-brand-300 text-brand-700 bg-white hover:bg-brand-100 font-medium"
+                              >
+                                + Add video recording
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {/* Options — hidden for Yes/No and Text field */}
+                        {popupStep.questionType !== 'yesno' && popupStep.questionType !== 'text' && (
                           <div>
                             <div className="flex items-center justify-between mb-2">
                               <label className="text-sm font-medium text-grey-20">Answer Options</label>
