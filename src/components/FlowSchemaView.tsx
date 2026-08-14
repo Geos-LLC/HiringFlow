@@ -3409,21 +3409,10 @@ export default function FlowSchemaView({
                 disabled={alreadyCombined}
                 onClick={() => {
                   onCombineSteps(aId, bId)
-                  // Snap positions so the partner (B) sits immediately
-                  // to the right of the primary (A) at the same Y. This
-                  // prevents visual overlap when the two cards were far
-                  // apart or in the wrong order before combining. Also
-                  // persist via onPositionsChange so the snap sticks.
-                  const aPos = posRef.current[aId]
-                  if (aPos) {
-                    const snappedBPos = { x: aPos.x + NODE_W + 8, y: aPos.y }
-                    setPositions((prev) => {
-                      const next = { ...prev, [bId]: snappedBPos }
-                      // Fire and forget — parent debounces the save.
-                      Promise.resolve().then(() => onPositionsChange?.(next))
-                      return next
-                    })
-                  }
+                  // Positions stay put. Snapping was causing overlap
+                  // with neighboring cards when a big move pushed the
+                  // partner into occupied space. If cards look bad after
+                  // combine, run Tidy to reflow everything.
                   setMultiSelectedIds(new Set())
                 }}
                 className={
