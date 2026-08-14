@@ -1890,6 +1890,22 @@ export default function FlowBuilderPage() {
               pushUndo({ run: () => updateStep(aId, { combinedWithId: priorForward } as Partial<Step>) })
               updateStep(aId, { combinedWithId: bId } as Partial<Step>)
             }}
+            onUncombineSteps={(aId, bId) => {
+              // Ungroup: clear combinedWithId on whichever side had it set.
+              // Snapshot prior values so Undo restores the pair.
+              const a = flow.steps.find((s) => s.id === aId)
+              const b = flow.steps.find((s) => s.id === bId)
+              const aPrior = a?.combinedWithId ?? null
+              const bPrior = b?.combinedWithId ?? null
+              pushUndo({
+                run: () => {
+                  if (aPrior !== null) updateStep(aId, { combinedWithId: aPrior } as Partial<Step>)
+                  if (bPrior !== null) updateStep(bId, { combinedWithId: bPrior } as Partial<Step>)
+                },
+              })
+              if (aPrior === bId) updateStep(aId, { combinedWithId: null } as Partial<Step>)
+              if (bPrior === aId) updateStep(bId, { combinedWithId: null } as Partial<Step>)
+            }}
             initialPositions={flow.canvasLayout ?? null}
             onPositionsChange={savePositions}
           />

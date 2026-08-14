@@ -58,6 +58,9 @@ interface FlowSchemaViewProps {
   // both. Fires when the recruiter has multi-selected exactly 2 cards
   // and clicks the Combine action.
   onCombineSteps?: (aId: string, bId: string) => void
+  // Break a combined pair apart. Clears combinedWithId in whichever
+  // direction it was set (aId → bId or bId → aId).
+  onUncombineSteps?: (aId: string, bId: string) => void
   selectedStepId?: string | null
   // Persisted canvas layout from the server: { [stepId | '__start__' | '__end__']: {x,y} }.
   // When provided on first render (or when the prop reference changes), those
@@ -159,6 +162,7 @@ export default function FlowSchemaView({
   onClearEndScreen,
   onSuppressEndArrow,
   onCombineSteps,
+  onUncombineSteps,
   selectedStepId,
   initialPositions,
   onPositionsChange,
@@ -200,6 +204,10 @@ export default function FlowSchemaView({
   >(null)
   const [selectedArrow, setSelectedArrow] = useState<SelectedArrow | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; optionId: string; stepId: string } | null>(null)
+  // Right-click on the combined pair's dashed bracket opens this menu.
+  // aId/bId are the two step ids of the pair (in either order — the
+  // Ungroup callback resolves the direction).
+  const [combinedMenu, setCombinedMenu] = useState<{ x: number; y: number; aId: string; bId: string } | null>(null)
   // Port-click popup: shown when the user clicks (without dragging) an
   // output or input port. Lists all other steps + End (for output) so the
   // user can pick a target instead of dragging a connection.
@@ -3134,6 +3142,28 @@ export default function FlowSchemaView({
 
     // (output port context menu removed — use arrow click + delete instead)
 
+    // Right-click on the combined-pair bracket → Ungroup menu.
+    // Same hit shape as the drag-the-pair check in mousedown: inside
+    // the outer bracket rect but OUTSIDE both cards.
+    for (const step of steps) {
+      const partnerId = (step as any).combinedWithId as string | null | undefined
+      if (!partnerId) continue
+      const pos1 = positions[step.id]
+      const pos2 = positions[partnerId]
+      if (!pos1 || !pos2) continue
+      const minX = Math.min(pos1.x, pos2.x) - 6
+      const minY = Math.min(pos1.y, pos2.y) - 6
+      const maxX = Math.max(pos1.x + NODE_W, pos2.x + NODE_W) + 6
+      const maxY = Math.max(pos1.y + NODE_H, pos2.y + NODE_H) + 6
+      if (cx < minX - 8 || cx > maxX + 8 || cy < minY - 8 || cy > maxY + 8) continue
+      const insideCard1 = cx >= pos1.x && cx <= pos1.x + NODE_W && cy >= pos1.y && cy <= pos1.y + NODE_H
+      const insideCard2 = cx >= pos2.x && cx <= pos2.x + NODE_W && cy >= pos2.y && cy <= pos2.y + NODE_H
+      if (insideCard1 || insideCard2) continue
+      setCombinedMenu({ x: e.clientX, y: e.clientY, aId: step.id, bId: partnerId })
+      setContextMenu(null)
+      return
+    }
+
     // Check if right-clicking on a connection line
     for (const step of steps) {
       const pos = positions[step.id]
@@ -3152,12 +3182,14 @@ export default function FlowSchemaView({
             optionId: option.id,
             stepId: step.id,
           })
+          setCombinedMenu(null)
           return
         }
       }
     }
 
     setContextMenu(null)
+    setCombinedMenu(null)
   }
 
   const handleDisconnect = () => {
@@ -3544,6 +3576,28 @@ export default function FlowSchemaView({
               className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
             >
               Disconnect
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Combined-pair right-click menu → Ungroup */}
+      {combinedMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setCombinedMenu(null)} />
+          <div
+            data-schema-popup="combined-menu"
+            className="fixed z-50 bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[160px]"
+            style={{ left: combinedMenu.x, top: combinedMenu.y }}
+          >
+            <button
+              onClick={() => {
+                onUncombineSteps?.(combinedMenu.aId, combinedMenu.bId)
+                setCombinedMenu(null)
+              }}
+              className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+            >
+              Ungroup
             </button>
           </div>
         </>
