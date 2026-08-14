@@ -108,8 +108,11 @@ const flowTrace = (topic: string, data?: unknown) => {
   const payload = data !== undefined
     ? ' ' + (() => { try { return JSON.stringify(data) } catch { return '[unserializable]' } })()
     : ''
+  // Uses console.error so @fixprompt/browser forwards these to FixLoop;
+  // console.log stays local and won't be captured. Prefix `[flow]` makes
+  // them easy to filter out from real errors in the dashboard.
   // eslint-disable-next-line no-console
-  console.log(`[flow] ${topic}${payload}`)
+  console.error(`[flow] ${topic}${payload}`)
 }
 
 const NODE_W = 280
@@ -247,47 +250,53 @@ export default function FlowSchemaView({
   // step edits shouldn't yank the user's view.
   const hasAutoFittedRef = useRef(false)
 
-  // Combined-pair port re-anchoring. When step A is combined with a
-  // partner B (A.combinedWithId = B) and B sits to the right of A in
-  // the canvas, the visual "combined box" is [A ⋅ B]. Connections
-  // OUT of the pair should leave from B's right port (rightmost),
-  // connections IN should enter A's left port (leftmost). Data (which
-  // step owns the connection) is unchanged — only rendering shifts.
+  // Combined-chain port re-anchoring. Walk forward AND backward through
+  // combinedWithId to collect every chain member, then pick the extremes
+  // by X. Outgoing lines from any chain member visually leave the
+  // rightmost card of the chain (edge of the "combined box"), incoming
+  // enter the leftmost. Underlying data ownership is unchanged.
+  const chainMembers = useCallback((stepId: string): string[] => {
+    const set = new Set<string>()
+    // Forward walk.
+    let cur: string | undefined = stepId
+    while (cur && !set.has(cur)) {
+      set.add(cur)
+      const s = steps.find((x) => x.id === cur)
+      cur = (s as any)?.combinedWithId ?? undefined
+    }
+    // Backward walk — repeatedly find a step whose combinedWithId is any
+    // current member, adding it.
+    let grew = true
+    while (grew) {
+      grew = false
+      for (const s of steps) {
+        const partner = (s as any).combinedWithId as string | null | undefined
+        if (partner && set.has(partner) && !set.has(s.id)) {
+          set.add(s.id)
+          grew = true
+        }
+      }
+    }
+    return Array.from(set)
+  }, [steps])
   const getVisualRightmost = useCallback((stepId: string): string => {
-    const step = steps.find((s) => s.id === stepId)
-    if (!step) return stepId
-    const partnerId = (step as any).combinedWithId as string | null | undefined
-    if (partnerId) {
-      const sp = positions[stepId]
-      const pp = positions[partnerId]
-      if (sp && pp && pp.x > sp.x) return partnerId
-    }
-    // Also check reverse pairing: some other step declares us as its partner.
-    const reverse = steps.find((s) => (s as any).combinedWithId === stepId)
-    if (reverse) {
-      const sp = positions[stepId]
-      const rp = positions[reverse.id]
-      if (sp && rp && rp.x > sp.x) return reverse.id
-    }
-    return stepId
-  }, [steps, positions])
+    const members = chainMembers(stepId)
+    if (members.length <= 1) return stepId
+    return members.reduce((best, id) => {
+      const bx = positions[id]?.x ?? -Infinity
+      const bestX = positions[best]?.x ?? -Infinity
+      return bx > bestX ? id : best
+    }, stepId)
+  }, [chainMembers, positions])
   const getVisualLeftmost = useCallback((stepId: string): string => {
-    const step = steps.find((s) => s.id === stepId)
-    if (!step) return stepId
-    const partnerId = (step as any).combinedWithId as string | null | undefined
-    if (partnerId) {
-      const sp = positions[stepId]
-      const pp = positions[partnerId]
-      if (sp && pp && pp.x < sp.x) return partnerId
-    }
-    const reverse = steps.find((s) => (s as any).combinedWithId === stepId)
-    if (reverse) {
-      const sp = positions[stepId]
-      const rp = positions[reverse.id]
-      if (sp && rp && rp.x < sp.x) return reverse.id
-    }
-    return stepId
-  }, [steps, positions])
+    const members = chainMembers(stepId)
+    if (members.length <= 1) return stepId
+    return members.reduce((best, id) => {
+      const bx = positions[id]?.x ?? Infinity
+      const bestX = positions[best]?.x ?? Infinity
+      return bx < bestX ? id : best
+    }, stepId)
+  }, [chainMembers, positions])
   // In-app confirmation modal. Replaces browser confirm() so the dialog
   // matches the app chrome instead of the OS/browser default.
   const [confirmDialog, setConfirmDialog] = useState<
@@ -1593,33 +1602,32 @@ export default function FlowSchemaView({
   }, [steps])
 
   // Hit test: arrow line (returns the option that owns it)
-  // Straightforward port lookup. Combined-pair re-anchoring was tried
-  // (map visual OUT to the rightmost card of the pair) but produced
-  // weird curves on connections touching a combined pair — the arrow
-  // origin/end shifted across a card width, so the bezier had to arc
-  // over the pair. Reverted to always using the actual source/target
-  // step's own ports. The combined bracket is purely decorative.
+  // Port lookup with combined-chain re-anchoring: outgoing lines leave
+  // from the RIGHTMOST card of the source's chain, incoming enter the
+  // LEFTMOST card of the target's chain — so arrows always look like
+  // they attach to the combined-box edge, not to an interior card seam.
+  // Falls back to the step's own port when no chain.
   const visualPortsFor = useCallback(
     (sourceId: string, targetId: string): { out: { x: number; y: number }; inp: { x: number; y: number } } | null => {
-      const srcPos = posRef.current[sourceId]
-      const tgtPos = posRef.current[targetId]
+      const srcId = getVisualRightmost(sourceId)
+      const tgtId = getVisualLeftmost(targetId)
+      const srcPos = posRef.current[srcId] ?? posRef.current[sourceId]
+      const tgtPos = posRef.current[tgtId] ?? posRef.current[targetId]
       if (!srcPos || !tgtPos) return null
       return { out: getOutputPort(srcPos), inp: getInputPort(tgtPos) }
     },
-    []
+    [getVisualRightmost, getVisualLeftmost]
   )
 
-  // A connection A→B lives entirely inside a combined pair when A and
-  // B are each other's combinedWithId partner. Such an edge is implicit
-  // in the "combined box" visualization — drawing it produces a weird
-  // loop from B's right port back to A's left port. Skip render + hit
-  // tests for these.
+  // A connection A→B is intra-chain when both live in the same combined
+  // chain (via any chain of combinedWithId links). Such edges are
+  // implicit in the "combined box" — drawing them makes a loop from
+  // the box's right port back to the left. Skip render + hit tests.
   const isIntraCombinedPair = useCallback((aId: string, bId: string): boolean => {
-    const a = steps.find((s) => s.id === aId)
-    const b = steps.find((s) => s.id === bId)
-    if (!a || !b) return false
-    return (a as any).combinedWithId === bId || (b as any).combinedWithId === aId
-  }, [steps])
+    if (aId === bId) return false
+    const membersA = chainMembers(aId)
+    return membersA.includes(bId)
+  }, [chainMembers])
 
   const hitTestArrow = useCallback((cx: number, cy: number): { optionId: string; stepId: string; kind: 'option' | 'button' } | null => {
     for (const step of steps) {
@@ -1752,14 +1760,15 @@ export default function FlowSchemaView({
     // overlap (backward loopbacks), the lane-routing system below assigns
     // each its own bezier path.
     for (const conn of allConnections) {
-      // Intra-pair connections (A → B where they are each other's
-      // combined partner) are implicit in the combined box — skip them.
+      // Intra-chain edges are implicit in the combined box — skip.
       if (isIntraCombinedPair(conn.sourceId, conn.targetId)) continue
-      const sourcePos = positions[conn.sourceId]
-      const targetPos = positions[conn.targetId]
+      // Re-anchor to the chain's rightmost (source) / leftmost (target)
+      // so lines leave/enter the box edge, not an interior card.
+      const visualSourceId = getVisualRightmost(conn.sourceId)
+      const visualTargetId = getVisualLeftmost(conn.targetId)
+      const sourcePos = positions[visualSourceId] ?? positions[conn.sourceId]
+      const targetPos = positions[visualTargetId] ?? positions[conn.targetId]
       if (!sourcePos || !targetPos) continue
-      // Every arrow attaches to the step's single OUT and IN ports — same
-      // point regardless of how many other arrows leave/enter the same node.
       const out = getOutputPort(sourcePos)
       const inp = getInputPort(targetPos)
 

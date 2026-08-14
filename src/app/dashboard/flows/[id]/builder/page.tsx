@@ -25,8 +25,9 @@ const flowTrace = (topic: string, data?: unknown) => {
   const payload = data !== undefined
     ? ' ' + (() => { try { return JSON.stringify(data) } catch { return '[unserializable]' } })()
     : ''
+  // console.error so @fixprompt/browser forwards these to FixLoop.
   // eslint-disable-next-line no-console
-  console.log(`[flow] ${topic}${payload}`)
+  console.error(`[flow] ${topic}${payload}`)
 }
 
 interface Video {
