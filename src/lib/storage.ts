@@ -75,16 +75,39 @@ export async function saveCandidateVideoFile(file: File) {
 // content-addressed: replacing a video produces a new row with a new blob URL,
 // which is its own invalidation. Returning the URL unmodified lets the browser
 // and CDN cache the video across visits.
+//
+// Historical S3 keys occasionally contain unencoded spaces / punctuation
+// (recruiter uploads like "2-1 Schedule answer YES.mov"). Chrome silently
+// refuses to fetch those URLs — no `error` event fires, so the candidate
+// player is stranded on a black frame with Continue disabled. Normalize the
+// path here so every consumer receives an encoded URL.
+function encodeUrlPath(url: string): string {
+  try {
+    const u = new URL(url)
+    u.pathname = u.pathname
+      .split('/')
+      .map((seg) => encodeURIComponent(decodeURIComponent(seg)))
+      .join('/')
+    return u.toString()
+  } catch {
+    return url
+  }
+}
+
+function encodeLocalKey(key: string): string {
+  return key.split('/').map((seg) => encodeURIComponent(seg)).join('/')
+}
+
 export function getVideoUrl(storageKey: string): string {
   if (storageKey.startsWith('http')) {
-    return storageKey
+    return encodeUrlPath(storageKey)
   }
-  return `/api/uploads/${storageKey}`
+  return `/api/uploads/${encodeLocalKey(storageKey)}`
 }
 
 export function getCandidateVideoUrl(storageKey: string): string {
   if (storageKey.startsWith('http')) {
-    return storageKey
+    return encodeUrlPath(storageKey)
   }
-  return `/api/uploads/${storageKey}`
+  return `/api/uploads/${encodeLocalKey(storageKey)}`
 }

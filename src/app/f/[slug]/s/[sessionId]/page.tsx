@@ -249,6 +249,20 @@ export default function SessionPlayerPage() {
     setVideoEnded(true)
   }
 
+  // S3 keys occasionally contain unencoded spaces / punctuation (recruiters
+  // upload files like "2-1 Schedule answer YES.mov"). Chrome silently refuses
+  // to fetch those URLs — no `error` event fires, so `onError` never unlocks
+  // Continue and the candidate is stranded on a black frame. Encode each
+  // path segment before handing the URL to <video>.
+  const safeVideoUrl = (raw: string | null | undefined): string | null => {
+    if (!raw) return null
+    try {
+      const u = new URL(raw)
+      u.pathname = u.pathname.split('/').map((seg) => encodeURIComponent(decodeURIComponent(seg))).join('/')
+      return u.toString()
+    } catch { return raw }
+  }
+
   // Persist video watch telemetry to the server. Called by CaptionedVideo on
   // pause / seeked / ended / unmount. Fire-and-forget with keepalive so the
   // unmount POST (which fires as the candidate advances to the next step)
@@ -1013,8 +1027,8 @@ export default function SessionPlayerPage() {
           style={{ background: '#0f0e0c', boxShadow: 'var(--shadow-card)' }}
         >
           {(() => {
-            const videoUrl = step.videoUrl || step.combinedStep?.videoUrl
-            const videoHlsUrl = step.videoUrl ? step.videoHlsUrl : step.combinedStep?.videoHlsUrl
+            const videoUrl = safeVideoUrl(step.videoUrl || step.combinedStep?.videoUrl)
+            const videoHlsUrl = safeVideoUrl(step.videoUrl ? step.videoHlsUrl : step.combinedStep?.videoHlsUrl)
             const videoStatus = step.videoUrl ? step.videoStatus : step.combinedStep?.videoStatus
             const videoSegments = step.videoUrl ? step.segments : step.combinedStep?.segments
             const videoCaptionsEnabled = step.videoUrl ? step.captionsEnabled : step.combinedStep?.captionsEnabled
@@ -1145,14 +1159,15 @@ export default function SessionPlayerPage() {
             <div className="w-full h-full">
               <CaptionedVideo
                 key={`mobile-${step.stepId}`}
-                src={step.videoUrl}
-                hlsUrl={step.videoHlsUrl}
+                src={safeVideoUrl(step.videoUrl)!}
+                hlsUrl={safeVideoUrl(step.videoHlsUrl)}
                 status={step.videoStatus}
                 segments={step.segments || []}
                 captionsEnabled={step.captionsEnabled || false}
                 captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}
                 autoPlay
                 onEnded={handleVideoEnd}
+                onError={handleVideoEnd}
                 onWatchTelemetry={(data) => reportWatchTelemetry(step.stepId, data)}
                 className="w-full h-full object-cover"
               />
