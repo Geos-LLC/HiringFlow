@@ -2987,17 +2987,23 @@ export default function FlowBuilderPage() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-grey-20 mb-1.5">Question Type</label>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-4 gap-2">
                       {[
                         { value: 'single', label: 'Single Choice' },
                         { value: 'multiselect', label: 'Multi Choice' },
                         { value: 'yesno', label: 'Yes / No' },
+                        { value: 'text', label: 'Text field' },
                       ].map(({ value, label }) => (
                         <button key={value} onClick={() => setAddStepQuestionType(value)} className={`py-2 text-xs rounded-[8px] border font-medium ${addStepQuestionType === value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-surface-border text-grey-35'}`}>{label}</button>
                       ))}
                     </div>
                   </div>
-                  {addStepQuestionType !== 'yesno' && (
+                  {addStepQuestionType === 'text' && (
+                    <div className="rounded-[8px] border border-surface-border bg-brand-50/40 p-3 text-xs text-grey-40">
+                      Candidate will type an open text answer. After creating this step you can add an audio or video recording alongside it from the step editor.
+                    </div>
+                  )}
+                  {addStepQuestionType !== 'yesno' && addStepQuestionType !== 'text' && (
                     <div>
                       <label className="block text-sm font-medium text-grey-20 mb-1.5">Answer Options</label>
                       <div className="space-y-2">
