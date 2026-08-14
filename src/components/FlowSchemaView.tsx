@@ -1888,21 +1888,42 @@ export default function FlowSchemaView({
     }
 
     // --- Draw combined step brackets (before nodes so they're behind) ---
+    // For chain combines (a → b → c), walk the whole chain and draw ONE
+    // bracket around every member. Track processed members so we don't
+    // draw partial brackets for downstream links.
+    const stepByIdLocal = new Map(steps.map((s) => [s.id, s]))
+    const bracketProcessed = new Set<string>()
     for (const step of steps) {
       if (!step.combinedWithId) continue
-      const pos1 = positions[step.id]
-      const pos2 = positions[step.combinedWithId]
-      if (!pos1 || !pos2) continue
+      if (bracketProcessed.has(step.id)) continue
+      // Only start from the HEAD of a chain — i.e., no other step points
+      // at this step as its combinedWithId partner.
+      const isHead = !steps.some((s) => (s as any).combinedWithId === step.id)
+      if (!isHead) continue
+      // Walk forward through combinedWithId links.
+      const members: string[] = []
+      let cur: string | undefined = step.id
+      const seen = new Set<string>()
+      while (cur && !seen.has(cur)) {
+        seen.add(cur)
+        members.push(cur)
+        const s = stepByIdLocal.get(cur)
+        cur = (s as any)?.combinedWithId ?? undefined
+      }
+      if (members.length < 2) continue
+      members.forEach((m) => bracketProcessed.add(m))
+      const memberPositions = members.map((id) => positions[id]).filter(Boolean)
+      if (memberPositions.length < 2) continue
 
-      const minX = Math.min(pos1.x, pos2.x) - 6
-      const minY = Math.min(pos1.y, pos2.y) - 6
-      const maxX = Math.max(pos1.x + NODE_W, pos2.x + NODE_W) + 6
-      const maxY = Math.max(pos1.y + NODE_H, pos2.y + NODE_H) + 6
+      const minX = Math.min(...memberPositions.map((p) => p.x)) - 6
+      const minY = Math.min(...memberPositions.map((p) => p.y)) - 6
+      const maxX = Math.max(...memberPositions.map((p) => p.x + NODE_W)) + 6
+      const maxY = Math.max(...memberPositions.map((p) => p.y + NODE_H)) + 6
 
       // If any unrelated card overlaps the bounding box, the rectangle bracket would
       // visually engulf it — fall back to outlining each combined card individually.
       const wouldEngulfOther = steps.some((s) => {
-        if (s.id === step.id || s.id === step.combinedWithId) return false
+        if (members.includes(s.id)) return false
         const p = positions[s.id]
         if (!p) return false
         return !(p.x + NODE_W < minX || p.x > maxX || p.y + NODE_H < minY || p.y > maxY)
@@ -1913,7 +1934,7 @@ export default function FlowSchemaView({
       ctx.setLineDash([6, 4])
 
       if (wouldEngulfOther) {
-        for (const p of [pos1, pos2]) {
+        for (const p of memberPositions) {
           ctx.beginPath()
           ctx.roundRect(p.x - 6, p.y - 6, NODE_W + 12, NODE_H + 12, 16)
           ctx.stroke()
@@ -1922,7 +1943,7 @@ export default function FlowSchemaView({
         ctx.font = 'bold 9px "Be Vietnam Pro", system-ui'
         ctx.fillStyle = '#FF9500'
         ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-        for (const p of [pos1, pos2]) {
+        for (const p of memberPositions) {
           ctx.fillText('Combined', p.x + NODE_W / 2, p.y - 8)
         }
       } else {
@@ -3387,43 +3408,44 @@ export default function FlowSchemaView({
           <span className="text-sm text-gray-700">
             <span className="font-semibold text-gray-900">{multiSelectedIds.size}</span> cards selected
           </span>
-          {multiSelectedIds.size === 2 && onCombineSteps && (() => {
-            // Sort by VISUAL X so the physically-left card becomes the
-            // primary and the physically-right card becomes the partner.
-            // Sorting by stepOrder was wrong — if the user positioned
-            // cards in a different order than the DB stepOrder, the
-            // snap would move the wrong card and flip the pair.
+          {multiSelectedIds.size >= 2 && onCombineSteps && (() => {
+            // Sort by VISUAL X so physically-left card is first. For 2
+            // cards this is a straight pair. For 3+ cards we chain them
+            // pairwise: a→b, b→c, c→d… Each step's combinedWithId points
+            // to the NEXT one in visual order. The bracket rendering
+            // follows the chain to draw one bracket around all members.
             const ids = Array.from(multiSelectedIds)
             const sortedIds = ids
               .map((id) => ({ id, x: posRef.current[id]?.x ?? 0 }))
               .sort((a, b) => a.x - b.x)
               .map((x) => x.id)
-            const [aId, bId] = sortedIds
-            const a = steps.find((s) => s.id === aId)
-            const b = steps.find((s) => s.id === bId)
-            const alreadyCombined =
-              (a as any)?.combinedWithId === bId || (b as any)?.combinedWithId === aId
+            // Check whether the chain would already be in place — every
+            // consecutive pair already combined that direction.
+            let alreadyChained = true
+            for (let i = 0; i < sortedIds.length - 1; i++) {
+              const s = steps.find((x) => x.id === sortedIds[i])
+              if ((s as any)?.combinedWithId !== sortedIds[i + 1]) { alreadyChained = false; break }
+            }
             return (
               <button
                 type="button"
-                disabled={alreadyCombined}
+                disabled={alreadyChained}
                 onClick={() => {
-                  onCombineSteps(aId, bId)
-                  // Positions stay put. Snapping was causing overlap
-                  // with neighboring cards when a big move pushed the
-                  // partner into occupied space. If cards look bad after
-                  // combine, run Tidy to reflow everything.
+                  // Chain: each card i's combinedWithId = card i+1
+                  for (let i = 0; i < sortedIds.length - 1; i++) {
+                    onCombineSteps(sortedIds[i], sortedIds[i + 1])
+                  }
                   setMultiSelectedIds(new Set())
                 }}
                 className={
                   'px-3 py-1 text-sm rounded-md text-white ' +
-                  (alreadyCombined
+                  (alreadyChained
                     ? 'bg-gray-300 cursor-not-allowed'
                     : 'bg-brand-500 hover:bg-brand-600')
                 }
-                title={alreadyCombined ? 'Already combined' : 'Combine into one screen'}
+                title={alreadyChained ? 'Already combined' : `Combine ${sortedIds.length} cards into one screen`}
               >
-                {alreadyCombined ? 'Combined' : 'Combine'}
+                {alreadyChained ? 'Combined' : 'Combine'}
               </button>
             )
           })()}
