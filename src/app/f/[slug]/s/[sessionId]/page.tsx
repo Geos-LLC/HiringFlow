@@ -1085,11 +1085,19 @@ export default function SessionPlayerPage() {
               setSubmitting(false)
             }
 
+            // Auto-generated step titles used to bake a creation-time
+            // sequence number into the string ("2 Schedule Explanation").
+            // That number goes stale as the flow reshuffles — the
+            // candidate sees "2 SCHEDULE EXPLANATION" alongside "Step
+            // 28 of 30" which is confusing. Strip any leading digits +
+            // separator so only the actual title text renders. The
+            // separate progress badge already shows the live position.
+            const cleanTitle = (displayTitle || '').replace(/^\d+[\.\s]\s*/, '').trim()
             return (
               <>
-                {displayTitle && (
+                {cleanTitle && (
                   <div className="font-mono text-[11px] uppercase text-grey-35 mb-3" style={{ letterSpacing: '0.12em' }}>
-                    {displayTitle}
+                    {cleanTitle}
                   </div>
                 )}
                 {questionStep && displayQuestion && (
