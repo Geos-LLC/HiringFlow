@@ -121,6 +121,10 @@ const NODE_H = 30 + THUMB_H + 40 // 210: title bar + thumb + answer bar
 const PORT_R = 8
 const H_GAP = 120
 const V_GAP = 70
+// Stack-mode sliver width for combined chains. Combined members render as
+// thin edge strips on either side of the active card; click a sliver to
+// bring it forward.
+const SLIVER_W = 34
 
 // Single output port on the right side of the card
 function getOutputPort(pos: NodePos, w = NODE_W, h = NODE_H): { x: number; y: number } {
@@ -249,6 +253,13 @@ export default function FlowSchemaView({
   // Guarded by a ref so we only auto-fit ONCE per mount — subsequent
   // step edits shouldn't yank the user's view.
   const hasAutoFittedRef = useRef(false)
+  // Stack UX for combined chains: only one member renders full-width at a
+  // time; the others collapse to slivers on either side. This map tracks
+  // which member is currently "in front" per chain (keyed by leader id).
+  // Empty entry / missing key → leader is active by default.
+  const [activeInChain, setActiveInChain] = useState<Record<string, string>>({})
+  const activeInChainRef = useRef(activeInChain)
+  activeInChainRef.current = activeInChain
 
   // Combined-chain port re-anchoring. Walk forward AND backward through
   // combinedWithId to collect every chain member, then pick the extremes
@@ -297,6 +308,32 @@ export default function FlowSchemaView({
       return bx < bestX ? id : best
     }, stepId)
   }, [chainMembers, positions])
+  // Chain walk order: [leader, m1, m2, ...] starting from the topological
+  // head (the member no other member points at via combinedWithId) and
+  // walking forward via combinedWithId links. Determines sliver order in
+  // the stack render — leader on the far left, tail on the far right.
+  const chainOrder = useCallback((stepId: string): string[] => {
+    const members = chainMembers(stepId)
+    if (members.length <= 1) return [stepId]
+    const memberSet = new Set(members)
+    const pointed = new Set<string>()
+    for (const m of members) {
+      const s = steps.find((x) => x.id === m)
+      const partner = (s as any)?.combinedWithId as string | null | undefined
+      if (partner && memberSet.has(partner)) pointed.add(partner)
+    }
+    const leader = members.find((m) => !pointed.has(m)) ?? members[0]
+    const ordered: string[] = []
+    const seen = new Set<string>()
+    let cur: string | undefined = leader
+    while (cur && !seen.has(cur)) {
+      seen.add(cur)
+      ordered.push(cur)
+      const s = steps.find((x) => x.id === cur)
+      cur = (s as any)?.combinedWithId ?? undefined
+    }
+    return ordered
+  }, [chainMembers, steps])
   // In-app confirmation modal. Replaces browser confirm() so the dialog
   // matches the app chrome instead of the OS/browser default.
   const [confirmDialog, setConfirmDialog] = useState<
@@ -1560,6 +1597,53 @@ export default function FlowSchemaView({
     return { w: isP ? 180 : NODE_W, h: 30 + (isP ? 200 : THUMB_H) + 40 }
   }, [videoAspects])
 
+  // Effective rendered rect for a step. Collapses combined-chain members
+  // into a stack layout: one active member renders full width at the
+  // leader's position, the others render as ~SLIVER_W-wide strips on
+  // either side. Non-chain steps pass through with their real geometry.
+  // isSliver=true means it's rendered as an edge strip; sliverSide tells
+  // us which side of the active card it lives on.
+  type RenderRect = { x: number; y: number; w: number; h: number; isSliver: boolean; sliverSide?: 'left' | 'right'; chainLeader?: string; indexInChain?: number }
+  const renderPosOf = useCallback((id: string): RenderRect | null => {
+    const pos = posRef.current[id]
+    if (!pos) return null
+    const members = chainMembers(id)
+    if (members.length <= 1) {
+      const sz = getNodeSize(id)
+      return { x: pos.x, y: pos.y, w: sz.w, h: sz.h, isSliver: false }
+    }
+    const order = chainOrder(id)
+    const leaderId = order[0]
+    const leaderPos = posRef.current[leaderId]
+    if (!leaderPos) return null
+    const activeId = activeInChainRef.current[leaderId] ?? leaderId
+    const activeIdx = Math.max(0, order.indexOf(activeId))
+    const stepIdx = order.indexOf(id)
+    // Height comes from the ACTIVE card (portrait vs landscape) so slivers
+    // always match the active card's height.
+    const activeSz = getNodeSize(order[activeIdx])
+    const baseX = leaderPos.x
+    const baseY = leaderPos.y
+    if (stepIdx === activeIdx) {
+      return { x: baseX + activeIdx * SLIVER_W, y: baseY, w: activeSz.w, h: activeSz.h, isSliver: false, chainLeader: leaderId, indexInChain: stepIdx }
+    }
+    if (stepIdx < activeIdx) {
+      return { x: baseX + stepIdx * SLIVER_W, y: baseY, w: SLIVER_W, h: activeSz.h, isSliver: true, sliverSide: 'left', chainLeader: leaderId, indexInChain: stepIdx }
+    }
+    // Right sliver
+    const rightIdx = stepIdx - activeIdx - 1
+    return { x: baseX + activeIdx * SLIVER_W + activeSz.w + rightIdx * SLIVER_W, y: baseY, w: SLIVER_W, h: activeSz.h, isSliver: true, sliverSide: 'right', chainLeader: leaderId, indexInChain: stepIdx }
+  }, [chainMembers, chainOrder, getNodeSize])
+
+  // Output port position: for the active card it's the card's right edge;
+  // for a right-sliver it's the sliver's right edge; for a left-sliver it
+  // still points at the sliver's right edge (which is where the next card
+  // in the stack begins). Callers of visualPortsFor route outgoing arrows
+  // through the rightmost visual member so option lines emerge from the
+  // stack's right edge regardless of which member owns the option.
+  const rectOutputPort = useCallback((r: RenderRect) => ({ x: r.x + r.w, y: r.y + r.h / 2 }), [])
+  const rectInputPort = useCallback((r: RenderRect) => ({ x: r.x, y: r.y + r.h / 2 }), [])
+
   const hitTestNode = useCallback((cx: number, cy: number): string | null => {
     // Check special nodes
     for (const id of [START_ID, END_ID]) {
@@ -1570,42 +1654,43 @@ export default function FlowSchemaView({
       }
     }
     for (const step of steps) {
-      const pos = posRef.current[step.id]
-      if (!pos) continue
-      const sz = getNodeSize(step.id)
-      if (cx >= pos.x && cx <= pos.x + sz.w && cy >= pos.y && cy <= pos.y + sz.h) {
+      const r = renderPosOf(step.id)
+      if (!r) continue
+      if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) {
         return step.id
       }
     }
     return null
-  }, [steps])
+  }, [steps, renderPosOf])
 
-  // Hit test: find which step's output port (right circle) is under cursor
+  // Hit test: find which step's output port (right circle) is under cursor.
+  // Only cards at the RIGHT visual edge of a chain (the tail) expose an
+  // outgoing port — intermediate slivers don't render their own ports.
   const hitTestOutputPort = useCallback((cx: number, cy: number): string | null => {
     for (const step of steps) {
-      const pos = posRef.current[step.id]
-      if (!pos) continue
-      const out = getOutputPort(pos)
-      // Full circle, generous radius so the click target is easy to hit.
-      if (dist(cx, cy, out.x, out.y) <= PORT_R + 10) {
-        return step.id
-      }
+      const r = renderPosOf(step.id)
+      if (!r) continue
+      const order = chainOrder(step.id)
+      if (order.length > 1 && step.id !== order[order.length - 1]) continue
+      const out = rectOutputPort(r)
+      if (dist(cx, cy, out.x, out.y) <= PORT_R + 10) return step.id
     }
     return null
-  }, [steps])
+  }, [steps, renderPosOf, chainOrder, rectOutputPort])
 
-  // Hit test: find which step's input port (left circle) is under cursor
+  // Hit test: find which step's input port (left circle) is under cursor.
+  // Only the leader (leftmost visual card) exposes an incoming port.
   const hitTestInputPort = useCallback((cx: number, cy: number): string | null => {
     for (const step of steps) {
-      const pos = posRef.current[step.id]
-      if (!pos) continue
-      const inp = getInputPort(pos)
-      if (dist(cx, cy, inp.x, inp.y) <= PORT_R + 10) {
-        return step.id
-      }
+      const r = renderPosOf(step.id)
+      if (!r) continue
+      const order = chainOrder(step.id)
+      if (order.length > 1 && step.id !== order[0]) continue
+      const inp = rectInputPort(r)
+      if (dist(cx, cy, inp.x, inp.y) <= PORT_R + 10) return step.id
     }
     return null
-  }, [steps])
+  }, [steps, renderPosOf, chainOrder, rectInputPort])
 
   // Hit test: arrow line (returns the option that owns it)
   // Port lookup with combined-chain re-anchoring: outgoing lines leave
@@ -1615,14 +1700,19 @@ export default function FlowSchemaView({
   // Falls back to the step's own port when no chain.
   const visualPortsFor = useCallback(
     (sourceId: string, targetId: string): { out: { x: number; y: number }; inp: { x: number; y: number } } | null => {
-      const srcId = getVisualRightmost(sourceId)
-      const tgtId = getVisualLeftmost(targetId)
-      const srcPos = posRef.current[srcId] ?? posRef.current[sourceId]
-      const tgtPos = posRef.current[tgtId] ?? posRef.current[targetId]
-      if (!srcPos || !tgtPos) return null
-      return { out: getOutputPort(srcPos), inp: getInputPort(tgtPos) }
+      // Use chain ORDER (not positions.x) so the stack-collapse render doesn't
+      // break the rightmost/leftmost lookup. In the stack layout every chain
+      // member's data position is unrelated to where it renders.
+      const srcOrder = chainOrder(sourceId)
+      const tgtOrder = chainOrder(targetId)
+      const srcId = srcOrder[srcOrder.length - 1]
+      const tgtId = tgtOrder[0]
+      const srcRect = renderPosOf(srcId)
+      const tgtRect = renderPosOf(tgtId)
+      if (!srcRect || !tgtRect) return null
+      return { out: rectOutputPort(srcRect), inp: rectInputPort(tgtRect) }
     },
-    [getVisualRightmost, getVisualLeftmost]
+    [chainOrder, renderPosOf, rectOutputPort, rectInputPort]
   )
 
   // A connection A→B is intra-chain when both live in the same combined
@@ -1927,13 +2017,13 @@ export default function FlowSchemaView({
       }
       if (members.length < 2) continue
       members.forEach((m) => bracketProcessed.add(m))
-      const memberPositions = members.map((id) => positions[id]).filter(Boolean)
-      if (memberPositions.length < 2) continue
+      const memberRects = members.map((id) => renderPosOf(id)).filter((r): r is RenderRect => !!r)
+      if (memberRects.length < 2) continue
 
-      const minX = Math.min(...memberPositions.map((p) => p.x)) - 6
-      const minY = Math.min(...memberPositions.map((p) => p.y)) - 6
-      const maxX = Math.max(...memberPositions.map((p) => p.x + NODE_W)) + 6
-      const maxY = Math.max(...memberPositions.map((p) => p.y + NODE_H)) + 6
+      const minX = Math.min(...memberRects.map((r) => r.x)) - 6
+      const minY = Math.min(...memberRects.map((r) => r.y)) - 6
+      const maxX = Math.max(...memberRects.map((r) => r.x + r.w)) + 6
+      const maxY = Math.max(...memberRects.map((r) => r.y + r.h)) + 6
 
       // If any unrelated card overlaps the bounding box, the rectangle bracket would
       // visually engulf it — fall back to outlining each combined card individually.
@@ -1966,35 +2056,59 @@ export default function FlowSchemaView({
     }
 
     // --- Draw step nodes ---
-    for (let si = 0; si < steps.length; si++) {
-      const step = steps[si]
-      const pos = positions[step.id]
-      if (!pos) continue
+    // Two-pass render so slivers (which live BEHIND the active card
+    // visually) are drawn first, then the active card sits on top.
+    const stepsToDrawFull: typeof steps = []
+    const stepsToDrawSliver: typeof steps = []
+    for (const step of steps) {
+      const r = renderPosOf(step.id)
+      if (!r) continue
+      if (r.isSliver) stepsToDrawSliver.push(step)
+      else stepsToDrawFull.push(step)
+    }
+    // Slivers first (behind).
+    for (const step of stepsToDrawSliver) {
+      const r = renderPosOf(step.id)
+      if (!r) continue
+      drawSliver(ctx, step, r, thumbnails[step.id])
+    }
+    // Active/normal cards on top.
+    for (const step of stepsToDrawFull) {
+      const r = renderPosOf(step.id)
+      if (!r) continue
       const stageNum = stageNumberByStep.get(step.id) ?? (sorted.indexOf(step) + 1)
-      drawNode(ctx, step, pos, step.id === selectedStepId, thumbnails[step.id], stageNum - 1, videoAspects[step.id], screenImages[step.id])
+      drawNode(ctx, step, { x: r.x, y: r.y }, step.id === selectedStepId, thumbnails[step.id], stageNum - 1, videoAspects[step.id], screenImages[step.id])
 
-      // Draw single OUTPUT port (right side). A step is "outgoing" if any
-      // of its options has a nextStepId, OR its Continue button points to
-      // another step / End — otherwise the port stays hollow.
-      const out = getOutputPort(pos)
-      const isOutHovered = hoveredPort === `out_${step.id}`
-      const buttonNext = (step as any).buttonConfig?.nextStepId
-      const hasOutgoing =
-        step.options.some((o) => o.nextStepId) ||
-        (!!buttonNext && (buttonNext === '__end__' || steps.some((s) => s.id === buttonNext)))
-      drawPortCircle(ctx, out.x, out.y, isOutHovered, hasOutgoing)
+      // Ports render only on the chain's visual endpoints. For a solo card
+      // both ports show; for a chain leader only the input port, and only
+      // the tail exposes the output port. Intermediate slivers show
+      // nothing because their ports would be inside the stack.
+      const order = chainOrder(step.id)
+      const isTail = order.length <= 1 || step.id === order[order.length - 1]
+      const isHead = order.length <= 1 || step.id === order[0]
 
-      // Draw single INPUT port (left side). Same fix on the incoming side —
-      // a card can be a target via option.nextStepId OR another card's
-      // buttonConfig.nextStepId.
-      const inp = getInputPort(pos)
-      const isInpHovered = hoveredPort === `inp_${step.id}`
-      const hasIncoming =
-        steps.some((s) =>
-          s.options.some((o) => o.nextStepId === step.id) ||
-          (s as any).buttonConfig?.nextStepId === step.id
-        ) || step.id === sorted[0]?.id
-      drawPortCircle(ctx, inp.x, inp.y, isInpHovered, hasIncoming)
+      if (isTail) {
+        const out = rectOutputPort(r)
+        const isOutHovered = hoveredPort === `out_${step.id}`
+        // For chains, "hasOutgoing" is the union across every member.
+        const hasOutgoing = order.some((mid) => {
+          const m = steps.find((s) => s.id === mid)
+          if (!m) return false
+          const btn = (m as any).buttonConfig?.nextStepId
+          return m.options.some((o) => o.nextStepId) || (!!btn && (btn === '__end__' || steps.some((s) => s.id === btn)))
+        })
+        drawPortCircle(ctx, out.x, out.y, isOutHovered, hasOutgoing)
+      }
+      if (isHead) {
+        const inp = rectInputPort(r)
+        const isInpHovered = hoveredPort === `inp_${step.id}`
+        const hasIncoming =
+          order.some((mid) => steps.some((s) =>
+            s.options.some((o) => o.nextStepId === mid) ||
+            (s as any).buttonConfig?.nextStepId === mid
+          )) || step.id === sorted[0]?.id
+        drawPortCircle(ctx, inp.x, inp.y, isInpHovered, hasIncoming)
+      }
     }
 
     // Re-draw drag handles for the SELECTED arrow after port circles, so
@@ -2004,15 +2118,14 @@ export default function FlowSchemaView({
     if (selectedArrow) {
       if (selectedArrow.kind === 'start') {
         const sortedSteps = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
-        const fp = sortedSteps[0] ? positions[sortedSteps[0].id] : null
-        if (fp) drawDragHandle(ctx, fp.x, fp.y + NODE_H / 2, SELECTED_COLOR)
+        const fpr = sortedSteps[0] ? renderPosOf(sortedSteps[0].id) : null
+        if (fpr) drawDragHandle(ctx, fpr.x, fpr.y + fpr.h / 2, SELECTED_COLOR)
       } else if (selectedArrow.kind === 'end') {
-        const sPos = positions[selectedArrow.stepId]
-        if (sPos) drawDragHandle(ctx, sPos.x + NODE_W, sPos.y + NODE_H / 2, SELECTED_COLOR)
+        const ports = visualPortsFor(selectedArrow.stepId, selectedArrow.stepId)
+        if (ports) drawDragHandle(ctx, ports.out.x, ports.out.y, SELECTED_COLOR)
       } else {
         // option or button: re-draw both source-out and target-in handles
         const sourceStep = steps.find((s) => s.id === selectedArrow.stepId)
-        const sourcePos = sourceStep ? positions[sourceStep.id] : null
         let targetStepId: string | null = null
         if (selectedArrow.kind === 'button') {
           const btnNext = sourceStep?.buttonConfig?.nextStepId
@@ -2021,14 +2134,10 @@ export default function FlowSchemaView({
           const option = sourceStep.options.find((o) => o.id === selectedArrow.optionId)
           if (option?.nextStepId && option.nextStepId !== '__end__') targetStepId = option.nextStepId
         }
-        const targetPos = targetStepId ? positions[targetStepId] : null
-        if (sourcePos) {
-          const o = getOutputPort(sourcePos)
-          drawDragHandle(ctx, o.x, o.y, SELECTED_COLOR)
-        }
-        if (targetPos) {
-          const i = getInputPort(targetPos)
-          drawDragHandle(ctx, i.x, i.y, SELECTED_COLOR)
+        const ports = targetStepId ? visualPortsFor(selectedArrow.stepId, targetStepId) : null
+        if (ports) {
+          drawDragHandle(ctx, ports.out.x, ports.out.y, SELECTED_COLOR)
+          drawDragHandle(ctx, ports.inp.x, ports.inp.y, SELECTED_COLOR)
         }
       }
     }
@@ -2058,10 +2167,10 @@ export default function FlowSchemaView({
       ctx.lineWidth = 2.5
       ctx.setLineDash([])
       multiSelectedIds.forEach((sid) => {
-        const p = positions[sid]
-        if (!p) return
+        const r = renderPosOf(sid)
+        if (!r) return
         ctx.beginPath()
-        ctx.roundRect(p.x - 2, p.y - 2, NODE_W + 4, NODE_H + 4, 10)
+        ctx.roundRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4, 10)
         ctx.stroke()
       })
     }
@@ -2647,6 +2756,28 @@ export default function FlowSchemaView({
     const nodeId = hitTestNode(cx, cy)
     if (nodeId) {
       setSelectedArrow(null)
+      // Chain-member click: if it's a sliver (not the active member) just
+      // bring it forward — don't start a drag. Users tap slivers to
+      // browse the stack; dragging is reserved for the active card and
+      // moves the whole chain as one unit.
+      const order = chainOrder(nodeId)
+      if (order.length > 1) {
+        const leaderId = order[0]
+        const currentActive = activeInChainRef.current[leaderId] ?? leaderId
+        if (nodeId !== currentActive) {
+          setActiveInChain((prev) => ({ ...prev, [leaderId]: nodeId }))
+          return
+        }
+        // Active card in a chain — drag the whole chain together.
+        const offsets: Record<string, { x: number; y: number }> = {}
+        for (const mid of order) {
+          const mp = positions[mid]
+          if (!mp) continue
+          offsets[mid] = { x: cx - mp.x, y: cy - mp.y }
+        }
+        setMode({ type: 'dragging_group', stepIds: order, offsets })
+        return
+      }
       const pos = positions[nodeId]
       if (pos) {
         setMode({
@@ -2669,23 +2800,20 @@ export default function FlowSchemaView({
         for (const step of steps) {
           const partnerId = step.combinedWithId
           if (!partnerId) continue
+          const order = chainOrder(step.id)
+          const rects = order.map((id) => renderPosOf(id)).filter((r): r is RenderRect => !!r)
+          if (rects.length < 2) continue
+          const minX = Math.min(...rects.map((r) => r.x)) - 6
+          const minY = Math.min(...rects.map((r) => r.y)) - 6
+          const maxX = Math.max(...rects.map((r) => r.x + r.w)) + 6
+          const maxY = Math.max(...rects.map((r) => r.y + r.h)) + 6
+          if (cx < minX - 8 || cx > maxX + 8 || cy < minY - 8 || cy > maxY + 8) continue
+          // Outside every member's rendered rect — the dashed frame region.
+          const insideAny = rects.some((r) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h)
+          if (insideAny) continue
           const pos1 = positions[step.id]
           const pos2 = positions[partnerId]
           if (!pos1 || !pos2) continue
-          const minX = Math.min(pos1.x, pos2.x) - 6
-          const minY = Math.min(pos1.y, pos2.y) - 6
-          const maxX = Math.max(pos1.x + NODE_W, pos2.x + NODE_W) + 6
-          const maxY = Math.max(pos1.y + NODE_H, pos2.y + NODE_H) + 6
-          // Inside the outer bracket?
-          if (cx < minX - 8 || cx > maxX + 8 || cy < minY - 8 || cy > maxY + 8) continue
-          // But OUTSIDE both cards (so we don't steal clicks meant for cards)
-          const insideCard1 =
-            cx >= pos1.x && cx <= pos1.x + NODE_W &&
-            cy >= pos1.y && cy <= pos1.y + NODE_H
-          const insideCard2 =
-            cx >= pos2.x && cx <= pos2.x + NODE_W &&
-            cy >= pos2.y && cy <= pos2.y + NODE_H
-          if (insideCard1 || insideCard2) continue
           return { step, partnerId, pos1, pos2 }
         }
         return null
@@ -3125,10 +3253,10 @@ export default function FlowSchemaView({
       } else {
         const selected = new Set<string>()
         for (const step of steps) {
-          const p = positions[step.id]
-          if (!p) continue
+          const r = renderPosOf(step.id)
+          if (!r) continue
           // Any overlap with the marquee rect counts.
-          if (p.x < maxX && p.x + NODE_W > minX && p.y < maxY && p.y + NODE_H > minY) {
+          if (r.x < maxX && r.x + r.w > minX && r.y < maxY && r.y + r.h > minY) {
             selected.add(step.id)
           }
         }
@@ -3873,6 +4001,82 @@ function drawSpecialNode(
   ctx.fillStyle = '#94a3b8'
   const sub = subtitle.length > 22 ? subtitle.slice(0, 20) + '...' : subtitle
   ctx.fillText(sub, pos.x + SPECIAL_W / 2, pos.y + SPECIAL_H / 2 + 8)
+}
+
+// Draw a slivered chain member — a narrow (SLIVER_W-wide) strip that peeks
+// out from behind the active card. Uses the card's thumbnail as a preview
+// cropped to the sliver rectangle; falls back to a solid orange strip when
+// no thumbnail is available. Click a sliver to bring it forward — hit
+// testing already treats slivers as normal card hits, and the mouse-up
+// handler routes the click to setActiveInChain.
+function drawSliver(
+  ctx: CanvasRenderingContext2D,
+  step: Step,
+  rect: { x: number; y: number; w: number; h: number },
+  thumb?: HTMLImageElement | HTMLCanvasElement
+) {
+  // Shadow + card fill
+  ctx.save()
+  ctx.shadowColor = 'rgba(0,0,0,0.1)'
+  ctx.shadowBlur = 8
+  ctx.shadowOffsetY = 2
+  ctx.beginPath()
+  ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12)
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+  ctx.restore()
+
+  // Border
+  ctx.beginPath()
+  ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12)
+  ctx.strokeStyle = '#FFEDD5'
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+
+  // Thumbnail preview cropped to sliver bounds (rendered CENTER of the
+  // thumbnail so the peek shows the main subject, not the edge).
+  if (thumb) {
+    ctx.save()
+    ctx.beginPath()
+    ctx.roundRect(rect.x + 4, rect.y + 30, rect.w - 8, rect.h - 60, 6)
+    ctx.clip()
+    const dw = rect.w - 8
+    const dh = rect.h - 60
+    const iw = thumb.width
+    const ih = thumb.height
+    // Cover-crop centered
+    const scale = Math.max(dw / iw, dh / ih)
+    const sw = dw / scale
+    const sh = dh / scale
+    const sx = (iw - sw) / 2
+    const sy = (ih - sh) / 2
+    ctx.drawImage(thumb, sx, sy, sw, sh, rect.x + 4, rect.y + 30, dw, dh)
+    ctx.restore()
+  } else {
+    ctx.beginPath()
+    ctx.roundRect(rect.x + 4, rect.y + 30, rect.w - 8, rect.h - 60, 6)
+    ctx.fillStyle = '#FFEDD5'
+    ctx.fill()
+  }
+
+  // Vertical accent bar so the sliver reads as a "tab" you can click.
+  ctx.fillStyle = '#FF9500'
+  ctx.fillRect(rect.x + rect.w / 2 - 1, rect.y + 8, 2, 12)
+  ctx.fillRect(rect.x + rect.w / 2 - 1, rect.y + rect.h - 20, 2, 12)
+
+  // Tiny label so you can tell members apart. Rotated 90° up-to-down.
+  const label = (step.title || '').replace(/^\d+[\.\s]\s*/, '').trim().slice(0, 20)
+  if (label) {
+    ctx.save()
+    ctx.translate(rect.x + rect.w / 2, rect.y + rect.h / 2)
+    ctx.rotate(-Math.PI / 2)
+    ctx.font = 'bold 10px "Be Vietnam Pro", system-ui'
+    ctx.fillStyle = '#59595A'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(label, 0, 0)
+    ctx.restore()
+  }
 }
 
 function drawNode(
