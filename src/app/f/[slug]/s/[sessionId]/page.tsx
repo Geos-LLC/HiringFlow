@@ -1032,19 +1032,17 @@ export default function SessionPlayerPage() {
                     autoPlay
                     onEnded={handleVideoEnd}
                     onWatchTelemetry={(data) => reportWatchTelemetry(step.stepId, data)}
-                    // Pin the <video> element to a 16:9 aspect ratio via
-                    // aspect-video so the box is a fixed shape from
-                    // mount — before HLS attaches, before metadata
-                    // loads, before playback ends. Without this the
-                    // element's rendered size follows the browser's
-                    // reported intrinsic size, which flips between the
-                    // startLevel HLS variant, the ready variant, and
-                    // the last-frame canvas at end. w-full lets it fill
-                    // the card width; max-h caps it in short windows so
-                    // it doesn't push controls off screen. object-contain
-                    // is the letterbox rule inside that fixed box.
+                    // Fill the card's height and let the width flex to
+                    // whatever the video's natural aspect ratio needs.
+                    // Pinning aspect-video (16:9) here made portrait
+                    // videos render as a small centered box with huge
+                    // black bars on the sides — h-full + w-auto lets a
+                    // portrait video take up the full card height at
+                    // its natural width, and a landscape video is
+                    // capped by max-w-full and letterboxed via
+                    // object-contain.
                     className="rounded-[20px] w-full h-full flex items-center justify-center"
-                    videoClassName="aspect-video max-h-[calc(100vh-120px)] max-w-full w-full object-contain"
+                    videoClassName="h-full max-h-[calc(100vh-120px)] max-w-full w-auto object-contain"
                   />
                 </div>
               )
