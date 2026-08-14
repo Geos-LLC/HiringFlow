@@ -1624,15 +1624,20 @@ export default function FlowSchemaView({
     const activeSz = getNodeSize(order[activeIdx])
     const baseX = leaderPos.x
     const baseY = leaderPos.y
+    // Active card ALWAYS sits at (baseX, baseY) — it's the fixed anchor,
+    // like the front of a card deck. Left slivers extend to the left of
+    // baseX, right slivers extend to the right of active's right edge.
+    // Switching the active member keeps the position constant; only which
+    // card is "in front" changes.
     if (stepIdx === activeIdx) {
-      return { x: baseX + activeIdx * SLIVER_W, y: baseY, w: activeSz.w, h: activeSz.h, isSliver: false, chainLeader: leaderId, indexInChain: stepIdx }
+      return { x: baseX, y: baseY, w: activeSz.w, h: activeSz.h, isSliver: false, chainLeader: leaderId, indexInChain: stepIdx }
     }
     if (stepIdx < activeIdx) {
-      return { x: baseX + stepIdx * SLIVER_W, y: baseY, w: SLIVER_W, h: activeSz.h, isSliver: true, sliverSide: 'left', chainLeader: leaderId, indexInChain: stepIdx }
+      const leftDist = activeIdx - stepIdx
+      return { x: baseX - leftDist * SLIVER_W, y: baseY, w: SLIVER_W, h: activeSz.h, isSliver: true, sliverSide: 'left', chainLeader: leaderId, indexInChain: stepIdx }
     }
-    // Right sliver
-    const rightIdx = stepIdx - activeIdx - 1
-    return { x: baseX + activeIdx * SLIVER_W + activeSz.w + rightIdx * SLIVER_W, y: baseY, w: SLIVER_W, h: activeSz.h, isSliver: true, sliverSide: 'right', chainLeader: leaderId, indexInChain: stepIdx }
+    const rightDist = stepIdx - activeIdx
+    return { x: baseX + activeSz.w + (rightDist - 1) * SLIVER_W, y: baseY, w: SLIVER_W, h: activeSz.h, isSliver: true, sliverSide: 'right', chainLeader: leaderId, indexInChain: stepIdx }
   }, [chainMembers, chainOrder, getNodeSize])
 
   // Output port position: for the active card it's the card's right edge;
@@ -1858,15 +1863,13 @@ export default function FlowSchemaView({
     for (const conn of allConnections) {
       // Intra-chain edges are implicit in the combined box — skip.
       if (isIntraCombinedPair(conn.sourceId, conn.targetId)) continue
-      // Re-anchor to the chain's rightmost (source) / leftmost (target)
-      // so lines leave/enter the box edge, not an interior card.
-      const visualSourceId = getVisualRightmost(conn.sourceId)
-      const visualTargetId = getVisualLeftmost(conn.targetId)
-      const sourcePos = positions[visualSourceId] ?? positions[conn.sourceId]
-      const targetPos = positions[visualTargetId] ?? positions[conn.targetId]
-      if (!sourcePos || !targetPos) continue
-      const out = getOutputPort(sourcePos)
-      const inp = getInputPort(targetPos)
+      // Use visualPortsFor so ports come from RENDERED positions (stack-
+      // collapsed for combined chains), not raw data positions. Otherwise
+      // arrows point at where cards used to live in the pre-collapse
+      // grid layout and appear disconnected from their visible sources.
+      const ports = visualPortsFor(conn.sourceId, conn.targetId)
+      if (!ports) continue
+      const { out, inp } = ports
 
       const isSelected =
         conn.kind === 'button'
@@ -4013,65 +4016,41 @@ function drawSliver(
   ctx: CanvasRenderingContext2D,
   step: Step,
   rect: { x: number; y: number; w: number; h: number },
-  thumb?: HTMLImageElement | HTMLCanvasElement
+  _thumb?: HTMLImageElement | HTMLCanvasElement
 ) {
-  // Shadow + card fill
+  // Warm-tinted tab so the sliver reads as a peeking card. Skip the
+  // thumbnail — a 34px-wide slice of the video shows almost nothing
+  // useful. A rotated title + accent bars make chain members
+  // distinguishable at a glance.
   ctx.save()
-  ctx.shadowColor = 'rgba(0,0,0,0.1)'
-  ctx.shadowBlur = 8
+  ctx.shadowColor = 'rgba(0,0,0,0.08)'
+  ctx.shadowBlur = 6
   ctx.shadowOffsetY = 2
   ctx.beginPath()
   ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12)
-  ctx.fillStyle = '#ffffff'
+  ctx.fillStyle = '#FFF7ED'
   ctx.fill()
   ctx.restore()
 
-  // Border
   ctx.beginPath()
   ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12)
-  ctx.strokeStyle = '#FFEDD5'
+  ctx.strokeStyle = '#FFD8A8'
   ctx.lineWidth = 1.5
   ctx.stroke()
 
-  // Thumbnail preview cropped to sliver bounds (rendered CENTER of the
-  // thumbnail so the peek shows the main subject, not the edge).
-  if (thumb) {
-    ctx.save()
-    ctx.beginPath()
-    ctx.roundRect(rect.x + 4, rect.y + 30, rect.w - 8, rect.h - 60, 6)
-    ctx.clip()
-    const dw = rect.w - 8
-    const dh = rect.h - 60
-    const iw = thumb.width
-    const ih = thumb.height
-    // Cover-crop centered
-    const scale = Math.max(dw / iw, dh / ih)
-    const sw = dw / scale
-    const sh = dh / scale
-    const sx = (iw - sw) / 2
-    const sy = (ih - sh) / 2
-    ctx.drawImage(thumb, sx, sy, sw, sh, rect.x + 4, rect.y + 30, dw, dh)
-    ctx.restore()
-  } else {
-    ctx.beginPath()
-    ctx.roundRect(rect.x + 4, rect.y + 30, rect.w - 8, rect.h - 60, 6)
-    ctx.fillStyle = '#FFEDD5'
-    ctx.fill()
-  }
-
-  // Vertical accent bar so the sliver reads as a "tab" you can click.
+  // Vertical accent bars (top + bottom) suggesting a tab handle.
   ctx.fillStyle = '#FF9500'
-  ctx.fillRect(rect.x + rect.w / 2 - 1, rect.y + 8, 2, 12)
-  ctx.fillRect(rect.x + rect.w / 2 - 1, rect.y + rect.h - 20, 2, 12)
+  ctx.fillRect(rect.x + rect.w / 2 - 1, rect.y + 10, 2, 10)
+  ctx.fillRect(rect.x + rect.w / 2 - 1, rect.y + rect.h - 20, 2, 10)
 
-  // Tiny label so you can tell members apart. Rotated 90° up-to-down.
-  const label = (step.title || '').replace(/^\d+[\.\s]\s*/, '').trim().slice(0, 20)
+  // Rotated label — reads bottom-up so the leader appears on the left.
+  const label = (step.title || '').replace(/^\d+[\.\s]\s*/, '').trim().slice(0, 26)
   if (label) {
     ctx.save()
     ctx.translate(rect.x + rect.w / 2, rect.y + rect.h / 2)
     ctx.rotate(-Math.PI / 2)
     ctx.font = 'bold 10px "Be Vietnam Pro", system-ui'
-    ctx.fillStyle = '#59595A'
+    ctx.fillStyle = '#7A4A00'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(label, 0, 0)
