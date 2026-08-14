@@ -1929,33 +1929,25 @@ export default function FlowSchemaView({
         return !(p.x + NODE_W < minX || p.x > maxX || p.y + NODE_H < minY || p.y > maxY)
       })
 
+      // Always draw ONE rounded bracket around all chain members.
+      // Previous fallback to individual outlines (when the bounding box
+      // engulfed unrelated cards) made freshly-combined chains look
+      // fragmented until the user moved them — user expected the single
+      // bracket immediately. `wouldEngulfOther` is now unused, kept above
+      // to avoid touching unrelated code paths; if the bracket visually
+      // wraps a neighbor, running Tidy will separate the layout.
+      void wouldEngulfOther
       ctx.strokeStyle = '#FF9500'
       ctx.lineWidth = 2
       ctx.setLineDash([6, 4])
-
-      if (wouldEngulfOther) {
-        for (const p of memberPositions) {
-          ctx.beginPath()
-          ctx.roundRect(p.x - 6, p.y - 6, NODE_W + 12, NODE_H + 12, 16)
-          ctx.stroke()
-        }
-        ctx.setLineDash([])
-        ctx.font = 'bold 9px "Be Vietnam Pro", system-ui'
-        ctx.fillStyle = '#FF9500'
-        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-        for (const p of memberPositions) {
-          ctx.fillText('Combined', p.x + NODE_W / 2, p.y - 8)
-        }
-      } else {
-        ctx.beginPath()
-        ctx.roundRect(minX, minY, maxX - minX, maxY - minY, 16)
-        ctx.stroke()
-        ctx.setLineDash([])
-        ctx.font = 'bold 9px "Be Vietnam Pro", system-ui'
-        ctx.fillStyle = '#FF9500'
-        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-        ctx.fillText('Combined', (minX + maxX) / 2, minY - 2)
-      }
+      ctx.beginPath()
+      ctx.roundRect(minX, minY, maxX - minX, maxY - minY, 16)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.font = 'bold 9px "Be Vietnam Pro", system-ui'
+      ctx.fillStyle = '#FF9500'
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+      ctx.fillText('Combined', (minX + maxX) / 2, minY - 2)
     }
 
     // --- Draw step nodes ---

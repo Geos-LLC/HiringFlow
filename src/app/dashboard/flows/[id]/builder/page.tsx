@@ -789,25 +789,35 @@ export default function FlowBuilderPage() {
     setAddStepAlsoAudio(false)
     setAddStepAlsoVideo(false)
     if (primary && (alsoAudio || alsoVideo)) {
-      // Read the primary's current canvas position (if any). computeLayout
-      // sets a default position via BFS which may overlap the card that
-      // was already to its right — so we explicitly place each companion
-      // BELOW the primary (or the previous companion) to guarantee no
-      // horizontal collision with neighbors.
-      const NODE_H = 30 + 140 + 40  // matches FlowSchemaView constant
+      // Place each companion at (primary.x + i*(NODE_W+GAP), primary.y)
+      // so the pair sits in a row. Cards originally to the right of the
+      // primary get shifted right by the total space the companions take
+      // up so they don't collide.
+      const NODE_W = 280  // matches FlowSchemaView constant
+      const H_GAP = 8
+      const numCompanions = (alsoAudio ? 1 : 0) + (alsoVideo ? 1 : 0)
+      const shift = numCompanions * (NODE_W + H_GAP)
       const layout = { ...(flow?.canvasLayout ?? {}) } as Record<string, { x: number; y: number }>
       const primaryPos = layout[primary.id] ?? { x: 0, y: 0 }
-      let stackY = primaryPos.y + NODE_H + 40
-      const createAndStack = async (type: 'capture' | 'submission') => {
+      // Shift every card that was strictly right of primary by `shift` px
+      // so the incoming companions have room to slot in adjacent.
+      Object.keys(layout).forEach((id) => {
+        if (id === primary.id) return
+        const p = layout[id]
+        if (p && p.x > primaryPos.x) {
+          layout[id] = { x: p.x + shift, y: p.y }
+        }
+      })
+      let cursorX = primaryPos.x + NODE_W + H_GAP
+      const createAndPlace = async (type: 'capture' | 'submission') => {
         const c = await createStep(type, undefined, { combineSourceId: primary.id })
         if (c) {
-          layout[c.id] = { x: primaryPos.x, y: stackY }
-          stackY += NODE_H + 40
+          layout[c.id] = { x: cursorX, y: primaryPos.y }
+          cursorX += NODE_W + H_GAP
         }
       }
-      if (alsoAudio) await createAndStack('capture')
-      if (alsoVideo) await createAndStack('submission')
-      // Persist the layout so companions stay put on next load.
+      if (alsoAudio) await createAndPlace('capture')
+      if (alsoVideo) await createAndPlace('submission')
       await fetch(`/api/flows/${flowId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
