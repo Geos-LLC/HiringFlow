@@ -108,11 +108,11 @@ const flowTrace = (topic: string, data?: unknown) => {
   const payload = data !== undefined
     ? ' ' + (() => { try { return JSON.stringify(data) } catch { return '[unserializable]' } })()
     : ''
-  // Uses console.error so @fixprompt/browser forwards these to FixLoop;
-  // console.log stays local and won't be captured. Prefix `[flow]` makes
-  // them easy to filter out from real errors in the dashboard.
+  // Local-only console.log so DevTools shows these as normal info lines,
+  // not red-X errors. FixLoop forwarding was scaring users. Copy/paste
+  // from DevTools console for debug reports.
   // eslint-disable-next-line no-console
-  console.error(`[flow] ${topic}${payload}`)
+  console.log(`[flow] ${topic}${payload}`)
 }
 
 const NODE_W = 280

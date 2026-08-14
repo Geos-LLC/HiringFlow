@@ -1031,6 +1031,7 @@ export default function SessionPlayerPage() {
                     captionStyle={(step.captionStyle as CaptionStyle) || DEFAULT_CAPTION_STYLE}
                     autoPlay
                     onEnded={handleVideoEnd}
+                    onError={handleVideoEnd}
                     onWatchTelemetry={(data) => reportWatchTelemetry(step.stepId, data)}
                     // Fill the card's height and let the width flex to
                     // whatever the video's natural aspect ratio needs.

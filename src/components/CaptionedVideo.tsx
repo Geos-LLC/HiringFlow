@@ -69,6 +69,11 @@ interface CaptionedVideoProps {
   showStyleEditor?: boolean
   autoPlay?: boolean
   onEnded?: () => void
+  /** Fired when the <video> element hits an error event (network fail,
+   *  decode error, missing source). Used by the candidate-facing flow
+   *  player to unlock Continue so a broken video doesn't strand the
+   *  candidate on a blank screen. */
+  onError?: () => void
   /** Fired on pause / seeked / ended / unmount when set. Used by the
    *  candidate-facing flow player to record how the video was actually
    *  consumed (skipped past, rewound, watched end-to-end). Only user-
@@ -91,6 +96,7 @@ export default function CaptionedVideo({
   showStyleEditor = false,
   autoPlay = false,
   onEnded,
+  onError,
   onWatchTelemetry,
   className,
   videoClassName,
@@ -495,6 +501,7 @@ export default function CaptionedVideo({
             autoPlay={autoPlay}
             playsInline
             onEnded={onEnded}
+            onError={onError}
             style={!effectiveHlsUrl && cachedLocalBlob && !localBlobAttached ? { visibility: 'hidden' } : undefined}
           />
         ) : null}
