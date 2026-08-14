@@ -293,6 +293,11 @@ export default function FlowBuilderPage() {
   const [addStepQuestion, setAddStepQuestion] = useState('')
   const [addStepOptions, setAddStepOptions] = useState<Array<{ text: string; nextStepId: string | null }>>([{ text: '', nextStepId: null }, { text: '', nextStepId: null }])
   const [addStepQuestionType, setAddStepQuestionType] = useState('single')
+  // When creating a Text-field question, the recruiter can also opt to
+  // have an audio or video recording step created and combined with it
+  // in one Save. Toggled from the Text field UI in the Add Step modal.
+  const [addStepAlsoAudio, setAddStepAlsoAudio] = useState(false)
+  const [addStepAlsoVideo, setAddStepAlsoVideo] = useState(false)
   const [addStepFormFields, setAddStepFormFields] = useState([
     { id: 'name', label: 'Full Name', type: 'text', required: true, enabled: true, isBuiltIn: true },
     { id: 'email', label: 'Email', type: 'email', required: true, enabled: true, isBuiltIn: true },
@@ -530,7 +535,9 @@ export default function FlowBuilderPage() {
       // heavier than most flow-builder undos justify.
       const newStepId: string = newStep.id
       pushUndo({ run: () => { deleteStep(newStepId) } })
+      return newStep
     }
+    return null
   }
 
   const addStep = () => {
@@ -664,7 +671,7 @@ export default function FlowBuilderPage() {
     }
   }
 
-  const submitAddStep = () => {
+  const submitAddStep = async () => {
     if (!addStepType) return
     // Validate title
     if (!addStepTitle.trim() && !autoTitleEnabled) {
@@ -773,7 +780,18 @@ export default function FlowBuilderPage() {
       config.schedulingConfigId = addStepSchedulingConfigId
       if (addStepButtonEnabled) config.buttonConfig = buttonConfigBase()
     }
-    createStep(addStepType, config)
+    // Snapshot the "also create audio/video" flags before the async call
+    // so we can use them after the primary step is created without
+    // worrying about the modal being reset in the meantime.
+    const alsoAudio = addStepType === 'question' && addStepQuestionType === 'text' && addStepAlsoAudio
+    const alsoVideo = addStepType === 'question' && addStepQuestionType === 'text' && addStepAlsoVideo
+    const primary = await createStep(addStepType, config)
+    setAddStepAlsoAudio(false)
+    setAddStepAlsoVideo(false)
+    if (primary && (alsoAudio || alsoVideo)) {
+      if (alsoAudio) await createStep('capture', undefined, { combineSourceId: primary.id })
+      if (alsoVideo) await createStep('submission', undefined, { combineSourceId: primary.id })
+    }
   }
 
   const updateStep = async (stepId: string, data: Partial<Step>) => {
@@ -2999,8 +3017,34 @@ export default function FlowBuilderPage() {
                     </div>
                   </div>
                   {addStepQuestionType === 'text' && (
-                    <div className="rounded-[8px] border border-surface-border bg-brand-50/40 p-3 text-xs text-grey-40">
-                      Candidate will type an open text answer. After creating this step you can add an audio or video recording alongside it from the step editor.
+                    <div className="rounded-[8px] border border-surface-border bg-brand-50/40 p-3 space-y-2">
+                      <p className="text-xs text-grey-40">
+                        Candidate types an open text answer. Optionally add a recording step alongside so they can also speak or show it:
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAddStepAlsoAudio((v) => !v)}
+                          className={`text-xs px-3 py-1.5 rounded-[6px] border font-medium ${
+                            addStepAlsoAudio
+                              ? 'border-brand-500 bg-brand-500 text-white'
+                              : 'border-brand-300 text-brand-700 bg-white hover:bg-brand-100'
+                          }`}
+                        >
+                          {addStepAlsoAudio ? '✓ Audio recording' : '+ Add audio recording'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAddStepAlsoVideo((v) => !v)}
+                          className={`text-xs px-3 py-1.5 rounded-[6px] border font-medium ${
+                            addStepAlsoVideo
+                              ? 'border-brand-500 bg-brand-500 text-white'
+                              : 'border-brand-300 text-brand-700 bg-white hover:bg-brand-100'
+                          }`}
+                        >
+                          {addStepAlsoVideo ? '✓ Video recording' : '+ Add video recording'}
+                        </button>
+                      </div>
                     </div>
                   )}
                   {addStepQuestionType !== 'yesno' && addStepQuestionType !== 'text' && (
