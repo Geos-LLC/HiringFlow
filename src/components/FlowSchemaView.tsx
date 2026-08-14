@@ -1669,28 +1669,32 @@ export default function FlowSchemaView({
   }, [steps, renderPosOf])
 
   // Hit test: find which step's output port (right circle) is under cursor.
-  // Only cards at the RIGHT visual edge of a chain (the tail) expose an
-  // outgoing port — intermediate slivers don't render their own ports.
+  // For chains, only the ACTIVE member exposes ports — matches where the
+  // port circle is drawn and where visualPortsFor attaches arrows.
   const hitTestOutputPort = useCallback((cx: number, cy: number): string | null => {
     for (const step of steps) {
+      const order = chainOrder(step.id)
+      if (order.length > 1) {
+        const activeId = activeInChainRef.current[order[0]] ?? order[0]
+        if (step.id !== activeId) continue
+      }
       const r = renderPosOf(step.id)
       if (!r) continue
-      const order = chainOrder(step.id)
-      if (order.length > 1 && step.id !== order[order.length - 1]) continue
       const out = rectOutputPort(r)
       if (dist(cx, cy, out.x, out.y) <= PORT_R + 10) return step.id
     }
     return null
   }, [steps, renderPosOf, chainOrder, rectOutputPort])
 
-  // Hit test: find which step's input port (left circle) is under cursor.
-  // Only the leader (leftmost visual card) exposes an incoming port.
   const hitTestInputPort = useCallback((cx: number, cy: number): string | null => {
     for (const step of steps) {
+      const order = chainOrder(step.id)
+      if (order.length > 1) {
+        const activeId = activeInChainRef.current[order[0]] ?? order[0]
+        if (step.id !== activeId) continue
+      }
       const r = renderPosOf(step.id)
       if (!r) continue
-      const order = chainOrder(step.id)
-      if (order.length > 1 && step.id !== order[0]) continue
       const inp = rectInputPort(r)
       if (dist(cx, cy, inp.x, inp.y) <= PORT_R + 10) return step.id
     }
@@ -1705,13 +1709,20 @@ export default function FlowSchemaView({
   // Falls back to the step's own port when no chain.
   const visualPortsFor = useCallback(
     (sourceId: string, targetId: string): { out: { x: number; y: number }; inp: { x: number; y: number } } | null => {
-      // Use chain ORDER (not positions.x) so the stack-collapse render doesn't
-      // break the rightmost/leftmost lookup. In the stack layout every chain
-      // member's data position is unrelated to where it renders.
+      // For combined chains, attach connections to the ACTIVE member's edges
+      // (not the chain endpoints). Active is pinned to the leader's baseX,
+      // so ports stay at fixed positions regardless of which chain member is
+      // currently in front — arrows don't leap around when the user clicks
+      // through the deck. Slivers are visual peek edges only, not connection
+      // anchors.
       const srcOrder = chainOrder(sourceId)
       const tgtOrder = chainOrder(targetId)
-      const srcId = srcOrder[srcOrder.length - 1]
-      const tgtId = tgtOrder[0]
+      const srcId = srcOrder.length > 1
+        ? (activeInChainRef.current[srcOrder[0]] ?? srcOrder[0])
+        : sourceId
+      const tgtId = tgtOrder.length > 1
+        ? (activeInChainRef.current[tgtOrder[0]] ?? tgtOrder[0])
+        : targetId
       const srcRect = renderPosOf(srcId)
       const tgtRect = renderPosOf(tgtId)
       if (!srcRect || !tgtRect) return null
@@ -2083,40 +2094,46 @@ export default function FlowSchemaView({
       drawNode(ctx, step, { x: r.x, y: r.y }, step.id === selectedStepId, thumbnails[step.id], stageNum - 1, videoAspects[step.id], screenImages[step.id])
     }
 
-    // Ports — drawn in a separate pass AFTER all cards, so chain endpoints
-    // get their input/output port circles regardless of whether the head /
-    // tail is currently active or slivered. Symmetric behavior: the leader
-    // always exposes an input port (on its rendered left edge), the tail
-    // always exposes an output port (on its rendered right edge).
+    // Ports — drawn in a separate pass AFTER all cards. For solo cards the
+    // step's own edges. For combined chains, only the ACTIVE member exposes
+    // ports (on its own edges, which are pinned to the stack's baseX). This
+    // matches where visualPortsFor attaches arrows, so switching the active
+    // member doesn't create phantom ports at old positions.
     for (const step of steps) {
+      const order = chainOrder(step.id)
+      const isInChain = order.length > 1
+      const activeId = isInChain ? (activeInChainRef.current[order[0]] ?? order[0]) : step.id
+      if (isInChain && step.id !== activeId) continue
       const r = renderPosOf(step.id)
       if (!r) continue
-      const order = chainOrder(step.id)
-      const isTail = order.length <= 1 || step.id === order[order.length - 1]
-      const isHead = order.length <= 1 || step.id === order[0]
 
-      if (isTail) {
-        const out = rectOutputPort(r)
-        const isOutHovered = hoveredPort === `out_${step.id}`
-        // For chains, "hasOutgoing" is the union across every member.
-        const hasOutgoing = order.some((mid) => {
-          const m = steps.find((s) => s.id === mid)
-          if (!m) return false
-          const btn = (m as any).buttonConfig?.nextStepId
-          return m.options.some((o) => o.nextStepId) || (!!btn && (btn === '__end__' || steps.some((s) => s.id === btn)))
-        })
-        drawPortCircle(ctx, out.x, out.y, isOutHovered, hasOutgoing)
-      }
-      if (isHead) {
-        const inp = rectInputPort(r)
-        const isInpHovered = hoveredPort === `inp_${step.id}`
-        const hasIncoming =
-          order.some((mid) => steps.some((s) =>
+      const out = rectOutputPort(r)
+      const isOutHovered = hoveredPort === `out_${step.id}`
+      const hasOutgoing = isInChain
+        ? order.some((mid) => {
+            const m = steps.find((s) => s.id === mid)
+            if (!m) return false
+            const btn = (m as any).buttonConfig?.nextStepId
+            return m.options.some((o) => o.nextStepId) || (!!btn && (btn === '__end__' || steps.some((s) => s.id === btn)))
+          })
+        : (step.options.some((o) => o.nextStepId) || (() => {
+            const btn = (step as any).buttonConfig?.nextStepId
+            return !!btn && (btn === '__end__' || steps.some((s) => s.id === btn))
+          })())
+      drawPortCircle(ctx, out.x, out.y, isOutHovered, hasOutgoing)
+
+      const inp = rectInputPort(r)
+      const isInpHovered = hoveredPort === `inp_${step.id}`
+      const hasIncoming = isInChain
+        ? (order.some((mid) => steps.some((s) =>
             s.options.some((o) => o.nextStepId === mid) ||
             (s as any).buttonConfig?.nextStepId === mid
-          )) || step.id === sorted[0]?.id
-        drawPortCircle(ctx, inp.x, inp.y, isInpHovered, hasIncoming)
-      }
+          )) || order.includes(sorted[0]?.id ?? ''))
+        : (steps.some((s) =>
+            s.options.some((o) => o.nextStepId === step.id) ||
+            (s as any).buttonConfig?.nextStepId === step.id
+          ) || step.id === sorted[0]?.id)
+      drawPortCircle(ctx, inp.x, inp.y, isInpHovered, hasIncoming)
     }
 
     // Re-draw drag handles for the SELECTED arrow after port circles, so
