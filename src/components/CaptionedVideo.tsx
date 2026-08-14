@@ -126,7 +126,31 @@ export default function CaptionedVideo({
   // while Lambda transcodes.
   const cachedLocalBlob = videoId ? videoBlobCache.get(videoId) : undefined
   const [localBlobAttached, setLocalBlobAttached] = useState(false)
-  const canPlay = !!effectiveHlsUrl || (isProcessing && !!cachedLocalBlob)
+  // Fall back to the raw `src` when the video is ready (or has unknown
+  // status — legacy uploads never had a status column) and no HLS exists.
+  // Otherwise a ready-but-not-transcoded upload renders as an empty div —
+  // no <video> tag, no error event, no way for the candidate to advance.
+  const canPlayRawSrc = !!src && !isProcessing && !isFailed
+  const canPlay = !!effectiveHlsUrl || (isProcessing && !!cachedLocalBlob) || canPlayRawSrc
+
+  // Diagnostic — helps trace "black frame, Continue greyed" reports. Logs
+  // once per render; noisy enough to be visible in DevTools without being
+  // an error (previous forwarding to FixLoop scared users).
+  if (typeof window !== 'undefined') {
+    // eslint-disable-next-line no-console
+    console.log('[CaptionedVideo]', {
+      src,
+      hlsUrl,
+      effectiveHlsUrl,
+      status,
+      effectiveStatus,
+      isProcessing,
+      isFailed,
+      canPlayRawSrc,
+      canPlay,
+      cachedLocalBlob: !!cachedLocalBlob,
+    })
+  }
 
   useEffect(() => {
     const video = videoRef.current
@@ -501,7 +525,19 @@ export default function CaptionedVideo({
             autoPlay={autoPlay}
             playsInline
             onEnded={onEnded}
-            onError={onError}
+            onError={(e) => {
+              // eslint-disable-next-line no-console
+              console.log('[CaptionedVideo] <video> error event', {
+                src,
+                networkState: (e.currentTarget as HTMLVideoElement).networkState,
+                error: (e.currentTarget as HTMLVideoElement).error?.code,
+                message: (e.currentTarget as HTMLVideoElement).error?.message,
+              })
+              onError?.()
+            }}
+            onLoadStart={() => console.log('[CaptionedVideo] loadstart', src)}
+            onLoadedMetadata={() => console.log('[CaptionedVideo] loadedmetadata', src)}
+            onCanPlay={() => console.log('[CaptionedVideo] canplay', src)}
             style={!effectiveHlsUrl && cachedLocalBlob && !localBlobAttached ? { visibility: 'hidden' } : undefined}
           />
         ) : null}
