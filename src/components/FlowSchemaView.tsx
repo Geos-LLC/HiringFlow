@@ -642,9 +642,33 @@ export default function FlowSchemaView({
       if (best) rowParent.set(r, best)
     }
 
+    // Fork sibling rank: at a fork where the parent card branches to
+    // multiple non-main-chain children, the branch with the DEEPEST reach
+    // gets slot parent.col + 1 (right under the main continuation);
+    // shorter siblings get pushed one column further right per rank. This
+    // keeps stubby dead-end branches from crowding the main path and
+    // matches the user's tidy rule "move the second card on the fork with
+    // less connections to the right".
+    const parentKey = (p: { row: number; col: number }) => `${p.row}:${p.col}`
+    const siblingsByParent = new Map<string, number[]>()
+    for (let r = 1; r < rows.length; r++) {
+      const p = rowParent.get(r)
+      if (!p) continue
+      const key = parentKey(p)
+      const arr = siblingsByParent.get(key) ?? []
+      arr.push(r)
+      siblingsByParent.set(key, arr)
+    }
+    const siblingRank = new Map<number, number>()
+    siblingsByParent.forEach((siblings) => {
+      // Rank 0 = deepest branch, then shallower branches at higher ranks.
+      const sorted2 = [...siblings].sort((a, b) => downstreamReach(rows[b][0]) - downstreamReach(rows[a][0]))
+      sorted2.forEach((r, i) => siblingRank.set(r, i))
+    })
+
     // Per user: a branch sits under the card that comes AFTER the branch
     // source in the main chain, not under the source itself. So the
-    // startCol for a branch is parent.col + 1.
+    // startCol for a branch is parent.col + 1 (+ sibling rank offset).
     // ORPHAN rows (no incoming edge from any earlier row) use the same
     // algorithm as connected cards: place at the column matching their
     // first step's position in the overall stepOrder sequence, so they
@@ -654,9 +678,7 @@ export default function FlowSchemaView({
     sorted.forEach((s, i) => stepIndexById.set(s.id, i))
     const startColFor = (r: number): number => {
       const p = rowParent.get(r)
-      if (p) return p.col + 1
-      // Orphan: place at column derived from the first step's stepOrder
-      // position (1-based to leave col 0 for Start).
+      if (p) return p.col + 1 + (siblingRank.get(r) ?? 0)
       const idx = stepIndexById.get(rows[r][0]) ?? 0
       return idx
     }
