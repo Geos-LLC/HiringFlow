@@ -589,9 +589,20 @@ export default function FlowSchemaView({
     // Per user: a branch sits under the card that comes AFTER the branch
     // source in the main chain, not under the source itself. So the
     // startCol for a branch is parent.col + 1.
+    // ORPHAN rows (no incoming edge from any earlier row) use the same
+    // algorithm as connected cards: place at the column matching their
+    // first step's position in the overall stepOrder sequence, so they
+    // sit next to where they would be if connected — not always pinned
+    // to column 0.
+    const stepIndexById = new Map<string, number>()
+    sorted.forEach((s, i) => stepIndexById.set(s.id, i))
     const startColFor = (r: number): number => {
       const p = rowParent.get(r)
-      return p ? p.col + 1 : 0
+      if (p) return p.col + 1
+      // Orphan: place at column derived from the first step's stepOrder
+      // position (1-based to leave col 0 for Start).
+      const idx = stepIndexById.get(rows[r][0]) ?? 0
+      return idx
     }
 
     // Compute the effective ROW INDEX and COLUMN OFFSET for each row.
@@ -1574,35 +1585,46 @@ export default function FlowSchemaView({
   }, [steps])
 
   // Hit test: arrow line (returns the option that owns it)
+  // Use combined-pair-aware port positions so hit tests match the
+  // drawn arrows. Rendering re-anchors ports for combined pairs to
+  // the rightmost / leftmost card of the pair; hit tests must do the
+  // same or clicks fall through.
+  const visualPortsFor = useCallback(
+    (sourceId: string, targetId: string): { out: { x: number; y: number }; inp: { x: number; y: number } } | null => {
+      const srcId = getVisualRightmost(sourceId)
+      const tgtId = getVisualLeftmost(targetId)
+      const srcPos = posRef.current[srcId] ?? posRef.current[sourceId]
+      const tgtPos = posRef.current[tgtId] ?? posRef.current[targetId]
+      if (!srcPos || !tgtPos) return null
+      return { out: getOutputPort(srcPos), inp: getInputPort(tgtPos) }
+    },
+    [getVisualRightmost, getVisualLeftmost]
+  )
+
   const hitTestArrow = useCallback((cx: number, cy: number): { optionId: string; stepId: string; kind: 'option' | 'button' } | null => {
     for (const step of steps) {
-      const pos = posRef.current[step.id]
-      if (!pos) continue
-      const out = getOutputPort(pos)
       for (const option of step.options) {
         if (!option.nextStepId) continue
-        const targetPos = posRef.current[option.nextStepId]
-        if (!targetPos) continue
-        const inp = getInputPort(targetPos)
+        const ports = visualPortsFor(step.id, option.nextStepId)
+        if (!ports) continue
         const lane = laneYByConn.get(`opt:${step.id}:${option.id}`)
-        if (isNearBezier(cx, cy, out.x, out.y, inp.x, inp.y, 10, lane)) {
+        if (isNearBezier(cx, cy, ports.out.x, ports.out.y, ports.inp.x, ports.inp.y, 14, lane)) {
           return { optionId: option.id, stepId: step.id, kind: 'option' }
         }
       }
       const btnNext = (step as any).buttonConfig?.nextStepId
       if (btnNext && btnNext !== '__end__') {
-        const targetPos = posRef.current[btnNext]
-        if (targetPos) {
-          const inp = getInputPort(targetPos)
+        const ports = visualPortsFor(step.id, btnNext)
+        if (ports) {
           const lane = laneYByConn.get(`btn:${step.id}:${btnNext}`)
-          if (isNearBezier(cx, cy, out.x, out.y, inp.x, inp.y, 10, lane)) {
+          if (isNearBezier(cx, cy, ports.out.x, ports.out.y, ports.inp.x, ports.inp.y, 14, lane)) {
             return { optionId: BUTTON_ARROW_SENTINEL, stepId: step.id, kind: 'button' }
           }
         }
       }
     }
     return null
-  }, [steps, laneYByConn])
+  }, [steps, laneYByConn, visualPortsFor])
 
   // Hit test: arrow target endpoint (near the target input port)
   const hitTestArrowEndpoint = useCallback((cx: number, cy: number): { optionId: string; stepId: string } | null => {
@@ -2226,18 +2248,13 @@ export default function FlowSchemaView({
       }
 
       for (const step of steps) {
-        const pos = posRef.current[step.id]
-        if (!pos) continue
-        const out = getOutputPort(pos)
-
         for (const option of step.options) {
           if (!option.nextStepId) continue
           if (selectedArrow?.optionId === option.id) continue
-          const targetPos = posRef.current[option.nextStepId]
-          if (!targetPos) continue
-          const inp = getInputPort(targetPos)
+          const ports = visualPortsFor(step.id, option.nextStepId)
+          if (!ports) continue
           const lane = laneYByConn.get(`opt:${step.id}:${option.id}`)
-          if (isNearBezier(cx, cy, out.x, out.y, inp.x, inp.y, 12, lane)) {
+          if (isNearBezier(cx, cy, ports.out.x, ports.out.y, ports.inp.x, ports.inp.y, 14, lane)) {
             return { kind: 'option', optionId: option.id, fromStepId: step.id }
           }
         }
@@ -2248,11 +2265,10 @@ export default function FlowSchemaView({
         if (isThisButtonSelected) continue
         const btnNext = (step as any).buttonConfig?.nextStepId
         if (btnNext && btnNext !== '__end__') {
-          const targetPos = posRef.current[btnNext]
-          if (targetPos) {
-            const inp = getInputPort(targetPos)
+          const ports = visualPortsFor(step.id, btnNext)
+          if (ports) {
             const lane = laneYByConn.get(`btn:${step.id}:${btnNext}`)
-            if (isNearBezier(cx, cy, out.x, out.y, inp.x, inp.y, 12, lane)) {
+            if (isNearBezier(cx, cy, ports.out.x, ports.out.y, ports.inp.x, ports.inp.y, 14, lane)) {
               return { kind: 'button', fromStepId: step.id }
             }
           }
@@ -2260,7 +2276,7 @@ export default function FlowSchemaView({
       }
       return null
     },
-    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn, endArrowGeomByStep]
+    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn, endArrowGeomByStep, visualPortsFor]
   )
 
   // Mouse handlers
