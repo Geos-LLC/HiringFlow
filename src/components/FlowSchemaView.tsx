@@ -2081,11 +2081,16 @@ export default function FlowSchemaView({
       if (!r) continue
       const stageNum = stageNumberByStep.get(step.id) ?? (sorted.indexOf(step) + 1)
       drawNode(ctx, step, { x: r.x, y: r.y }, step.id === selectedStepId, thumbnails[step.id], stageNum - 1, videoAspects[step.id], screenImages[step.id])
+    }
 
-      // Ports render only on the chain's visual endpoints. For a solo card
-      // both ports show; for a chain leader only the input port, and only
-      // the tail exposes the output port. Intermediate slivers show
-      // nothing because their ports would be inside the stack.
+    // Ports — drawn in a separate pass AFTER all cards, so chain endpoints
+    // get their input/output port circles regardless of whether the head /
+    // tail is currently active or slivered. Symmetric behavior: the leader
+    // always exposes an input port (on its rendered left edge), the tail
+    // always exposes an output port (on its rendered right edge).
+    for (const step of steps) {
+      const r = renderPosOf(step.id)
+      if (!r) continue
       const order = chainOrder(step.id)
       const isTail = order.length <= 1 || step.id === order[order.length - 1]
       const isHead = order.length <= 1 || step.id === order[0]
