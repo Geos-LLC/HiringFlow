@@ -789,8 +789,31 @@ export default function FlowBuilderPage() {
     setAddStepAlsoAudio(false)
     setAddStepAlsoVideo(false)
     if (primary && (alsoAudio || alsoVideo)) {
-      if (alsoAudio) await createStep('capture', undefined, { combineSourceId: primary.id })
-      if (alsoVideo) await createStep('submission', undefined, { combineSourceId: primary.id })
+      // Read the primary's current canvas position (if any). computeLayout
+      // sets a default position via BFS which may overlap the card that
+      // was already to its right — so we explicitly place each companion
+      // BELOW the primary (or the previous companion) to guarantee no
+      // horizontal collision with neighbors.
+      const NODE_H = 30 + 140 + 40  // matches FlowSchemaView constant
+      const layout = { ...(flow?.canvasLayout ?? {}) } as Record<string, { x: number; y: number }>
+      const primaryPos = layout[primary.id] ?? { x: 0, y: 0 }
+      let stackY = primaryPos.y + NODE_H + 40
+      const createAndStack = async (type: 'capture' | 'submission') => {
+        const c = await createStep(type, undefined, { combineSourceId: primary.id })
+        if (c) {
+          layout[c.id] = { x: primaryPos.x, y: stackY }
+          stackY += NODE_H + 40
+        }
+      }
+      if (alsoAudio) await createAndStack('capture')
+      if (alsoVideo) await createAndStack('submission')
+      // Persist the layout so companions stay put on next load.
+      await fetch(`/api/flows/${flowId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ canvasLayout: layout }),
+      })
+      setFlow((f) => (f ? { ...f, canvasLayout: layout } : null))
     }
   }
 
