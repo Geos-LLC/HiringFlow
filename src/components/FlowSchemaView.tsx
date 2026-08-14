@@ -1601,10 +1601,23 @@ export default function FlowSchemaView({
     [getVisualRightmost, getVisualLeftmost]
   )
 
+  // A connection A→B lives entirely inside a combined pair when A and
+  // B are each other's combinedWithId partner. Such an edge is implicit
+  // in the "combined box" visualization — drawing it produces a weird
+  // loop from B's right port back to A's left port. Skip render + hit
+  // tests for these.
+  const isIntraCombinedPair = useCallback((aId: string, bId: string): boolean => {
+    const a = steps.find((s) => s.id === aId)
+    const b = steps.find((s) => s.id === bId)
+    if (!a || !b) return false
+    return (a as any).combinedWithId === bId || (b as any).combinedWithId === aId
+  }, [steps])
+
   const hitTestArrow = useCallback((cx: number, cy: number): { optionId: string; stepId: string; kind: 'option' | 'button' } | null => {
     for (const step of steps) {
       for (const option of step.options) {
         if (!option.nextStepId) continue
+        if (isIntraCombinedPair(step.id, option.nextStepId)) continue
         const ports = visualPortsFor(step.id, option.nextStepId)
         if (!ports) continue
         const lane = laneYByConn.get(`opt:${step.id}:${option.id}`)
@@ -1614,17 +1627,19 @@ export default function FlowSchemaView({
       }
       const btnNext = (step as any).buttonConfig?.nextStepId
       if (btnNext && btnNext !== '__end__') {
-        const ports = visualPortsFor(step.id, btnNext)
-        if (ports) {
-          const lane = laneYByConn.get(`btn:${step.id}:${btnNext}`)
-          if (isNearBezier(cx, cy, ports.out.x, ports.out.y, ports.inp.x, ports.inp.y, 14, lane)) {
-            return { optionId: BUTTON_ARROW_SENTINEL, stepId: step.id, kind: 'button' }
+        if (!isIntraCombinedPair(step.id, btnNext)) {
+          const ports = visualPortsFor(step.id, btnNext)
+          if (ports) {
+            const lane = laneYByConn.get(`btn:${step.id}:${btnNext}`)
+            if (isNearBezier(cx, cy, ports.out.x, ports.out.y, ports.inp.x, ports.inp.y, 14, lane)) {
+              return { optionId: BUTTON_ARROW_SENTINEL, stepId: step.id, kind: 'button' }
+            }
           }
         }
       }
     }
     return null
-  }, [steps, laneYByConn, visualPortsFor])
+  }, [steps, laneYByConn, visualPortsFor, isIntraCombinedPair])
 
   // Hit test: arrow target endpoint (near the target input port)
   const hitTestArrowEndpoint = useCallback((cx: number, cy: number): { optionId: string; stepId: string } | null => {
@@ -1729,6 +1744,9 @@ export default function FlowSchemaView({
     // overlap (backward loopbacks), the lane-routing system below assigns
     // each its own bezier path.
     for (const conn of allConnections) {
+      // Intra-pair connections (A → B where they are each other's
+      // combined partner) are implicit in the combined box — skip them.
+      if (isIntraCombinedPair(conn.sourceId, conn.targetId)) continue
       // For combined pairs, the visual OUT anchors to the rightmost card
       // of the pair (usually the question partner) and the visual IN
       // anchors to the leftmost card (usually the video primary). Data
@@ -2251,6 +2269,7 @@ export default function FlowSchemaView({
         for (const option of step.options) {
           if (!option.nextStepId) continue
           if (selectedArrow?.optionId === option.id) continue
+          if (isIntraCombinedPair(step.id, option.nextStepId)) continue
           const ports = visualPortsFor(step.id, option.nextStepId)
           if (!ports) continue
           const lane = laneYByConn.get(`opt:${step.id}:${option.id}`)
@@ -2265,6 +2284,7 @@ export default function FlowSchemaView({
         if (isThisButtonSelected) continue
         const btnNext = (step as any).buttonConfig?.nextStepId
         if (btnNext && btnNext !== '__end__') {
+          if (isIntraCombinedPair(step.id, btnNext)) continue
           const ports = visualPortsFor(step.id, btnNext)
           if (ports) {
             const lane = laneYByConn.get(`btn:${step.id}:${btnNext}`)
@@ -2276,7 +2296,7 @@ export default function FlowSchemaView({
       }
       return null
     },
-    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn, endArrowGeomByStep, visualPortsFor]
+    [steps, selectedArrow, startMessage, endMessage, getEndStepIds, laneYByConn, endArrowGeomByStep, visualPortsFor, isIntraCombinedPair]
   )
 
   // Mouse handlers
