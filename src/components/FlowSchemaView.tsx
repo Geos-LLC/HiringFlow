@@ -1593,20 +1593,20 @@ export default function FlowSchemaView({
   }, [steps])
 
   // Hit test: arrow line (returns the option that owns it)
-  // Use combined-pair-aware port positions so hit tests match the
-  // drawn arrows. Rendering re-anchors ports for combined pairs to
-  // the rightmost / leftmost card of the pair; hit tests must do the
-  // same or clicks fall through.
+  // Straightforward port lookup. Combined-pair re-anchoring was tried
+  // (map visual OUT to the rightmost card of the pair) but produced
+  // weird curves on connections touching a combined pair — the arrow
+  // origin/end shifted across a card width, so the bezier had to arc
+  // over the pair. Reverted to always using the actual source/target
+  // step's own ports. The combined bracket is purely decorative.
   const visualPortsFor = useCallback(
     (sourceId: string, targetId: string): { out: { x: number; y: number }; inp: { x: number; y: number } } | null => {
-      const srcId = getVisualRightmost(sourceId)
-      const tgtId = getVisualLeftmost(targetId)
-      const srcPos = posRef.current[srcId] ?? posRef.current[sourceId]
-      const tgtPos = posRef.current[tgtId] ?? posRef.current[targetId]
+      const srcPos = posRef.current[sourceId]
+      const tgtPos = posRef.current[targetId]
       if (!srcPos || !tgtPos) return null
       return { out: getOutputPort(srcPos), inp: getInputPort(tgtPos) }
     },
-    [getVisualRightmost, getVisualLeftmost]
+    []
   )
 
   // A connection A→B lives entirely inside a combined pair when A and
@@ -1755,15 +1755,8 @@ export default function FlowSchemaView({
       // Intra-pair connections (A → B where they are each other's
       // combined partner) are implicit in the combined box — skip them.
       if (isIntraCombinedPair(conn.sourceId, conn.targetId)) continue
-      // For combined pairs, the visual OUT anchors to the rightmost card
-      // of the pair (usually the question partner) and the visual IN
-      // anchors to the leftmost card (usually the video primary). Data
-      // is unchanged — only the port positions shift so lines leave/
-      // enter the "combined box" edge instead of an interior seam.
-      const visualSourceId = getVisualRightmost(conn.sourceId)
-      const visualTargetId = getVisualLeftmost(conn.targetId)
-      const sourcePos = positions[visualSourceId] ?? positions[conn.sourceId]
-      const targetPos = positions[visualTargetId] ?? positions[conn.targetId]
+      const sourcePos = positions[conn.sourceId]
+      const targetPos = positions[conn.targetId]
       if (!sourcePos || !targetPos) continue
       // Every arrow attaches to the step's single OUT and IN ports — same
       // point regardless of how many other arrows leave/enter the same node.
