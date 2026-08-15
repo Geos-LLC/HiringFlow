@@ -678,7 +678,21 @@ export default function FlowSchemaView({
     sorted.forEach((s, i) => stepIndexById.set(s.id, i))
     const startColFor = (r: number): number => {
       const p = rowParent.get(r)
-      if (p) return p.col + 1 + (siblingRank.get(r) ?? 0)
+      if (p) {
+        // If the parent has a "main chain" child (its primarySuccessor
+        // lives in an earlier row's continuation at parent.col + 1),
+        // reserve that slot for main and push every branch AT LEAST one
+        // more column to the right. Rank offset stacks additional
+        // branches further right so short dead-end siblings don't crowd
+        // together.
+        const parentStep = stepById.get(rows[p.row][p.col])
+        const mainChild = parentStep ? primarySuccessor(parentStep) : null
+        const parentHasMain = mainChild
+          ? rows[p.row][p.col + 1] === mainChild
+          : false
+        const branchBase = p.col + (parentHasMain ? 2 : 1)
+        return branchBase + (siblingRank.get(r) ?? 0)
+      }
       const idx = stepIndexById.get(rows[r][0]) ?? 0
       return idx
     }
