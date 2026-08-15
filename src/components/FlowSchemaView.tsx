@@ -676,22 +676,30 @@ export default function FlowSchemaView({
     // to column 0.
     const stepIndexById = new Map<string, number>()
     sorted.forEach((s, i) => stepIndexById.set(s.id, i))
+    // Right-align short fork branches so they sit close to End instead of
+    // stacking under the middle of the main chain. Rule the user asked
+    // for: at a fork, the branch with less downstream reach shifts to
+    // the right — visually the deep chain flows straight, the stubby
+    // branch tucks itself near the endpoint with a short arrow to End.
+    const mainRowLen = rows[0]?.length ?? 1
+    const mainRowMaxCol = Math.max(0, mainRowLen - 1)
     const startColFor = (r: number): number => {
       const p = rowParent.get(r)
       if (p) {
-        // If the parent has a "main chain" child (its primarySuccessor
-        // lives in an earlier row's continuation at parent.col + 1),
-        // reserve that slot for main and push every branch AT LEAST one
-        // more column to the right. Rank offset stacks additional
-        // branches further right so short dead-end siblings don't crowd
-        // together.
         const parentStep = stepById.get(rows[p.row][p.col])
         const mainChild = parentStep ? primarySuccessor(parentStep) : null
         const parentHasMain = mainChild
           ? rows[p.row][p.col + 1] === mainChild
           : false
-        const branchBase = p.col + (parentHasMain ? 2 : 1)
-        return branchBase + (siblingRank.get(r) ?? 0)
+        // Never place a branch at or before the parent's next-main slot.
+        const floorCol = p.col + (parentHasMain ? 2 : 1)
+        // Right-aligned position — branch's LAST card sits at mainRowMaxCol,
+        // so its arrow to End is as short as possible.
+        const rightAligned = mainRowMaxCol - rows[r].length + 1
+        // Sibling rank shifts further right per additional sibling, so
+        // multiple short branches from the same fork step-stack rather
+        // than pile up.
+        return Math.max(floorCol, rightAligned) + (siblingRank.get(r) ?? 0)
       }
       const idx = stepIndexById.get(rows[r][0]) ?? 0
       return idx
