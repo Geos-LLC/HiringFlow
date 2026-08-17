@@ -2152,9 +2152,9 @@ export default function FlowSchemaView({
       const r = renderPosOf(step.id)
       if (!r) continue
       if (isInChain && activeInChainRef.current[order[0]]) {
-        // Only log when chain has a NON-DEFAULT active (silence firehose)
+        // Inline coords so they show up in pasted text logs.
         // eslint-disable-next-line no-console
-        console.log('[chain] draw ports for active', { chain: order, activeId, rect: { x: r.x, y: r.y, w: r.w, h: r.h } })
+        console.log(`[chain] draw ports rect=(${r.x},${r.y},${r.w}x${r.h}) inPort=(${r.x},${r.y + r.h/2}) outPort=(${r.x + r.w},${r.y + r.h/2}) leaderId=${order[0]} activeId=${activeId}`)
       }
 
       const out = rectOutputPort(r)
