@@ -1660,8 +1660,12 @@ export default function FlowSchemaView({
     if (!pos) return null
     const members = chainMembers(id)
     if (members.length <= 1) {
-      const sz = getNodeSize(id)
-      return { x: pos.x, y: pos.y, w: sz.w, h: sz.h, isSliver: false }
+      // Use canvas-painted dimensions (NODE_W × NODE_H), not getNodeSize's
+      // aspect-based shrink. drawNode ignores aspect and always paints at
+      // NODE_W×NODE_H; using the smaller getNodeSize here would put the
+      // right output port INSIDE the visible card body for portrait video
+      // solo cards.
+      return { x: pos.x, y: pos.y, w: NODE_W, h: NODE_H, isSliver: false }
     }
     const order = chainOrder(id)
     const leaderId = order[0]
