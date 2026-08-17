@@ -1668,10 +1668,9 @@ export default function FlowSchemaView({
     const activeSz = getNodeSize(order[activeIdx])
     const baseX = leaderPos.x
     const baseY = leaderPos.y
-    // Diagnostic — helps trace why a chain member ends up where it does.
-    // Only log when the CHAIN LEADER is the one being computed so we get
-    // one log line per chain, not per member per frame.
-    if (typeof window !== 'undefined' && id === order[0]) {
+    // Diagnostic — log only when the chain has a NON-DEFAULT active state
+    // so the render loop's 60fps firehose doesn't drown out click events.
+    if (typeof window !== 'undefined' && id === order[0] && activeIdx !== 0) {
       // eslint-disable-next-line no-console
       console.log('[chain] renderPosOf leader', { chain: order, activeIdx, activeId: order[activeIdx], baseX, baseY, activeW: activeSz.w })
     }
@@ -1773,10 +1772,7 @@ export default function FlowSchemaView({
       const tgtRect = renderPosOf(tgtId)
       if (!srcRect || !tgtRect) return null
       const ports = { out: rectOutputPort(srcRect), inp: rectInputPort(tgtRect) }
-      if (typeof window !== 'undefined' && (srcOrder.length > 1 || tgtOrder.length > 1)) {
-        // eslint-disable-next-line no-console
-        console.log('[chain] visualPortsFor', { sourceId, targetId, srcId, tgtId, ports })
-      }
+      // visualPortsFor log removed — was firing per-arrow per-frame
       return ports
     },
     [chainOrder, renderPosOf, rectOutputPort, rectInputPort]
@@ -2155,7 +2151,8 @@ export default function FlowSchemaView({
       if (isInChain && step.id !== activeId) continue
       const r = renderPosOf(step.id)
       if (!r) continue
-      if (isInChain) {
+      if (isInChain && activeInChainRef.current[order[0]]) {
+        // Only log when chain has a NON-DEFAULT active (silence firehose)
         // eslint-disable-next-line no-console
         console.log('[chain] draw ports for active', { chain: order, activeId, rect: { x: r.x, y: r.y, w: r.w, h: r.h } })
       }
