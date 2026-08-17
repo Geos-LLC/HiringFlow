@@ -32,11 +32,15 @@ function r2Client(secrets) {
 }
 
 // HLS ladder. 6-second segments, GOP every 2 s so segment boundaries always
-// land on a keyframe. Bitrates target the 3 candidate-bandwidth tiers we care
-// about (sub-1 Mbps mobile, ~2 Mbps mobile, broadband).
+// land on a keyframe. Currently single-rung 720p because a 3-rung ladder on
+// a 1440p source can't finish inside Lambda's 900 s cap even at ultrafast
+// (~2.35× realtime with 3 rungs → ~35 min source barely fits and leaves no
+// budget for uploading the 3.96 GB original + HLS outputs). 720p-only drops
+// encode work ~3× so 40+ min sources finish comfortably. Trade-off: no
+// per-tier adaptive bitrate — every viewer streams 720p regardless of
+// connection. Revisit if we move off Lambda (Fargate/MediaConvert) so we can
+// bring the multi-rung ladder back.
 const LADDER = [
-  { name: '360p',  width: 640,  height: 360,  videoBitrateK: 600,  maxrateK: 720,  bufsizeK: 1200, audioBitrateK: 64 },
-  { name: '480p',  width: 854,  height: 480,  videoBitrateK: 1000, maxrateK: 1200, bufsizeK: 2000, audioBitrateK: 96 },
   { name: '720p',  width: 1280, height: 720,  videoBitrateK: 2000, maxrateK: 2400, bufsizeK: 4000, audioBitrateK: 128 },
 ]
 
