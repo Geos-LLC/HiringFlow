@@ -1727,13 +1727,13 @@ export default function FlowSchemaView({
     return null
   }, [steps, renderPosOf])
 
+  // Container-anchored port hit-tests: only the tail (rightmost visual
+  // card) responds to output port hits; only the leader responds to
+  // input. Matches where visualPortsFor attaches arrows.
   const hitTestOutputPort = useCallback((cx: number, cy: number): string | null => {
     for (const step of steps) {
       const order = chainOrder(step.id)
-      if (order.length > 1) {
-        const activeId = activeInChainRef.current[order[0]] ?? order[0]
-        if (step.id !== activeId) continue
-      }
+      if (order.length > 1 && step.id !== order[order.length - 1]) continue
       const r = renderPosOf(step.id)
       if (!r) continue
       const out = rectOutputPort(r)
@@ -1745,10 +1745,7 @@ export default function FlowSchemaView({
   const hitTestInputPort = useCallback((cx: number, cy: number): string | null => {
     for (const step of steps) {
       const order = chainOrder(step.id)
-      if (order.length > 1) {
-        const activeId = activeInChainRef.current[order[0]] ?? order[0]
-        if (step.id !== activeId) continue
-      }
+      if (order.length > 1 && step.id !== order[0]) continue
       const r = renderPosOf(step.id)
       if (!r) continue
       const inp = rectInputPort(r)
@@ -1765,24 +1762,19 @@ export default function FlowSchemaView({
   // Falls back to the step's own port when no chain.
   const visualPortsFor = useCallback(
     (sourceId: string, targetId: string): { out: { x: number; y: number }; inp: { x: number; y: number } } | null => {
-      // Ports pinned to the ACTIVE member's edges — active is always at
-      // baseX / baseX+NODE_W, so port positions stay constant regardless of
-      // which chain member is in front. Both switch states look identical
-      // (matches the "correct" state from user feedback).
+      // Ports on the CONTAINER (dashed bracket) — leader = leftmost visual
+      // card owns the input port; tail = rightmost owns the output port.
+      // Arrows attach to the OUTER edge of the stack, not the seam
+      // between active card and slivers (where a port would be hidden
+      // under the sliver).
       const srcOrder = chainOrder(sourceId)
       const tgtOrder = chainOrder(targetId)
-      const srcId = srcOrder.length > 1
-        ? (activeInChainRef.current[srcOrder[0]] ?? srcOrder[0])
-        : sourceId
-      const tgtId = tgtOrder.length > 1
-        ? (activeInChainRef.current[tgtOrder[0]] ?? tgtOrder[0])
-        : targetId
+      const srcId = srcOrder[srcOrder.length - 1]  // tail
+      const tgtId = tgtOrder[0]                    // leader
       const srcRect = renderPosOf(srcId)
       const tgtRect = renderPosOf(tgtId)
       if (!srcRect || !tgtRect) return null
-      const ports = { out: rectOutputPort(srcRect), inp: rectInputPort(tgtRect) }
-      // visualPortsFor log removed — was firing per-arrow per-frame
-      return ports
+      return { out: rectOutputPort(srcRect), inp: rectInputPort(tgtRect) }
     },
     [chainOrder, renderPosOf, rectOutputPort, rectInputPort]
   )
@@ -2150,45 +2142,49 @@ export default function FlowSchemaView({
       drawNode(ctx, step, { x: r.x, y: r.y }, step.id === selectedStepId, thumbnails[step.id], stageNum - 1, videoAspects[step.id], screenImages[step.id])
     }
 
-    // Ports — drawn in a separate pass AFTER all cards. Pinned to the
-    // ACTIVE member's edges so port position stays constant regardless of
-    // which chain member is currently in front.
+    // Ports — drawn in a separate pass AFTER all cards. For solo cards
+    // both edges. For combined chains: leader owns input (leftmost visual
+    // card, may be a sliver); tail owns output (rightmost visual card,
+    // may be a sliver). Container-anchored so ports live on the dashed
+    // bracket's outer edge, not the seam inside the box.
     for (const step of steps) {
       const order = chainOrder(step.id)
       const isInChain = order.length > 1
-      const activeId = isInChain ? (activeInChainRef.current[order[0]] ?? order[0]) : step.id
-      if (isInChain && step.id !== activeId) continue
+      const isTail = !isInChain || step.id === order[order.length - 1]
+      const isHead = !isInChain || step.id === order[0]
+      if (!isTail && !isHead) continue
       const r = renderPosOf(step.id)
       if (!r) continue
-      // draw ports log removed — fires every frame.
-
-      const out = rectOutputPort(r)
-      const isOutHovered = hoveredPort === `out_${step.id}`
-      const hasOutgoing = isInChain
-        ? order.some((mid) => {
-            const m = steps.find((s) => s.id === mid)
-            if (!m) return false
-            const btn = (m as any).buttonConfig?.nextStepId
-            return m.options.some((o) => o.nextStepId) || (!!btn && (btn === '__end__' || steps.some((s) => s.id === btn)))
-          })
-        : (step.options.some((o) => o.nextStepId) || (() => {
-            const btn = (step as any).buttonConfig?.nextStepId
-            return !!btn && (btn === '__end__' || steps.some((s) => s.id === btn))
-          })())
-      drawPortCircle(ctx, out.x, out.y, isOutHovered, hasOutgoing)
-
-      const inp = rectInputPort(r)
-      const isInpHovered = hoveredPort === `inp_${step.id}`
-      const hasIncoming = isInChain
-        ? (order.some((mid) => steps.some((s) =>
-            s.options.some((o) => o.nextStepId === mid) ||
-            (s as any).buttonConfig?.nextStepId === mid
-          )) || order.includes(sorted[0]?.id ?? ''))
-        : (steps.some((s) =>
-            s.options.some((o) => o.nextStepId === step.id) ||
-            (s as any).buttonConfig?.nextStepId === step.id
-          ) || step.id === sorted[0]?.id)
-      drawPortCircle(ctx, inp.x, inp.y, isInpHovered, hasIncoming)
+      if (isTail) {
+        const out = rectOutputPort(r)
+        const isOutHovered = hoveredPort === `out_${step.id}`
+        const hasOutgoing = isInChain
+          ? order.some((mid) => {
+              const m = steps.find((s) => s.id === mid)
+              if (!m) return false
+              const btn = (m as any).buttonConfig?.nextStepId
+              return m.options.some((o) => o.nextStepId) || (!!btn && (btn === '__end__' || steps.some((s) => s.id === btn)))
+            })
+          : (step.options.some((o) => o.nextStepId) || (() => {
+              const btn = (step as any).buttonConfig?.nextStepId
+              return !!btn && (btn === '__end__' || steps.some((s) => s.id === btn))
+            })())
+        drawPortCircle(ctx, out.x, out.y, isOutHovered, hasOutgoing)
+      }
+      if (isHead) {
+        const inp = rectInputPort(r)
+        const isInpHovered = hoveredPort === `inp_${step.id}`
+        const hasIncoming = isInChain
+          ? (order.some((mid) => steps.some((s) =>
+              s.options.some((o) => o.nextStepId === mid) ||
+              (s as any).buttonConfig?.nextStepId === mid
+            )) || order.includes(sorted[0]?.id ?? ''))
+          : (steps.some((s) =>
+              s.options.some((o) => o.nextStepId === step.id) ||
+              (s as any).buttonConfig?.nextStepId === step.id
+            ) || step.id === sorted[0]?.id)
+        drawPortCircle(ctx, inp.x, inp.y, isInpHovered, hasIncoming)
+      }
     }
 
     // Re-draw drag handles for the SELECTED arrow after port circles, so
