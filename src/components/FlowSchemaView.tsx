@@ -2554,6 +2554,26 @@ export default function FlowSchemaView({
     // eslint-disable-next-line no-console
     console.log('[chain] early hitTestNode', { cx, cy, nodeHit, chainOrderOfHit: nodeHit ? chainOrder(nodeHit) : null })
 
+    // Chain sliver click → bring that member to the front. Runs BEFORE arrow
+    // / port hit-tests because option arrows often pass near the sliver's
+    // side and their hit-test would otherwise steal the click. A plain
+    // left-click on a slivered (non-active) chain member is unambiguous:
+    // the user wants to browse the deck.
+    if (nodeHit && !(e.ctrlKey || e.metaKey) && e.button === 0) {
+      const order = chainOrder(nodeHit)
+      if (order.length > 1) {
+        const leaderId = order[0]
+        const currentActive = activeInChainRef.current[leaderId] ?? leaderId
+        if (nodeHit !== currentActive) {
+          // eslint-disable-next-line no-console
+          console.log('[chain] EARLY sliver click → activating', { leaderId, from: currentActive, to: nodeHit })
+          setActiveInChain((prev) => ({ ...prev, [leaderId]: nodeHit }))
+          setSelectedArrow(null)
+          return
+        }
+      }
+    }
+
     // Ctrl / Cmd + click on a card: toggle its membership in the multi
     // selection instead of the normal single-select. Special nodes
     // (Start / End) aren't selectable this way — they're not cards.
