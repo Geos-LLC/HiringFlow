@@ -87,7 +87,7 @@ async function main() {
     const url = v.storageKey
     const ext = (v.filename.split('.').pop() || 'mp4').toLowerCase()
     const stagingKey = `staging/${v.id}/${(v.filename || 'video').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)}`
-    console.log(`[migrate] ${v.id}  (${v.filename})  ${(v.sizeBytes / 1024 / 1024).toFixed(1)} MB`)
+    console.log(`[migrate] ${v.id}  (${v.filename})  ${(Number(v.sizeBytes) / 1024 / 1024).toFixed(1)} MB`)
 
     if (DRY_RUN) { processed++; continue }
 
