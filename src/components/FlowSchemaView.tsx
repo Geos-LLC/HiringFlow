@@ -1668,6 +1668,13 @@ export default function FlowSchemaView({
     const activeSz = getNodeSize(order[activeIdx])
     const baseX = leaderPos.x
     const baseY = leaderPos.y
+    // Diagnostic — helps trace why a chain member ends up where it does.
+    // Only log when the CHAIN LEADER is the one being computed so we get
+    // one log line per chain, not per member per frame.
+    if (typeof window !== 'undefined' && id === order[0]) {
+      // eslint-disable-next-line no-console
+      console.log('[chain] renderPosOf leader', { chain: order, activeIdx, activeId: order[activeIdx], baseX, baseY, activeW: activeSz.w })
+    }
     // Active card ALWAYS sits at (baseX, baseY) — it's the fixed anchor,
     // like the front of a card deck. Left slivers extend to the left of
     // baseX, right slivers extend to the right of active's right edge.
@@ -1765,7 +1772,12 @@ export default function FlowSchemaView({
       const srcRect = renderPosOf(srcId)
       const tgtRect = renderPosOf(tgtId)
       if (!srcRect || !tgtRect) return null
-      return { out: rectOutputPort(srcRect), inp: rectInputPort(tgtRect) }
+      const ports = { out: rectOutputPort(srcRect), inp: rectInputPort(tgtRect) }
+      if (typeof window !== 'undefined' && (srcOrder.length > 1 || tgtOrder.length > 1)) {
+        // eslint-disable-next-line no-console
+        console.log('[chain] visualPortsFor', { sourceId, targetId, srcId, tgtId, ports })
+      }
+      return ports
     },
     [chainOrder, renderPosOf, rectOutputPort, rectInputPort]
   )
@@ -2143,6 +2155,10 @@ export default function FlowSchemaView({
       if (isInChain && step.id !== activeId) continue
       const r = renderPosOf(step.id)
       if (!r) continue
+      if (isInChain) {
+        // eslint-disable-next-line no-console
+        console.log('[chain] draw ports for active', { chain: order, activeId, rect: { x: r.x, y: r.y, w: r.w, h: r.h } })
+      }
 
       const out = rectOutputPort(r)
       const isOutHovered = hoveredPort === `out_${step.id}`
@@ -2816,6 +2832,8 @@ export default function FlowSchemaView({
 
     // Check nodes (for dragging)
     const nodeId = hitTestNode(cx, cy)
+    // eslint-disable-next-line no-console
+    console.log('[chain] mousedown hitTestNode', { cx, cy, nodeId })
     if (nodeId) {
       setSelectedArrow(null)
       // Chain-member click: if it's a sliver (not the active member) just
@@ -2823,11 +2841,20 @@ export default function FlowSchemaView({
       // browse the stack; dragging is reserved for the active card and
       // moves the whole chain as one unit.
       const order = chainOrder(nodeId)
+      // eslint-disable-next-line no-console
+      console.log('[chain] node hit', { nodeId, chainOrder: order, activeMap: { ...activeInChainRef.current } })
       if (order.length > 1) {
         const leaderId = order[0]
         const currentActive = activeInChainRef.current[leaderId] ?? leaderId
+        // eslint-disable-next-line no-console
+        console.log('[chain] chain click', { leaderId, currentActive, clicked: nodeId, willActivate: nodeId !== currentActive })
         if (nodeId !== currentActive) {
-          setActiveInChain((prev) => ({ ...prev, [leaderId]: nodeId }))
+          setActiveInChain((prev) => {
+            const next = { ...prev, [leaderId]: nodeId }
+            // eslint-disable-next-line no-console
+            console.log('[chain] setActiveInChain', { prev, next })
+            return next
+          })
           return
         }
         // Active card in a chain — drag the whole chain together.
