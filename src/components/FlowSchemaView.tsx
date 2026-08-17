@@ -1018,41 +1018,47 @@ export default function FlowSchemaView({
     return result
   }, [steps])
 
-  // Stage numbers for the badge/title prefix. Computed by BFS from the
-  // first step so that branches at the same depth share a number — a fork
-  // counts as one step, not two. Combined partners share their primary's
-  // depth (they're conceptually one step). Unreachable steps fall through
-  // to sequential numbering at the end.
+  // Stage numbers — unique per step, assigned in BFS visit order from the
+  // flow entry. Combined partners share their primary's number (they're
+  // one screen). Forked branches each get their own number (previously
+  // shared BFS depth, which made "8 4-1" and "8 4-2" collide and confused
+  // the dropdown). Unreachable steps fall through to sequential at the end.
   const stageNumberByStep = useMemo<Map<string, number>>(() => {
     const result = new Map<string, number>()
     if (steps.length === 0) return result
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
-    const queue: Array<{ id: string; depth: number }> = [
-      { id: sorted[0].id, depth: 1 },
-    ]
+    let counter = 1
+    const assign = (id: string, shareWith?: string) => {
+      if (result.has(id)) return
+      if (shareWith && result.has(shareWith)) {
+        result.set(id, result.get(shareWith)!)
+      } else {
+        result.set(id, counter++)
+      }
+    }
+    const queue: string[] = [sorted[0].id]
+    assign(sorted[0].id)
     while (queue.length > 0) {
-      const { id, depth } = queue.shift()!
-      if (result.has(id)) continue
-      result.set(id, depth)
+      const id = queue.shift()!
       const step = steps.find((s) => s.id === id)
       if (!step) continue
       if (step.combinedWithId && !result.has(step.combinedWithId)) {
-        queue.push({ id: step.combinedWithId, depth })
+        assign(step.combinedWithId, id)
+        queue.push(step.combinedWithId)
       }
-      const children = new Set<string>()
+      const children: string[] = []
       for (const o of step.options) {
-        if (o.nextStepId && o.nextStepId !== '__end__') children.add(o.nextStepId)
+        if (o.nextStepId && o.nextStepId !== '__end__' && !result.has(o.nextStepId)) children.push(o.nextStepId)
       }
       const btn = step.buttonConfig?.nextStepId
-      if (btn && btn !== '__end__') children.add(btn)
-      children.forEach((childId) => {
-        if (!result.has(childId)) queue.push({ id: childId, depth: depth + 1 })
-      })
+      if (btn && btn !== '__end__' && !result.has(btn)) children.push(btn)
+      for (const childId of children) {
+        assign(childId)
+        queue.push(childId)
+      }
     }
-    let nextDepth = 1
-    result.forEach((d) => { if (d >= nextDepth) nextDepth = d + 1 })
     for (const s of sorted) {
-      if (!result.has(s.id)) result.set(s.id, nextDepth++)
+      if (!result.has(s.id)) result.set(s.id, counter++)
     }
     return result
   }, [steps])

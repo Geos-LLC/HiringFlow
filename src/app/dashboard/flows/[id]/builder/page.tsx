@@ -256,41 +256,48 @@ export default function FlowBuilderPage() {
   const selectedStep = flow?.steps.find((s) => s.id === selectedStepId)
   const popupStep = flow?.steps.find((s) => s.id === popupStepId)
 
-  // Stage numbering matching the visual flow (BFS depth from entry, combined
-  // partners share their primary's number). The option-target dropdowns
-  // reuse this so the numbers displayed in the dropdown match the badges
-  // painted on the flow canvas. stepOrder-based sequential numbering was
-  // out of sync — a step showing as "9" in the dropdown could appear as
-  // "11" on the canvas because BFS depth differs from creation order.
+  // Stage numbering matching the visual flow — unique per step, assigned
+  // in BFS visit order from entry. Combined partners share their primary's
+  // number. Forked branches each get their own number (previously shared
+  // BFS depth which collided at forks like "8 4-1" and "8 4-2").
   const stageNumberByStep = useMemo<Map<string, number>>(() => {
     const result = new Map<string, number>()
     const steps = flow?.steps ?? []
     if (steps.length === 0) return result
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
-    const queue: Array<{ id: string; depth: number }> = [{ id: sorted[0].id, depth: 1 }]
+    let counter = 1
+    const assign = (id: string, shareWith?: string) => {
+      if (result.has(id)) return
+      if (shareWith && result.has(shareWith)) {
+        result.set(id, result.get(shareWith)!)
+      } else {
+        result.set(id, counter++)
+      }
+    }
+    const queue: string[] = [sorted[0].id]
+    assign(sorted[0].id)
     while (queue.length > 0) {
-      const { id, depth } = queue.shift()!
-      if (result.has(id)) continue
-      result.set(id, depth)
+      const id = queue.shift()!
       const step = steps.find((s) => s.id === id)
       if (!step) continue
-      if ((step as any).combinedWithId && !result.has((step as any).combinedWithId)) {
-        queue.push({ id: (step as any).combinedWithId, depth })
+      const cwId = (step as any).combinedWithId
+      if (cwId && !result.has(cwId)) {
+        assign(cwId, id)
+        queue.push(cwId)
       }
-      const children = new Set<string>()
+      const children: string[] = []
       for (const o of step.options) {
-        if (o.nextStepId && o.nextStepId !== '__end__') children.add(o.nextStepId)
+        if (o.nextStepId && o.nextStepId !== '__end__' && !result.has(o.nextStepId)) children.push(o.nextStepId)
       }
       const btn = (step as any).buttonConfig?.nextStepId
-      if (btn && btn !== '__end__') children.add(btn)
-      children.forEach((childId) => {
-        if (!result.has(childId)) queue.push({ id: childId, depth: depth + 1 })
-      })
+      if (btn && btn !== '__end__' && !result.has(btn)) children.push(btn)
+      for (const childId of children) {
+        assign(childId)
+        queue.push(childId)
+      }
     }
-    let nextDepth = 1
-    result.forEach((d) => { if (d >= nextDepth) nextDepth = d + 1 })
     for (const s of sorted) {
-      if (!result.has(s.id)) result.set(s.id, nextDepth++)
+      if (!result.has(s.id)) result.set(s.id, counter++)
     }
     return result
   }, [flow?.steps])
