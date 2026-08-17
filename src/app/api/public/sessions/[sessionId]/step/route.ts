@@ -79,22 +79,48 @@ export async function GET(
   const totalSteps = visibleSteps.length
   const visibleStepIds = visibleSteps.map((s) => s.id)
 
-  // Current position = number of screens the candidate has ACTUALLY
-  // completed + 1 for the current one. Uses SessionAnswer counts because
-  // stepOrder doesn't reflect the flow's traversal path (recruiter may
-  // have reordered / branched arbitrarily) — a candidate on the 2nd
-  // screen shouldn't see "20 of 20" just because the current step has
-  // stepOrder=19. Combined partners collapse to a single screen.
-  const answers = await prisma.sessionAnswer.findMany({
-    where: { sessionId: params.sessionId },
-    select: { stepId: true },
-  })
-  const answeredIds = new Set(answers.map((a) => a.stepId))
-  let completedScreens = 0
-  answeredIds.forEach((sid) => {
-    if (!combinedPartners.has(sid)) completedScreens++
-  })
-  const currentPosition = Math.min(completedScreens + 1, totalSteps || completedScreens + 1)
+  // Current position = BFS depth of the current step from the flow entry,
+  // walking options + button + combinedWithId. Combined partners share
+  // their primary's screen (don't increment depth). Depth = 1 for entry.
+  // This works regardless of stepOrder ordering and regardless of whether
+  // the candidate has any SessionAnswer rows (info / submission / video
+  // steps don't create answers, so answer-counting undercounts).
+  const stepById = new Map(allSteps.map((s) => [s.id, s]))
+  type BfsNode = { id: string; screens: number }
+  const queue: BfsNode[] = []
+  const bestDepth = new Map<string, number>()
+  const entryId = allSteps[0]?.id
+  if (entryId) {
+    const entryScreens = combinedPartners.has(entryId) ? 0 : 1
+    queue.push({ id: entryId, screens: entryScreens })
+    bestDepth.set(entryId, entryScreens)
+    while (queue.length) {
+      const { id, screens } = queue.shift()!
+      const s = stepById.get(id)
+      if (!s) continue
+      const followers: Array<{ id: string; sameScreen: boolean }> = []
+      for (const o of s.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) {
+          followers.push({ id: o.nextStepId, sameScreen: s.combinedWithId === o.nextStepId })
+        }
+      }
+      const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+      if (btn && btn !== '__end__' && stepById.has(btn)) {
+        followers.push({ id: btn, sameScreen: s.combinedWithId === btn })
+      }
+      if (s.combinedWithId && stepById.has(s.combinedWithId)) {
+        followers.push({ id: s.combinedWithId, sameScreen: true })
+      }
+      for (const f of followers) {
+        const succScreens = f.sameScreen ? screens : screens + 1
+        if (!bestDepth.has(f.id) || bestDepth.get(f.id)! > succScreens) {
+          bestDepth.set(f.id, succScreens)
+          queue.push({ id: f.id, screens: succScreens })
+        }
+      }
+    }
+  }
+  const currentPosition = Math.min(bestDepth.get(step.id) ?? 1, totalSteps || 1)
 
   void step.stepOrder
 
