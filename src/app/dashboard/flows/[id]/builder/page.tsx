@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -255,6 +255,57 @@ export default function FlowBuilderPage() {
 
   const selectedStep = flow?.steps.find((s) => s.id === selectedStepId)
   const popupStep = flow?.steps.find((s) => s.id === popupStepId)
+
+  // Stage numbering matching the visual flow (BFS depth from entry, combined
+  // partners share their primary's number). The option-target dropdowns
+  // reuse this so the numbers displayed in the dropdown match the badges
+  // painted on the flow canvas. stepOrder-based sequential numbering was
+  // out of sync — a step showing as "9" in the dropdown could appear as
+  // "11" on the canvas because BFS depth differs from creation order.
+  const stageNumberByStep = useMemo<Map<string, number>>(() => {
+    const result = new Map<string, number>()
+    const steps = flow?.steps ?? []
+    if (steps.length === 0) return result
+    const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
+    const queue: Array<{ id: string; depth: number }> = [{ id: sorted[0].id, depth: 1 }]
+    while (queue.length > 0) {
+      const { id, depth } = queue.shift()!
+      if (result.has(id)) continue
+      result.set(id, depth)
+      const step = steps.find((s) => s.id === id)
+      if (!step) continue
+      if ((step as any).combinedWithId && !result.has((step as any).combinedWithId)) {
+        queue.push({ id: (step as any).combinedWithId, depth })
+      }
+      const children = new Set<string>()
+      for (const o of step.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__') children.add(o.nextStepId)
+      }
+      const btn = (step as any).buttonConfig?.nextStepId
+      if (btn && btn !== '__end__') children.add(btn)
+      children.forEach((childId) => {
+        if (!result.has(childId)) queue.push({ id: childId, depth: depth + 1 })
+      })
+    }
+    let nextDepth = 1
+    result.forEach((d) => { if (d >= nextDepth) nextDepth = d + 1 })
+    for (const s of sorted) {
+      if (!result.has(s.id)) result.set(s.id, nextDepth++)
+    }
+    return result
+  }, [flow?.steps])
+  // Ordered step list for the option-target dropdowns: sorted by stage
+  // number (same visual order as the flow) then by title for stable
+  // ordering when stages collide.
+  const stepsByStage = useMemo(() => {
+    const steps = flow?.steps ?? []
+    return [...steps].sort((a, b) => {
+      const sa = stageNumberByStep.get(a.id) ?? 999
+      const sb = stageNumberByStep.get(b.id) ?? 999
+      if (sa !== sb) return sa - sb
+      return a.title.localeCompare(b.title)
+    })
+  }, [flow?.steps, stageNumberByStep])
 
   const markChanged = () => {
     setHasChanges(true)
@@ -1381,12 +1432,10 @@ export default function FlowBuilderPage() {
             >
               <option value="">→ Next step (auto)</option>
               <option value="__end__">→ End</option>
-              {[...(flow?.steps ?? [])]
-                .sort((a, b) => a.stepOrder - b.stepOrder)
-                .map((s, i) => ({ s, idx: i + 1 }))
-                .filter(({ s }) => s.id !== step.id)
-                .map(({ s, idx }) => (
-                  <option key={s.id} value={s.id}>→ {idx}. {s.title}</option>
+              {stepsByStage
+                .filter((s) => s.id !== step.id)
+                .map((s) => (
+                  <option key={s.id} value={s.id}>→ {stageNumberByStep.get(s.id) ?? '?'}. {s.title}</option>
                 ))}
             </select>
           </div>
@@ -2160,12 +2209,10 @@ export default function FlowBuilderPage() {
                                   >
                                     <option value="">→ Next step (auto)</option>
                                     <option value="__end__">→ End</option>
-                                    {[...flow.steps]
-                                      .sort((a, b) => a.stepOrder - b.stepOrder)
-                                      .map((s, i) => ({ s, idx: i + 1 }))
-                                      .filter(({ s }) => s.id !== popupStep.id)
-                                      .map(({ s, idx }) => (
-                                        <option key={s.id} value={s.id}>→ {idx}. {s.title}</option>
+                                    {stepsByStage
+                                      .filter((s) => s.id !== popupStep.id)
+                                      .map((s) => (
+                                        <option key={s.id} value={s.id}>→ {stageNumberByStep.get(s.id) ?? '?'}. {s.title}</option>
                                       ))}
                                   </select>
                                 </div>
@@ -2994,11 +3041,9 @@ export default function FlowBuilderPage() {
                         >
                           <option value="">→ Next step (auto)</option>
                           <option value="__end__">→ End</option>
-                          {[...(flow?.steps ?? [])]
-                            .sort((a, b) => a.stepOrder - b.stepOrder)
-                            .map((s, i) => (
-                              <option key={s.id} value={s.id}>→ {i + 1}. {s.title}</option>
-                            ))}
+                          {stepsByStage.map((s) => (
+                            <option key={s.id} value={s.id}>→ {stageNumberByStep.get(s.id) ?? '?'}. {s.title}</option>
+                          ))}
                         </select>
                       </div>
                     )}
@@ -3100,11 +3145,9 @@ export default function FlowBuilderPage() {
                             >
                               <option value="">→ Next step (auto)</option>
                               <option value="__end__">→ End</option>
-                              {[...(flow?.steps ?? [])]
-                                .sort((a, b) => a.stepOrder - b.stepOrder)
-                                .map((s, j) => (
-                                  <option key={s.id} value={s.id}>→ {j + 1}. {s.title}</option>
-                                ))}
+                              {stepsByStage.map((s) => (
+                                <option key={s.id} value={s.id}>→ {stageNumberByStep.get(s.id) ?? '?'}. {s.title}</option>
+                              ))}
                             </select>
                           </div>
                         ))}
