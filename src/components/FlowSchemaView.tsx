@@ -1672,11 +1672,13 @@ export default function FlowSchemaView({
     const stepIdx = order.indexOf(id)
     // Height comes from the ACTIVE card (portrait vs landscape) so slivers
     // always match the active card's height.
-    const activeSz = getNodeSize(order[activeIdx])
+    // Chain members render at the CANVAS-PAINTED size (NODE_W × NODE_H,
+    // what drawNode uses) so slivers match the active card's actual
+    // painted bounds. Using getNodeSize here misaligned slivers with
+    // portrait-video active cards because drawNode ignores aspect.
+    const activeSz = { w: NODE_W, h: NODE_H }
     const baseX = leaderPos.x
     const baseY = leaderPos.y
-    // renderPosOf log removed — was firing every RAF frame. Use the
-    // "EARLY sliver click" and "setActiveInChain" logs to trace switches.
     // Active card ALWAYS sits at (baseX, baseY) — it's the fixed anchor,
     // like the front of a card deck. Left slivers extend to the left of
     // baseX, right slivers extend to the right of active's right edge.
