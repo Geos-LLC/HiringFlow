@@ -80,7 +80,7 @@ type InteractionMode =
   | { type: 'idle' }
   | { type: 'panning'; startX: number; startY: number; panStartX: number; panStartY: number }
   | { type: 'dragging'; stepId: string; offsetX: number; offsetY: number; startScreenX: number; startScreenY: number }
-  | { type: 'dragging_group'; stepIds: string[]; offsets: Record<string, { x: number; y: number }> }
+  | { type: 'dragging_group'; stepIds: string[]; offsets: Record<string, { x: number; y: number }>; startScreenX?: number; startScreenY?: number; clickTargetId?: string }
   | { type: 'marquee'; startCx: number; startCy: number; currentCx: number; currentCy: number }
   | { type: 'connecting'; fromStepId: string; fromX: number; fromY: number; mouseX: number; mouseY: number }
   | { type: 'reconnecting'; optionId: string; fromStepId: string; fromX: number; fromY: number; mouseX: number; mouseY: number }
@@ -2879,14 +2879,16 @@ export default function FlowSchemaView({
           })
           return
         }
-        // Active card in a chain — drag the whole chain together.
+        // Active card in a chain — drag the whole chain together. Capture
+        // start coords + click target so a click-with-no-movement can be
+        // resolved as onStepClick (edit modal) in handleMouseUp.
         const offsets: Record<string, { x: number; y: number }> = {}
         for (const mid of order) {
           const mp = positions[mid]
           if (!mp) continue
           offsets[mid] = { x: cx - mp.x, y: cy - mp.y }
         }
-        setMode({ type: 'dragging_group', stepIds: order, offsets })
+        setMode({ type: 'dragging_group', stepIds: order, offsets, startScreenX: e.clientX, startScreenY: e.clientY, clickTargetId: nodeId })
         return
       }
       const pos = positions[nodeId]
@@ -3350,7 +3352,24 @@ export default function FlowSchemaView({
     }
 
     if (mode.type === 'dragging_group') {
-      onPositionsChange?.(positions)
+      // Click-vs-drag detection for chain-active-card clicks. If the
+      // cursor barely moved AND we recorded a clickTargetId (only set
+      // when entering dragging_group from a chain-member click, not
+      // from marquee/bracket group drags), fire onStepClick so the
+      // edit modal opens.
+      const sx = mode.startScreenX
+      const sy = mode.startScreenY
+      if (mode.clickTargetId && sx !== undefined && sy !== undefined) {
+        const dx = Math.abs(e.clientX - sx)
+        const dy = Math.abs(e.clientY - sy)
+        if (dx < 5 && dy < 5) {
+          onStepClick?.(mode.clickTargetId)
+        } else {
+          onPositionsChange?.(positions)
+        }
+      } else {
+        onPositionsChange?.(positions)
+      }
     }
 
     if (mode.type === 'marquee') {
