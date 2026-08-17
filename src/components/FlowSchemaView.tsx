@@ -260,6 +260,13 @@ export default function FlowSchemaView({
   const [activeInChain, setActiveInChain] = useState<Record<string, string>>({})
   const activeInChainRef = useRef(activeInChain)
   activeInChainRef.current = activeInChain
+  // One-shot log when the active-in-chain map changes. Confirms state
+  // updates land without spamming the render loop.
+  useEffect(() => {
+    if (Object.keys(activeInChain).length === 0) return
+    // eslint-disable-next-line no-console
+    console.log('[chain] activeInChain changed', activeInChain)
+  }, [activeInChain])
 
   // Combined-chain port re-anchoring. Walk forward AND backward through
   // combinedWithId to collect every chain member, then pick the extremes
@@ -1668,12 +1675,8 @@ export default function FlowSchemaView({
     const activeSz = getNodeSize(order[activeIdx])
     const baseX = leaderPos.x
     const baseY = leaderPos.y
-    // Diagnostic — log only when the chain has a NON-DEFAULT active state
-    // so the render loop's 60fps firehose doesn't drown out click events.
-    if (typeof window !== 'undefined' && id === order[0] && activeIdx !== 0) {
-      // eslint-disable-next-line no-console
-      console.log('[chain] renderPosOf leader', { chain: order, activeIdx, activeId: order[activeIdx], baseX, baseY, activeW: activeSz.w })
-    }
+    // renderPosOf log removed — was firing every RAF frame. Use the
+    // "EARLY sliver click" and "setActiveInChain" logs to trace switches.
     // Active card ALWAYS sits at (baseX, baseY) — it's the fixed anchor,
     // like the front of a card deck. Left slivers extend to the left of
     // baseX, right slivers extend to the right of active's right edge.
@@ -2151,11 +2154,7 @@ export default function FlowSchemaView({
       if (isInChain && step.id !== activeId) continue
       const r = renderPosOf(step.id)
       if (!r) continue
-      if (isInChain && activeInChainRef.current[order[0]]) {
-        // Inline coords so they show up in pasted text logs.
-        // eslint-disable-next-line no-console
-        console.log(`[chain] draw ports rect=(${r.x},${r.y},${r.w}x${r.h}) inPort=(${r.x},${r.y + r.h/2}) outPort=(${r.x + r.w},${r.y + r.h/2}) leaderId=${order[0]} activeId=${activeId}`)
-      }
+      // draw ports log removed — fires every frame.
 
       const out = rectOutputPort(r)
       const isOutHovered = hoveredPort === `out_${step.id}`
