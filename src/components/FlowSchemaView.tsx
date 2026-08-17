@@ -2517,6 +2517,8 @@ export default function FlowSchemaView({
 
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent) => {
+    // eslint-disable-next-line no-console
+    console.log('[chain] handleMouseDown fired', { button: e.button, clientX: e.clientX, clientY: e.clientY })
     // Clicks inside a floating popup (port picker, context menu,
     // multi-select bar) shouldn't be treated as canvas clicks. Without
     // this bail, the empty-space branch below clears the multi-selection
@@ -2552,6 +2554,8 @@ export default function FlowSchemaView({
 
     // DEBUG: log click info
     const nodeHit = hitTestNode(cx, cy)
+    // eslint-disable-next-line no-console
+    console.log('[chain] early hitTestNode', { cx, cy, nodeHit, chainOrderOfHit: nodeHit ? chainOrder(nodeHit) : null })
 
     // Ctrl / Cmd + click on a card: toggle its membership in the multi
     // selection instead of the normal single-select. Special nodes
