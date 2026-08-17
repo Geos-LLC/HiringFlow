@@ -66,61 +66,79 @@ export async function GET(
     },
   })
 
-  // Screen list = every step MINUS combined partners (the second card
-  // of a combined pair collapses into its primary's screen). This gives
-  // us the total count the candidate will ever see (progress denominator)
-  // and the ordered list of navigable step ids for the clickable
-  // progress bar.
+  // Progress numbering — unique per step, assigned in BFS visit order from
+  // the flow entry. Combined partners share their primary's number (one
+  // screen). Forked branches get consecutive numbers. Matches the stage
+  // numbering used in the visual flow / builder dropdowns exactly, so
+  // clicking slot N in the progress bar navigates to the step actually
+  // numbered N on the canvas. stepIds is ordered by this numbering so
+  // slot index = step number - 1.
   const combinedPartners = new Set<string>()
   for (const s of allSteps) {
     if (s.combinedWithId) combinedPartners.add(s.combinedWithId)
   }
-  const visibleSteps = allSteps.filter((s) => !combinedPartners.has(s.id))
-  const totalSteps = visibleSteps.length
-  const visibleStepIds = visibleSteps.map((s) => s.id)
-
-  // Current position = BFS depth of the current step from the flow entry,
-  // walking options + button + combinedWithId. Combined partners share
-  // their primary's screen (don't increment depth). Depth = 1 for entry.
-  // This works regardless of stepOrder ordering and regardless of whether
-  // the candidate has any SessionAnswer rows (info / submission / video
-  // steps don't create answers, so answer-counting undercounts).
   const stepById = new Map(allSteps.map((s) => [s.id, s]))
-  type BfsNode = { id: string; screens: number }
-  const queue: BfsNode[] = []
-  const bestDepth = new Map<string, number>()
-  const entryId = allSteps[0]?.id
+  const stageNumberByStep = new Map<string, number>()
+  const sortedByOrder = [...allSteps].sort((a, b) => a.stepOrder - b.stepOrder)
+  let counter = 1
+  const assign = (id: string, shareWith?: string) => {
+    if (stageNumberByStep.has(id)) return
+    if (shareWith && stageNumberByStep.has(shareWith)) {
+      stageNumberByStep.set(id, stageNumberByStep.get(shareWith)!)
+    } else {
+      stageNumberByStep.set(id, counter++)
+    }
+  }
+  const entryId = sortedByOrder[0]?.id
   if (entryId) {
-    const entryScreens = combinedPartners.has(entryId) ? 0 : 1
-    queue.push({ id: entryId, screens: entryScreens })
-    bestDepth.set(entryId, entryScreens)
-    while (queue.length) {
-      const { id, screens } = queue.shift()!
+    const bfsQ: string[] = [entryId]
+    assign(entryId)
+    while (bfsQ.length) {
+      const id = bfsQ.shift()!
       const s = stepById.get(id)
       if (!s) continue
-      const followers: Array<{ id: string; sameScreen: boolean }> = []
+      if (s.combinedWithId && stepById.has(s.combinedWithId) && !stageNumberByStep.has(s.combinedWithId)) {
+        assign(s.combinedWithId, id)
+        bfsQ.push(s.combinedWithId)
+      }
+      const children: string[] = []
       for (const o of s.options) {
-        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) {
-          followers.push({ id: o.nextStepId, sameScreen: s.combinedWithId === o.nextStepId })
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !stageNumberByStep.has(o.nextStepId)) {
+          children.push(o.nextStepId)
         }
       }
       const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-      if (btn && btn !== '__end__' && stepById.has(btn)) {
-        followers.push({ id: btn, sameScreen: s.combinedWithId === btn })
+      if (btn && btn !== '__end__' && stepById.has(btn) && !stageNumberByStep.has(btn)) {
+        children.push(btn)
       }
-      if (s.combinedWithId && stepById.has(s.combinedWithId)) {
-        followers.push({ id: s.combinedWithId, sameScreen: true })
-      }
-      for (const f of followers) {
-        const succScreens = f.sameScreen ? screens : screens + 1
-        if (!bestDepth.has(f.id) || bestDepth.get(f.id)! > succScreens) {
-          bestDepth.set(f.id, succScreens)
-          queue.push({ id: f.id, screens: succScreens })
-        }
+      for (const cid of children) {
+        assign(cid)
+        bfsQ.push(cid)
       }
     }
   }
-  const currentPosition = Math.min(bestDepth.get(step.id) ?? 1, totalSteps || 1)
+  for (const s of sortedByOrder) {
+    if (!stageNumberByStep.has(s.id)) stageNumberByStep.set(s.id, counter++)
+  }
+  // visibleSteps = unique screens (combined partners collapse to primary).
+  // Ordered by the BFS-assigned stage number so slot N in the progress bar
+  // is the N-th screen the candidate encounters.
+  const visibleSteps = sortedByOrder
+    .filter((s) => !combinedPartners.has(s.id))
+    .sort((a, b) => (stageNumberByStep.get(a.id)! - stageNumberByStep.get(b.id)!))
+  const totalSteps = visibleSteps.length
+  const visibleStepIds = visibleSteps.map((s) => s.id)
+  // Current = the current step's stage number (or its primary's if the
+  // current step is a combined partner — they share a number).
+  const primaryOf = (sid: string): string => {
+    const parent = allSteps.find((s) => s.combinedWithId === sid)
+    return parent ? primaryOf(parent.id) : sid
+  }
+  const currentPrimaryId = primaryOf(step.id)
+  const currentPosition = Math.min(
+    stageNumberByStep.get(currentPrimaryId) ?? stageNumberByStep.get(step.id) ?? 1,
+    totalSteps || 1
+  )
 
   void step.stepOrder
 
