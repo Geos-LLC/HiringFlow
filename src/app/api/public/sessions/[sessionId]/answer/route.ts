@@ -86,11 +86,35 @@ export async function POST(
       const target = (override && override.length > 0) ? override : buttonNext
       if (target === '__end__') return finishSession()
       if (target) return advanceTo(target)
-      const nextStep = await prisma.flowStep.findFirst({
+      // stepOrder fallback: skip any step that is itself an explicit
+      // option/button target from ANOTHER step. Those are fork branch
+      // destinations and should only be reached via their explicit route;
+      // otherwise a YES-branch leaf falls through to the NO-branch leaf
+      // (both at stepOrder+1 and stepOrder+2 of the fork parent) and the
+      // candidate ends up on the branch they didn't pick.
+      const laterSteps = await prisma.flowStep.findMany({
         where: { flowId: session.flowId, stepOrder: { gt: step.stepOrder } },
         orderBy: { stepOrder: 'asc' },
+        select: { id: true },
       })
-      if (nextStep) return advanceTo(nextStep.id)
+      if (laterSteps.length > 0) {
+        const allSteps = await prisma.flowStep.findMany({
+          where: { flowId: session.flowId },
+          select: { id: true, buttonConfig: true, options: { select: { nextStepId: true } } },
+        })
+        const explicitTargets = new Set<string>()
+        for (const s of allSteps) {
+          if (s.id === step.id) continue // links from the current step don't disqualify their targets
+          for (const o of s.options) {
+            if (o.nextStepId && o.nextStepId !== '__end__') explicitTargets.add(o.nextStepId)
+          }
+          const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+          if (btn && btn !== '__end__') explicitTargets.add(btn)
+        }
+        for (const cand of laterSteps) {
+          if (!explicitTargets.has(cand.id)) return advanceTo(cand.id)
+        }
+      }
       return finishSession()
     }
 
