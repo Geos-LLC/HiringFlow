@@ -66,13 +66,11 @@ export async function GET(
     },
   })
 
-  // Screen list = every step in stepOrder MINUS combined partners (the
-  // second card of a combined pair collapses into its primary's screen).
-  // This gives us the total count the candidate will ever see (progress
-  // denominator) and the ordered list of navigable step ids for the
-  // clickable progress bar. Previous logic used the longest option/button
-  // walk, which undercounted flows where not every step is wired via
-  // explicit next-step links yet.
+  // Screen list = every step MINUS combined partners (the second card
+  // of a combined pair collapses into its primary's screen). This gives
+  // us the total count the candidate will ever see (progress denominator)
+  // and the ordered list of navigable step ids for the clickable
+  // progress bar.
   const combinedPartners = new Set<string>()
   for (const s of allSteps) {
     if (s.combinedWithId) combinedPartners.add(s.combinedWithId)
@@ -81,21 +79,23 @@ export async function GET(
   const totalSteps = visibleSteps.length
   const visibleStepIds = visibleSteps.map((s) => s.id)
 
-  // Current position = 1-based index of the current step in visibleSteps.
-  // If the current step is a combined partner, use its primary's index
-  // (they share the same screen). Fallback to stepOrder-based derivation
-  // if we somehow can't find it.
-  const primaryOf = (sid: string): string => {
-    // Walk BACKWARD: find a step whose combinedWithId points at this one.
-    const parent = allSteps.find((s) => s.combinedWithId === sid)
-    return parent ? primaryOf(parent.id) : sid
-  }
-  const currentPrimaryId = primaryOf(step.id)
-  const currentIndex = visibleStepIds.indexOf(currentPrimaryId)
-  const currentPosition = currentIndex >= 0 ? currentIndex + 1 : 1
+  // Current position = number of screens the candidate has ACTUALLY
+  // completed + 1 for the current one. Uses SessionAnswer counts because
+  // stepOrder doesn't reflect the flow's traversal path (recruiter may
+  // have reordered / branched arbitrarily) — a candidate on the 2nd
+  // screen shouldn't see "20 of 20" just because the current step has
+  // stepOrder=19. Combined partners collapse to a single screen.
+  const answers = await prisma.sessionAnswer.findMany({
+    where: { sessionId: params.sessionId },
+    select: { stepId: true },
+  })
+  const answeredIds = new Set(answers.map((a) => a.stepId))
+  let completedScreens = 0
+  answeredIds.forEach((sid) => {
+    if (!combinedPartners.has(sid)) completedScreens++
+  })
+  const currentPosition = Math.min(completedScreens + 1, totalSteps || completedScreens + 1)
 
-  // Kept for reference — was the old current progress source, now replaced
-  // by `currentPosition` (index into visibleSteps) computed above.
   void step.stepOrder
 
   // Check if this step has a combined partner
