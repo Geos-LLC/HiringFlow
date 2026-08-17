@@ -1172,7 +1172,7 @@ model TrainingContent {
   videoId       String?         @map("video_id")
   video         Video?          @relation(fields: [videoId], references: [id])
   requiredWatch Boolean         @default(true) @map("required_watch")
-  autoplayNext  Boolean         @default(true) @map("autoplay_next")
+  autoplayNext  Boolean         @default(false) @map("autoplay_next")
   textContent   String?         @map("text_content")
   createdAt     DateTime        @default(now()) @map("created_at")
   videoWatches  TrainingVideoWatch[]

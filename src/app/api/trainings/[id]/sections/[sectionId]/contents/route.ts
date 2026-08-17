@@ -19,7 +19,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       sortOrder: (maxOrder._max.sortOrder ?? -1) + 1,
       videoId: body.videoId || null,
       requiredWatch: body.requiredWatch ?? true,
-      autoplayNext: body.autoplayNext ?? true,
+      autoplayNext: body.autoplayNext ?? false,
       textContent: body.textContent || null,
     },
     include: { video: true },
