@@ -135,6 +135,64 @@ async function handle(params: Prisma.MiddlewareParams, result: unknown): Promise
 
   switch (params.model) {
     case 'Session': {
+      // status set on the write → status_changed. Fires every time a lifecycle
+      // transition writes to Session.status (manual "Move to Lost / Mark as
+      // Hired" from the drawer, cron stalled detector, no-show reversal
+      // reactivate, instant-interview reactivate, custom-status assignments).
+      //
+      // Dedup key includes the transition timestamp so re-transitions
+      // (lost → active → lost) each emit a fresh event instead of collapsing
+      // to the first. Terminal-status transitions carry a fresh *At stamp;
+      // reactivate/nurture/custom fall back to the current wall clock.
+      //
+      // The dispatcher (fireStatusChangedAutomations) filters rules by
+      // `allowedForStatuses has newStatus` — a status_changed rule with no
+      // configured targets matches nothing, so this emit is a cheap no-op
+      // for workspaces that haven't wired any status_changed rules.
+      const newStatusRaw = (data as Record<string, unknown>).status
+      if (typeof newStatusRaw === 'string' && newStatusRaw.length > 0) {
+        const sessionId = id ?? resultId(result)
+        if (sessionId) {
+          if (!(await isTestSession(sessionId))) {
+            const row = result as {
+              workspaceId?: string
+              lostAt?: Date | null
+              hiredAt?: Date | null
+              stalledAt?: Date | null
+            } | null
+            let workspaceId = row?.workspaceId
+            if (!workspaceId) {
+              const fresh = await prisma.session.findUnique({
+                where: { id: sessionId },
+                select: { workspaceId: true },
+              })
+              workspaceId = fresh?.workspaceId
+            }
+            if (workspaceId) {
+              const transitionAt =
+                (row?.lostAt as Date | null | undefined) ??
+                (row?.hiredAt as Date | null | undefined) ??
+                (row?.stalledAt as Date | null | undefined) ??
+                new Date()
+              await emitAutomationEvent({
+                workspaceId,
+                sessionId,
+                triggerType: 'status_changed',
+                eventKey: eventKeys.statusChanged(sessionId, newStatusRaw, transitionAt.toISOString()),
+                source: 'lifecycle',
+                payload: { newStatus: newStatusRaw },
+                dispatch: () => auto.fireStatusChangedAutomations({
+                  sessionId,
+                  newStatus: newStatusRaw,
+                  workspaceId: workspaceId!,
+                  executionMode: 'public_trigger',
+                }),
+              })
+            }
+          }
+        }
+      }
+
       // finishedAt transitioning to a value → flow_completed / flow_passed.
       // outcome may travel in the same update; prefer the in-flight value,
       // fall back to whatever the result row says.

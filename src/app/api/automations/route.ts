@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { autoBackfillRuleForUpcomingMeetings } from '@/lib/automation'
+import { isAllowedStatus, normalizeCustomStatuses } from '@/lib/candidate-status'
 
 interface StepInput {
   order?: number
@@ -175,6 +176,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'before_meeting rules need minutesBefore (positive integer)' }, { status: 400 })
   }
 
+  // allowedForStatuses — for status_changed rules this is the target-status
+  // filter (fires when Session.status enters one of the listed values); for
+  // other triggers it's a halt-bypass allowlist. Either way, every entry
+  // must be a known built-in or workspace custom status so we can't persist
+  // rules that will never match.
+  const rawAllowed = Array.isArray(body.allowedForStatuses)
+    ? (body.allowedForStatuses as unknown[]).filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : []
+  let allowedForStatuses: string[] = []
+  if (rawAllowed.length > 0) {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: ws.workspaceId },
+      select: { settings: true },
+    })
+    const customStatuses = normalizeCustomStatuses(
+      (workspace?.settings as { customStatuses?: unknown } | null)?.customStatuses,
+    )
+    for (const s of rawAllowed) {
+      if (!isAllowedStatus(s, customStatuses)) {
+        return NextResponse.json({ error: `Unknown status: ${s}` }, { status: 400 })
+      }
+    }
+    allowedForStatuses = Array.from(new Set(rawAllowed))
+  }
+
+  // status_changed rules must list at least one target status; the
+  // dispatcher's `allowedForStatuses has newStatus` filter matches nothing
+  // otherwise, so the rule would be a permanent no-op if we let it through.
+  if (triggerType === 'status_changed' && allowedForStatuses.length === 0) {
+    return NextResponse.json(
+      { error: 'status_changed rules require at least one target status' },
+      { status: 400 },
+    )
+  }
+
   // stage_entered rules MUST pin to a specific (pipeline, stage). Without
   // both, fireStageEnteredAutomations can never match the rule — so reject
   // at the API boundary rather than persisting a rule that can never fire.
@@ -237,6 +273,7 @@ export async function POST(request: NextRequest) {
       delayMinutes: firstStep.delayMinutes ?? 0,
       minutesBefore: triggerType === 'before_meeting' ? (minutesBefore as number) : null,
       waitForRecording: triggerType === 'meeting_ended' ? !!waitForRecording : false,
+      allowedForStatuses,
       emailDestination: firstStep.emailDestination ?? 'applicant',
       emailDestinationAddress: firstStep.emailDestinationAddress ?? null,
       steps: {

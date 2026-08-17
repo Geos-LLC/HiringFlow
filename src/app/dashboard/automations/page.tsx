@@ -12,6 +12,12 @@ import {
   normalizeStages,
 } from '@/lib/funnel-stages'
 import { detectAutomationWarnings, deriveFeaturesFromStageTriggers } from '@/lib/automation-warnings'
+import {
+  CANDIDATE_STATUSES,
+  STATUS_DISPLAY,
+  normalizeCustomStatuses,
+  type CustomStatus,
+} from '@/lib/candidate-status'
 import RichTextEditor, { type RichTextEditorHandle } from '@/components/RichTextEditor'
 
 interface Flow { id: string; name: string }
@@ -64,6 +70,10 @@ interface Rule {
   // implicit triggerType→stage mapping when set; null = fall back to
   // implicit (or "Unassigned" if nothing claims the trigger).
   stageId: string | null
+  // Target statuses for `triggerType='status_changed'` — the rule fires
+  // when Session.status transitions into any listed value. Doubles as the
+  // halt-bypass allowlist (see src/lib/automation-guard.ts).
+  allowedForStatuses?: string[]
   // Legacy mirror fields — still populated, but not authoritative.
   channel?: 'email' | 'sms'
   smsBody?: string | null
@@ -127,6 +137,10 @@ const TRIGGERS = [
   // specific stage. Requires both pipelineId and stageId; the server
   // rejects creates/updates without them.
   { value: 'stage_entered', label: 'Stage Entered' },
+  // Status-changed — fires when Session.status transitions into any of the
+  // target statuses on the rule (allowedForStatuses). Bypasses the halt
+  // kill-switch since terminal transitions set halt at the same time.
+  { value: 'status_changed', label: 'Status Changed' },
 ]
 
 const SESSION_WIDE_TRIGGERS = new Set([
@@ -134,6 +148,7 @@ const SESSION_WIDE_TRIGGERS = new Set([
   'training_completed',
   'automation_completed',
   'stage_entered',
+  'status_changed',
   'meeting_scheduled',
   'meeting_rescheduled',
   'before_meeting',
@@ -166,6 +181,7 @@ const TRIGGER_LABELS: Record<string, string> = {
   background_check_needs_review: 'Background Check — Needs Review',
   automation_completed: 'After Automation',
   stage_entered: 'Stage Entered',
+  status_changed: 'Status Changed',
 }
 
 const DELAY_PRESETS: Array<{ value: number; label: string }> = [
@@ -341,6 +357,12 @@ function AutomationsPageInner() {
   const [triggerTrainingId, setTriggerTrainingId] = useState('')
   // Explicit stage assignment — '' means "auto" (fall back to triggerType→stage mapping).
   const [stageIdField, setStageIdField] = useState('')
+  // Target statuses for status_changed rules. Reused as the halt-bypass
+  // allowlist for other triggers, though no UI exposes that use case yet.
+  const [allowedStatuses, setAllowedStatuses] = useState<string[]>([])
+  // Workspace-defined custom statuses (cust_*) merged with the built-in
+  // enum for the target-status picker on status_changed rules.
+  const [customStatuses, setCustomStatuses] = useState<CustomStatus[]>([])
   const [minutesBefore, setMinutesBefore] = useState(60)
   const [waitForRecording, setWaitForRecording] = useState(false)
   const [steps, setSteps] = useState<StepShape[]>([newStep(0)])
@@ -433,6 +455,12 @@ function AutomationsPageInner() {
     ]).then(([r, f, t, st, tr, sc, ws, ps]) => {
       setRules(r); setFlows(f); setTemplates(t); setSmsTemplates(st); setTrainings(tr); setSchedulingConfigs(sc)
       setCompanyEmail(ws?.senderEmail || null)
+      // Workspace custom statuses feed the status_changed rule editor's
+      // target picker (built-in enum + custom labels). Missing/malformed
+      // settings degrade to zero custom statuses — the built-in six are
+      // still available.
+      const cs = (ws?.settings as { customStatuses?: unknown } | null)?.customStatuses
+      setCustomStatuses(normalizeCustomStatuses(cs))
       // Workspace-default stage list. Used for the rules table / kanban nav
       // and as the fallback for the rule editor when the rule is scoped to
       // "Any pipeline". When the user picks a specific pipeline in the rule
@@ -792,6 +820,7 @@ function AutomationsPageInner() {
     // without the recruiter having to re-pick it.
     setPipelineIdField(overrides?.pipelineId
       ?? (pipelineFilter && pipelineFilter !== 'workspace' ? pipelineFilter : ''))
+    setAllowedStatuses([])
     setMinutesBefore(60); setWaitForRecording(false)
 
     // Always run seed — it's idempotent on the server (inserts only the
@@ -838,6 +867,7 @@ function AutomationsPageInner() {
     setTriggerTrainingId(r.trainingId ?? '')
     setStageIdField(r.stageId ?? '')
     setPipelineIdField(r.pipelineId ?? '')
+    setAllowedStatuses(Array.isArray(r.allowedForStatuses) ? r.allowedForStatuses : [])
     setMinutesBefore(r.minutesBefore || 60)
     setWaitForRecording(!!r.waitForRecording)
     // Hydrate steps. Older rules may have an empty steps[] (pre-backfill).
@@ -933,6 +963,13 @@ function AutomationsPageInner() {
       if (!pipelineIdField) { setSaveError('Stage Entered rules require a pipeline'); return }
       if (!stageIdField) { setSaveError('Stage Entered rules require a stage'); return }
     }
+    // status_changed rules must list at least one target status; otherwise
+    // the dispatcher's `allowedForStatuses has newStatus` filter can never
+    // match and the rule silently never fires. Same guard on the server.
+    if (triggerType === 'status_changed' && allowedStatuses.length === 0) {
+      setSaveError('Status Changed rules require at least one target status')
+      return
+    }
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i]
       const wantsEmail = s.channel === 'email' || s.channel === 'both'
@@ -991,6 +1028,9 @@ function AutomationsPageInner() {
       triggerAutomationId: triggerType === 'automation_completed' ? (flowId || null) : null,
       minutesBefore: triggerType === 'before_meeting' ? minutesBefore : null,
       waitForRecording: triggerType === 'meeting_ended' ? waitForRecording : false,
+      // Target statuses only apply to status_changed today; on other triggers
+      // we send [] so an edit that flips triggerType clears any prior list.
+      allowedForStatuses: triggerType === 'status_changed' ? allowedStatuses : [],
       steps: steps.map((s, i) => ({
         order: i,
         delayMinutes: s.delayMinutes ?? 0,
@@ -1744,6 +1784,62 @@ function AutomationsPageInner() {
                       Fires after a movement rule lands the candidate in the stage you select below.
                       <strong> Both pipeline and stage are required.</strong> Only fires on pipelines with rule-based movement enabled — turn it on from the Pipelines page first.
                     </div>
+                  </div>
+                </div>
+              )}
+              {triggerType === 'status_changed' && (
+                <div className="space-y-2">
+                  <div className="p-3 bg-brand-50 border border-brand-100 rounded-[8px] text-xs">
+                    <div className="font-medium text-brand-800">Fires when a candidate&apos;s lifecycle status changes</div>
+                    <div className="text-brand-700 mt-0.5 leading-snug">
+                      Runs when the recruiter clicks &ldquo;Move to Lost&rdquo; / &ldquo;Mark as Hired&rdquo; / etc., or when the cron flips a candidate to Stalled. Halted automations don&apos;t block this trigger — the transition itself is the reason to send.
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-grey-20 mb-1.5">
+                      Target status{allowedStatuses.length > 1 ? 'es' : ''} <span className="font-normal text-grey-40">(fires when candidate moves into any of these)</span>
+                    </label>
+                    <div className="border border-surface-border rounded-[8px] p-3 space-y-1.5 bg-white">
+                      {CANDIDATE_STATUSES.map((s) => {
+                        const checked = allowedStatuses.includes(s)
+                        return (
+                          <label key={s} className="flex items-center gap-2 cursor-pointer select-none text-sm text-grey-15 hover:bg-surface rounded px-1.5 py-1">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                setAllowedStatuses((prev) => e.target.checked
+                                  ? Array.from(new Set([...prev, s]))
+                                  : prev.filter((v) => v !== s))
+                              }}
+                              className="rounded border-surface-border text-brand-500 focus:ring-brand-500"
+                            />
+                            <span>{STATUS_DISPLAY[s].label}</span>
+                          </label>
+                        )
+                      })}
+                      {customStatuses.map((c) => {
+                        const checked = allowedStatuses.includes(c.id)
+                        return (
+                          <label key={c.id} className="flex items-center gap-2 cursor-pointer select-none text-sm text-grey-15 hover:bg-surface rounded px-1.5 py-1">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                setAllowedStatuses((prev) => e.target.checked
+                                  ? Array.from(new Set([...prev, c.id]))
+                                  : prev.filter((v) => v !== c.id))
+                              }}
+                              className="rounded border-surface-border text-brand-500 focus:ring-brand-500"
+                            />
+                            <span>{c.label} <span className="text-grey-40 text-xs">(custom)</span></span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                    <p className="text-xs text-grey-40 mt-1">
+                      Custom statuses come from the &ldquo;Statuses&rdquo; drawer on the Candidates page.
+                    </p>
                   </div>
                 </div>
               )}

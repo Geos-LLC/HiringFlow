@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWorkspaceSession, unauthorized } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { autoBackfillRuleForUpcomingMeetings } from '@/lib/automation'
+import { isAllowedStatus, normalizeCustomStatuses } from '@/lib/candidate-status'
 
 interface StepInput {
   order?: number
@@ -117,10 +118,43 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     validatedSteps = v.steps
   }
 
+  // allowedForStatuses — optional patch. When present, replaces the field
+  // wholesale. Validate every entry is a known built-in or workspace custom
+  // status so the dispatcher can actually match. Cleared to [] on triggerType
+  // switches AWAY from status_changed (handled below via effectiveTrigger).
+  let allowedForStatusesUpdate: string[] | null = null
+  if (Array.isArray(body.allowedForStatuses)) {
+    const raw = (body.allowedForStatuses as unknown[]).filter(
+      (v): v is string => typeof v === 'string' && v.length > 0,
+    )
+    if (raw.length > 0) {
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: ws.workspaceId },
+        select: { settings: true },
+      })
+      const customStatuses = normalizeCustomStatuses(
+        (workspace?.settings as { customStatuses?: unknown } | null)?.customStatuses,
+      )
+      for (const s of raw) {
+        if (!isAllowedStatus(s, customStatuses)) {
+          return NextResponse.json({ error: `Unknown status: ${s}` }, { status: 400 })
+        }
+      }
+    }
+    allowedForStatusesUpdate = Array.from(new Set(raw))
+  }
+
   // stage_entered validation — applied to the EFFECTIVE post-update values
   // (body overrides existing). Mirrors the POST handler so a PATCH cannot
   // leave a rule in a state the create endpoint would have rejected.
   const effectiveTrigger = typeof body.triggerType === 'string' ? body.triggerType : rule.triggerType
+  const effectiveAllowedStatuses = allowedForStatusesUpdate ?? rule.allowedForStatuses
+  if (effectiveTrigger === 'status_changed' && effectiveAllowedStatuses.length === 0) {
+    return NextResponse.json(
+      { error: 'status_changed rules require at least one target status' },
+      { status: 400 },
+    )
+  }
   if (effectiveTrigger === 'stage_entered') {
     const effectivePipelineId = pipelineUpdate ? pipelineUpdate.pipelineId : rule.pipelineId
     const effectiveStageId = typeof body.stageId === 'string' && body.stageId
@@ -188,6 +222,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
           minutesBefore: Number.isInteger(body.minutesBefore) && body.minutesBefore > 0 ? body.minutesBefore : null,
         }),
         ...(body.waitForRecording !== undefined && { waitForRecording: !!body.waitForRecording }),
+        ...(allowedForStatusesUpdate !== null && { allowedForStatuses: allowedForStatusesUpdate }),
         ...(body.isActive !== undefined && { isActive: body.isActive }),
         // Mirror the first step's send config onto the legacy rule columns so
         // any read path not yet on `steps` keeps working until the columns

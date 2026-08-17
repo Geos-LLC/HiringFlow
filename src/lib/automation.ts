@@ -863,6 +863,66 @@ export async function fireStageEnteredAutomations(opts: {
 }
 
 /**
+ * Fire automation rules with triggerType='status_changed' whose
+ * `allowedForStatuses` list contains the just-entered status. Called from
+ * the lifecycle middleware after a Session.status write.
+ *
+ * Match criteria (all must hold):
+ *   - workspaceId matches (security boundary)
+ *   - triggerType = 'status_changed'
+ *   - allowedForStatuses `has` newStatus (Prisma String[] contains filter)
+ *   - isActive = true
+ *   - flow scope matches (session-wide trigger, empty scope always passes)
+ *
+ * Halt/status guard bypass: `status_changed` rules are the ONE trigger type
+ * where the halt kill-switch is expected to be set (statusTransitionPatch
+ * stamps `automationsHaltedAt` on stalled/lost/hired). The guard bypasses
+ * halt for this trigger; the `allowedForStatuses` set-membership check on
+ * `session.status` at guard time is what keeps a delayed step from firing
+ * after the recruiter reactivates the candidate.
+ */
+export async function fireStatusChangedAutomations(opts: {
+  sessionId: string
+  newStatus: string
+  workspaceId: string
+  executionMode?: ExecutionMode
+  actorUserId?: string | null
+}): Promise<void> {
+  try {
+    // status_changed is session-wide (no per-flow scope), but pipeline scope
+    // still matters — a rule pinned to the Dispatcher pipeline shouldn't
+    // fire when a Cleaner candidate's status changes. Skip if we can't
+    // resolve the pipeline (session missing).
+    const scope = await automationScopeForSession(opts.sessionId)
+    if (!scope) return
+    const rules = await prisma.automationRule.findMany({
+      where: {
+        workspaceId: opts.workspaceId,
+        triggerType: 'status_changed',
+        isActive: true,
+        allowedForStatuses: { has: opts.newStatus },
+        AND: [scope.whereFragment],
+      },
+      select: { id: true },
+    })
+    if (rules.length === 0) return
+    console.log(`[Automation] Dispatching ${rules.length} status_changed rule(s) for session ${opts.sessionId} (status → ${opts.newStatus})`)
+    const dispatchCtx: DispatchContext = {
+      triggerType: 'status_changed',
+      executionMode: opts.executionMode ?? 'immediate',
+      actorUserId: opts.actorUserId ?? null,
+      triggerContext: { newStatus: opts.newStatus },
+    }
+    for (const rule of rules) {
+      await dispatchRule(rule.id, opts.sessionId, dispatchCtx)
+    }
+  } catch (err) {
+    console.error('[Automation] fireStatusChangedAutomations failed:', err)
+    throw err
+  }
+}
+
+/**
  * Cancel queued follow-ups whose value depended on the meeting still
  * happening — i.e. delayed steps from rules with triggerType
  * `meeting_scheduled` or `meeting_rescheduled` (e.g. "thanks for booking,

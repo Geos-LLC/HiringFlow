@@ -400,7 +400,13 @@ export async function canExecuteAutomationStep(ctx: GuardCtx): Promise<GuardResu
   }
 
   // 1. Halt kill-switch
-  if (session.automationsHaltedAt) {
+  //
+  // status_changed rules are the one trigger where the halt is EXPECTED to be
+  // set — statusTransitionPatch stamps automationsHaltedAt on the very
+  // stalled/lost/hired transition that fired the rule. The (2) lifecycle-
+  // status check below (specialised for status_changed) is what keeps a
+  // delayed step from firing after the recruiter reactivates the candidate.
+  if (session.automationsHaltedAt && rule.triggerType !== 'status_changed') {
     return {
       allowed: false,
       reason: 'skipped_cancelled',
@@ -411,8 +417,28 @@ export async function canExecuteAutomationStep(ctx: GuardCtx): Promise<GuardResu
     }
   }
 
-  // 2. Lifecycle status (default-deny for stalled/lost/hired/archived)
-  if (!isStatusAllowed(session, rule)) {
+  // 2. Lifecycle status
+  //
+  // For status_changed rules, `allowedForStatuses` is the trigger filter —
+  // the rule fires ONLY when the candidate's current status is one of the
+  // configured targets. Membership is enforced positively here so a delayed
+  // step whose candidate has since moved to a different status skips
+  // instead of sending a stale "you're hired" email.
+  //
+  // For every other trigger type, `allowedForStatuses` is a halt-bypass
+  // allowlist (default-deny for stalled/lost/hired/archived).
+  if (rule.triggerType === 'status_changed') {
+    const allowed = (rule as AutomationRule & { allowedForStatuses?: string[] }).allowedForStatuses ?? []
+    const status = session.status || 'active'
+    if (!allowed.includes(status)) {
+      return {
+        allowed: false,
+        reason: 'skipped_wrong_status',
+        currentState: { status },
+        requiredState: { allowedForStatuses: allowed },
+      }
+    }
+  } else if (!isStatusAllowed(session, rule)) {
     return {
       allowed: false,
       reason: 'skipped_wrong_status',

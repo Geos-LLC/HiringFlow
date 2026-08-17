@@ -27,6 +27,7 @@ import {
   fireAutomations,
   fireFlowRecordingReadyAutomations,
   fireMeetingLifecycleAutomations,
+  fireStatusChangedAutomations,
   fireTrainingCompletedAutomations,
 } from '@/lib/automation'
 import {
@@ -639,6 +640,25 @@ async function deriveDispatchFromEvent(ev: {
         sessionId,
         ev.triggerType as 'meeting_started' | 'meeting_ended' | 'meeting_no_show' | 'transcript_ready',
       ).then(() => undefined)
+    case 'status_changed': {
+      const newStatus = typeof ev.payload?.newStatus === 'string' ? (ev.payload.newStatus as string) : null
+      if (!newStatus) return null
+      // Need workspaceId to scope the rule lookup; the AutomationEvent row
+      // doesn't join it into `payload`, but sessionId is enough to derive it.
+      return async () => {
+        const session = await prisma.session.findUnique({
+          where: { id: sessionId },
+          select: { workspaceId: true },
+        })
+        if (!session) return
+        await fireStatusChangedAutomations({
+          sessionId,
+          newStatus,
+          workspaceId: session.workspaceId,
+          executionMode: 'cron',
+        })
+      }
+    }
     default:
       return null
   }

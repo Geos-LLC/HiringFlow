@@ -311,4 +311,10 @@ export const eventKeys = {
   stageEntered: (stageEntryId: string) => `stage_entered:${stageEntryId}`,
   backgroundCheck: (backgroundCheckId: string, outcome: string) =>
     `background_check:${backgroundCheckId}:${outcome}`,
+  // Lifecycle-status transition. Session.updatedAt (or the transition's
+  // *At stamp for stalled/lost/hired) is the discriminator so re-transitions
+  // (lost → active → lost) fire again instead of dedup'ing to the first
+  // event. Custom statuses use updatedAt since they carry no dedicated *At.
+  statusChanged: (sessionId: string, newStatus: string, transitionIso: string) =>
+    `status_changed:${sessionId}:${newStatus}:${transitionIso}`,
 } as const
