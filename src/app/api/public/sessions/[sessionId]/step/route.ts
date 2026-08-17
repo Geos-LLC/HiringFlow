@@ -66,72 +66,36 @@ export async function GET(
     },
   })
 
-  // Longest-path calculation:
-  //   - Combined pairs count as ONE screen (the partner is skipped when
-  //     encountered — its primary already counted).
-  //   - At each branch, take the DEEPEST successor (not sum of all).
-  //   - Cycle guard: never revisit a step within the same DFS walk.
-  const stepByIdLocal = new Map(allSteps.map((s) => [s.id, s]))
+  // Screen list = every step in stepOrder MINUS combined partners (the
+  // second card of a combined pair collapses into its primary's screen).
+  // This gives us the total count the candidate will ever see (progress
+  // denominator) and the ordered list of navigable step ids for the
+  // clickable progress bar. Previous logic used the longest option/button
+  // walk, which undercounted flows where not every step is wired via
+  // explicit next-step links yet.
   const combinedPartners = new Set<string>()
   for (const s of allSteps) {
     if (s.combinedWithId) combinedPartners.add(s.combinedWithId)
   }
-  const depthCache = new Map<string, number>()
-  const walking = new Set<string>()
-  const deepestFrom = (id: string): number => {
-    const cached = depthCache.get(id)
-    if (cached !== undefined) return cached
-    if (walking.has(id)) return 0
-    walking.add(id)
-    const s = stepByIdLocal.get(id)
-    if (!s) { walking.delete(id); depthCache.set(id, 0); return 0 }
-    const successors: string[] = []
-    const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-    if (btn && btn !== '__end__' && stepByIdLocal.has(btn)) successors.push(btn)
-    for (const o of s.options) {
-      if (o.nextStepId && o.nextStepId !== '__end__' && stepByIdLocal.has(o.nextStepId)) {
-        successors.push(o.nextStepId)
-      }
-    }
-    // Combined partner extends the same screen — DON'T advance the count
-    // when jumping to it. The partner's own successors continue the walk.
-    let best = 0
-    for (const succId of successors) {
-      // Skip successors that are our own combined partner (edge is implicit).
-      if (s.combinedWithId === succId) continue
-      const succDepth = deepestFrom(succId)
-      if (succDepth > best) best = succDepth
-    }
-    // This step counts as 1 UNLESS it's a combined-partner of another
-    // step (then it was already counted as part of its primary).
-    const selfCount = combinedPartners.has(id) ? 0 : 1
-    const d = selfCount + best
-    walking.delete(id)
-    depthCache.set(id, d)
-    return d
-  }
-  // Total = longest path from the flow's entry step (smallest stepOrder).
-  const entry = allSteps[0]
-  const totalSteps = entry ? deepestFrom(entry.id) : allSteps.length
+  const visibleSteps = allSteps.filter((s) => !combinedPartners.has(s.id))
+  const totalSteps = visibleSteps.length
+  const visibleStepIds = visibleSteps.map((s) => s.id)
 
-  // Current position = number of unique screens the candidate has
-  // completed so far (SessionAnswer + CaptureResponse + submissions),
-  // + 1 for the current step. Combined partners collapse to a single
-  // screen. If we can't tell, fall back to stepOrder-based counting.
-  const answers = await prisma.sessionAnswer.findMany({
-    where: { sessionId: params.sessionId },
-    select: { stepId: true },
-  })
-  const answeredIds = new Set(answers.map((a) => a.stepId))
-  // Collapse combined partners so a two-card screen counts once.
-  let currentPosition = 0
-  answeredIds.forEach((sid) => {
-    if (!combinedPartners.has(sid)) currentPosition++
-  })
-  currentPosition = currentPosition + 1  // +1 for the current step
+  // Current position = 1-based index of the current step in visibleSteps.
+  // If the current step is a combined partner, use its primary's index
+  // (they share the same screen). Fallback to stepOrder-based derivation
+  // if we somehow can't find it.
+  const primaryOf = (sid: string): string => {
+    // Walk BACKWARD: find a step whose combinedWithId points at this one.
+    const parent = allSteps.find((s) => s.combinedWithId === sid)
+    return parent ? primaryOf(parent.id) : sid
+  }
+  const currentPrimaryId = primaryOf(step.id)
+  const currentIndex = visibleStepIds.indexOf(currentPrimaryId)
+  const currentPosition = currentIndex >= 0 ? currentIndex + 1 : 1
 
   // Kept for reference — was the old current progress source, now replaced
-  // by `currentPosition` (screens completed) computed above.
+  // by `currentPosition` (index into visibleSteps) computed above.
   void step.stepOrder
 
   // Check if this step has a combined partner
@@ -394,7 +358,7 @@ export async function GET(
       current: Math.min(currentPosition, totalSteps || currentPosition),
       total: totalSteps,
     },
-    stepIds: allSteps.map(s => s.id),
+    stepIds: visibleStepIds,
     combinedStep,
     options: step.options.map((o) => ({
       optionId: o.id,
