@@ -1432,19 +1432,30 @@ export default function FlowBuilderPage() {
               placeholder="Button text"
               className="w-full px-4 py-2.5 border border-surface-border rounded-[8px] text-sm text-grey-15 focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
-            <select
-              value={btnCfg?.nextStepId || ''}
-              onChange={(e) => updateBtnConfig({ nextStepId: e.target.value || null })}
-              className="w-full px-3 py-1.5 text-xs border border-surface-border rounded-[8px] text-grey-40 focus:outline-none focus:ring-1 focus:ring-brand-500"
-            >
-              <option value="">→ Next step (auto)</option>
-              <option value="__end__">→ End</option>
-              {stepsByStage
-                .filter((s) => s.id !== step.id)
-                .map((s) => (
-                  <option key={s.id} value={s.id}>→ {stageNumberByStep.get(s.id) ?? '?'}. {s.title}</option>
-                ))}
-            </select>
+            {(() => {
+              // Reflect the ACTUAL wired Continue target. Some legacy flows
+              // wired the arrow via an OPTION.nextStepId instead of
+              // buttonConfig.nextStepId — show that too so the dropdown
+              // matches the visible canvas arrow instead of falsely showing
+              // "Next step (auto)".
+              const optionContinueTarget = step.options?.find((o) => o.nextStepId)?.nextStepId ?? null
+              const effectiveTarget = btnCfg?.nextStepId || optionContinueTarget || ''
+              return (
+                <select
+                  value={effectiveTarget}
+                  onChange={(e) => updateBtnConfig({ nextStepId: e.target.value || null })}
+                  className="w-full px-3 py-1.5 text-xs border border-surface-border rounded-[8px] text-grey-40 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                >
+                  <option value="">→ Next step (auto)</option>
+                  <option value="__end__">→ End</option>
+                  {stepsByStage
+                    .filter((s) => s.id !== step.id)
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>→ {stageNumberByStep.get(s.id) ?? '?'}. {s.title}</option>
+                    ))}
+                </select>
+              )
+            })()}
           </div>
         )}
       </div>
