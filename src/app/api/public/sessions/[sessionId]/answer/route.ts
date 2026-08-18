@@ -83,18 +83,15 @@ export async function POST(
       return NextResponse.json({ nextStepId })
     }
     const advance = async (override?: string | null): Promise<NextResponse> => {
+      // Move ONLY according to the flow's explicit connections:
+      //   1. override (option.nextStepId) — the selected answer's target
+      //   2. buttonConfig.nextStepId — the drag-to-connect Continue link
+      //   3. no connection wired → finish (End)
+      // stepOrder is a DB creation order, not a flow route — never use it
+      // for navigation. If a step is a dead-end, that's an End.
       const target = (override && override.length > 0) ? override : buttonNext
       if (target === '__end__') return finishSession()
       if (target) return advanceTo(target)
-      // Plain sequential fallback: next step by stepOrder. Skip-siblings
-      // heuristics kept mis-routing (either landed on the wrong branch or
-      // over-jumped past the flow). Recruiter wires Continue explicitly
-      // via buttonConfig for any non-sequential next.
-      const nextStep = await prisma.flowStep.findFirst({
-        where: { flowId: session.flowId, stepOrder: { gt: step.stepOrder } },
-        orderBy: { stepOrder: 'asc' },
-      })
-      if (nextStep) return advanceTo(nextStep.id)
       return finishSession()
     }
 
