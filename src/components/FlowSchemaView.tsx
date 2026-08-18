@@ -2695,17 +2695,28 @@ export default function FlowSchemaView({
     }
 
     // Check End arrow drag handle — click near EITHER endpoint of the
-    // selected end arrow enters reconnect mode. Uses the actual drawn
-    // geometry (endArrowGeomByStep) so chain-collapsed sources still
-    // register correctly. Grabbing near End side lets user re-target;
-    // grabbing near source side lets user re-source.
+    // selected end arrow enters reconnect mode.
     if (selectedArrow?.kind === 'end') {
       const g = endArrowGeomByStep.get(selectedArrow.stepId)
       const ep = positions[END_ID]
+      // eslint-disable-next-line no-console
+      console.log('[end-arrow] endpoint check', {
+        cx, cy,
+        hasGeom: !!g, hasEndPos: !!ep,
+        from: g ? { x: g.fromX, y: g.fromY, d: dist(cx, cy, g.fromX, g.fromY) } : null,
+        to: g ? { x: g.toX, y: g.toY, d: dist(cx, cy, g.toX, g.toY) } : null,
+        selectedStepId: selectedArrow.stepId,
+        allEndGeomKeys: Array.from(endArrowGeomByStep.keys()),
+      })
       if (g && ep) {
         const dFrom = dist(cx, cy, g.fromX, g.fromY)
         const dTo = dist(cx, cy, g.toX, g.toY)
-        if (dFrom <= 18 || dTo <= 18) {
+        // Bump the radius from 18 → 24 so a click within a fatter zone
+        // around either endpoint still catches when multiple arrows
+        // converge and the user needs a slightly wider target.
+        if (dFrom <= 24 || dTo <= 24) {
+          // eslint-disable-next-line no-console
+          console.log('[end-arrow] entering reconnecting_end')
           setMode({
             type: 'reconnecting_end',
             fromStepId: selectedArrow.stepId,
