@@ -110,7 +110,7 @@ interface StepData {
   combinedStep?: CombinedStepData | null
   options: StepOption[]
   finished?: boolean
-  companions?: Array<{ stepId: string; stepType: string; captureConfig: CaptureStepConfig | null; filename?: string | null }>
+  companions?: Array<{ stepId: string; stepType: string; questionType?: string | null; questionText?: string | null; captureConfig: CaptureStepConfig | null; filename?: string | null }>
 }
 
 export default function SessionPlayerPage() {
@@ -629,20 +629,20 @@ export default function SessionPlayerPage() {
                 return (
                   <div className="space-y-4">
                     <p className={`text-center text-sm ${overlay ? 'text-white' : 'text-gray-700'}`}>How would you like to answer?</p>
-                    <div className="flex gap-3 justify-center">
+                    <div className="flex flex-col gap-2.5">
                       {videoCompanion && (
-                        <button onClick={() => setAnswerMode('video')} className="flex flex-col items-center gap-2 px-6 py-4 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
+                        <button onClick={() => setAnswerMode('video')} className="w-full flex items-center justify-center gap-2 px-5 py-3 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                           <span className="text-xs font-semibold uppercase tracking-wider">Video</span>
                         </button>
                       )}
                       {audioCompanion && (
-                        <button onClick={() => setAnswerMode('audio')} className="flex flex-col items-center gap-2 px-6 py-4 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
+                        <button onClick={() => setAnswerMode('audio')} className="w-full flex items-center justify-center gap-2 px-5 py-3 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 10v-4m0 0a3 3 0 01-3-3V5a3 3 0 016 0v9a3 3 0 01-3 3z" /></svg>
                           <span className="text-xs font-semibold uppercase tracking-wider">Audio</span>
                         </button>
                       )}
-                      <button onClick={() => setAnswerMode('text')} className="flex flex-col items-center gap-2 px-6 py-4 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
+                      <button onClick={() => setAnswerMode('text')} className="w-full flex items-center justify-center gap-2 px-5 py-3 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h10M4 18h10" /></svg>
                         <span className="text-xs font-semibold uppercase tracking-wider">Text</span>
                       </button>
@@ -1195,34 +1195,162 @@ export default function SessionPlayerPage() {
                 {questionStep && displayQuestion && (
                   <h3 className="text-[22px] font-semibold text-ink mb-5 leading-tight tracking-tight2">{displayQuestion}</h3>
                 )}
-                {questionStep ? (
-                  <div className="space-y-2">
-                    {questionStep.options.map((opt) => {
-                      const locked = !isPreview && !videoEnded && !!(step.videoUrl || cs?.videoUrl)
+                {(() => {
+                  // If the chain includes a text-field question + audio/video
+                  // companion(s), render the "How would you like to answer?"
+                  // choice inside this sidebar (Videoask-style single card).
+                  const companions = step.companions || []
+                  const textCompanion = companions.find((c) => c.stepType === 'question' && c.questionType === 'text')
+                                       || (questionStep?.stepType === 'question' && questionStep?.questionType === 'text' ? { stepId: questionStep.stepId, stepType: 'question', questionType: 'text', questionText: questionStep.questionText, captureConfig: null } : null)
+                  const audioCompanion = companions.find((c) => c.stepType === 'capture' && c.captureConfig?.mode === 'audio')
+                  const videoCompanionStep = companions.find((c) => c.stepType === 'submission')
+                  const hasChoiceUI = !!textCompanion && !!(audioCompanion || videoCompanionStep)
+                  const locked = !isPreview && !videoEnded && !!(step.videoUrl || cs?.videoUrl)
+                  if (hasChoiceUI) {
+                    if (answerMode === null) {
                       return (
-                        <button
-                          key={opt.optionId}
-                          onClick={() => submitCombinedOption(opt)}
-                          disabled={submitting || locked}
-                          className={`w-full py-3 px-4 rounded-[10px] border text-left text-ink font-medium text-[14px] transition-all ${
-                            locked
-                              ? 'opacity-40 cursor-not-allowed border-surface-border bg-white'
-                              : 'border-surface-border bg-white hover:border-[color:var(--brand-primary)] hover:bg-brand-50'
-                          } ${submitting ? 'opacity-50' : ''}`}
-                        >
-                          {opt.text}
-                        </button>
+                        <div className="space-y-4">
+                          <p className="text-center text-sm text-gray-700">How would you like to answer?</p>
+                          <div className="flex flex-col gap-2.5">
+                            {videoCompanionStep && (
+                              <button disabled={locked} onClick={() => setAnswerMode('video')} className={`w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl transition-colors ${locked ? 'opacity-40 cursor-not-allowed bg-brand-500 text-white' : 'bg-brand-500 text-white hover:bg-brand-600'}`}>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                                <span className="text-xs font-semibold uppercase tracking-wider">Video</span>
+                              </button>
+                            )}
+                            {audioCompanion && (
+                              <button disabled={locked} onClick={() => setAnswerMode('audio')} className={`w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl transition-colors ${locked ? 'opacity-40 cursor-not-allowed bg-brand-500 text-white' : 'bg-brand-500 text-white hover:bg-brand-600'}`}>
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 10v-4m0 0a3 3 0 01-3-3V5a3 3 0 016 0v9a3 3 0 01-3 3z" /></svg>
+                                <span className="text-xs font-semibold uppercase tracking-wider">Audio</span>
+                              </button>
+                            )}
+                            <button disabled={locked} onClick={() => setAnswerMode('text')} className={`w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl transition-colors ${locked ? 'opacity-40 cursor-not-allowed bg-brand-500 text-white' : 'bg-brand-500 text-white hover:bg-brand-600'}`}>
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h10M4 18h10" /></svg>
+                              <span className="text-xs font-semibold uppercase tracking-wider">Text</span>
+                            </button>
+                          </div>
+                          {locked && (
+                            <p className="text-center font-mono text-[10px] uppercase text-grey-50" style={{ letterSpacing: '0.12em' }}>
+                              Watch the video to unlock
+                            </p>
+                          )}
+                        </div>
                       )
-                    })}
-                    {!videoEnded && (step.videoUrl || cs?.videoUrl) && (
-                      <p className="text-center font-mono text-[10px] uppercase text-grey-50 mt-3" style={{ letterSpacing: '0.12em' }}>
-                        Watch the video to unlock
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  renderQuestionContent(false)
-                )}
+                    }
+                    if (answerMode === 'text' && textCompanion) {
+                      return (
+                        <div className="space-y-3">
+                          <button onClick={() => setAnswerMode(null)} className="text-xs text-gray-500 hover:underline">← Choose different method</button>
+                          <textarea
+                            value={textMessage}
+                            onChange={(e) => setTextMessage(e.target.value)}
+                            placeholder="Type your answer…"
+                            rows={5}
+                            className="w-full px-4 py-3 rounded-xl border-2 text-sm bg-white border-gray-200 text-gray-900 focus:border-brand-500 focus:outline-none"
+                          />
+                          <button
+                            onClick={async () => {
+                              if (!textMessage.trim()) return
+                              setSubmitting(true)
+                              const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ stepId: textCompanion.stepId, textAnswer: textMessage.trim() }),
+                              })
+                              if (res.ok) { const data = await res.json(); if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`); else { setTextMessage(''); fetchStep() } }
+                              setSubmitting(false)
+                            }}
+                            disabled={!textMessage.trim() || submitting}
+                            className="w-full py-3 bg-brand-500 text-white rounded-xl font-medium text-sm disabled:opacity-50 hover:bg-brand-600 transition-colors"
+                          >
+                            {submitting ? 'Submitting…' : 'Submit'}
+                          </button>
+                        </div>
+                      )
+                    }
+                    if (answerMode === 'audio' && audioCompanion) {
+                      return (
+                        <div className="space-y-3">
+                          <button onClick={() => setAnswerMode(null)} className="text-xs text-gray-500 hover:underline">← Choose different method</button>
+                          <CaptureRecorder
+                            sessionId={sessionId}
+                            stepId={audioCompanion.stepId}
+                            mode="audio"
+                            prompt={audioCompanion.captureConfig?.prompt ?? textCompanion?.questionText ?? null}
+                            allowRetake={audioCompanion.captureConfig?.allowRetake ?? true}
+                            maxRetakes={audioCompanion.captureConfig?.maxRetakes ?? null}
+                            maxDurationSec={audioCompanion.captureConfig?.maxDurationSec ?? null}
+                            minDurationSec={audioCompanion.captureConfig?.minDurationSec ?? null}
+                            onSubmitted={async () => {
+                              setSubmitting(true)
+                              const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ stepId: audioCompanion.stepId }),
+                              })
+                              if (res.ok) { const data = await res.json(); if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`); else fetchStep() }
+                              setSubmitting(false)
+                            }}
+                          />
+                        </div>
+                      )
+                    }
+                    if (answerMode === 'video' && videoCompanionStep) {
+                      return (
+                        <div className="space-y-3">
+                          <button onClick={() => setAnswerMode(null)} className="text-xs text-gray-500 hover:underline">← Choose different method</button>
+                          <VideoRecorder recordedVideo={recordedVideo} onRecordComplete={setRecordedVideo} />
+                          <button
+                            onClick={async () => {
+                              if (!recordedVideo) return
+                              setSubmitting(true)
+                              const formData = new FormData()
+                              formData.append('stepId', videoCompanionStep.stepId)
+                              formData.append('video', recordedVideo, 'recording.webm')
+                              const res = await fetch(`/api/public/sessions/${sessionId}/submit`, { method: 'POST', body: formData })
+                              if (res.ok) {
+                                const advanceRes = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ stepId: videoCompanionStep.stepId }),
+                                })
+                                if (advanceRes.ok) { const data = await advanceRes.json(); if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`); else fetchStep() }
+                              }
+                              setSubmitting(false)
+                            }}
+                            disabled={!recordedVideo || submitting}
+                            className="w-full py-3 bg-brand-500 text-white rounded-xl font-medium text-sm disabled:opacity-50 hover:bg-brand-600 transition-colors"
+                          >
+                            {submitting ? 'Uploading…' : 'Submit video'}
+                          </button>
+                        </div>
+                      )
+                    }
+                  }
+                  // No choice UX — fall back to the original combined-chain
+                  // options or the solo-step render.
+                  if (questionStep) {
+                    return (
+                      <div className="space-y-2">
+                        {questionStep.options.map((opt) => (
+                          <button
+                            key={opt.optionId}
+                            onClick={() => submitCombinedOption(opt)}
+                            disabled={submitting || locked}
+                            className={`w-full py-3 px-4 rounded-[10px] border text-left text-ink font-medium text-[14px] transition-all ${
+                              locked ? 'opacity-40 cursor-not-allowed border-surface-border bg-white' : 'border-surface-border bg-white hover:border-[color:var(--brand-primary)] hover:bg-brand-50'
+                            } ${submitting ? 'opacity-50' : ''}`}
+                          >
+                            {opt.text}
+                          </button>
+                        ))}
+                        {!videoEnded && (step.videoUrl || cs?.videoUrl) && (
+                          <p className="text-center font-mono text-[10px] uppercase text-grey-50 mt-3" style={{ letterSpacing: '0.12em' }}>
+                            Watch the video to unlock
+                          </p>
+                        )}
+                      </div>
+                    )
+                  }
+                  return renderQuestionContent(false)
+                })()}
               </>
             )
           })()}

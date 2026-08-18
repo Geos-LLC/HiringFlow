@@ -211,32 +211,48 @@ export async function GET(
   const captureConfig =
     step.stepType === 'capture' ? tryParseCaptureConfig((step as any).captureConfig) : null
 
-  // Chain companions: for a text-field question whose recruiter combined it
-  // with capture/submission steps (audio/video companions), collect ALL
-  // chain members forward from the current step so the candidate UI can
-  // render a "How would you like to answer?" choice with Text / Audio /
-  // Video buttons on a SINGLE card. Walks forward-only via combinedWithId;
-  // reverse partners are handled by the existing combinedStep block above.
-  const companions: Array<{ stepId: string; stepType: string; captureConfig: unknown; filename?: string | null }> = []
+  // Chain companions: walk the ENTIRE combinedWithId chain (both
+  // directions) and collect every member EXCEPT the current step. The
+  // candidate UI uses this to render a "How would you like to answer?"
+  // choice on a single card when a text-field question is combined
+  // with audio (capture) / video (submission) companions and/or a
+  // question-with-video primary.
+  const companions: Array<{ stepId: string; stepType: string; questionType?: string | null; questionText?: string | null; captureConfig: unknown; filename?: string | null }> = []
   {
-    const seen = new Set<string>([step.id])
-    let cursor: string | null | undefined = (step as any).combinedWithId
-    while (cursor && !seen.has(cursor)) {
-      seen.add(cursor)
-      const m = await prisma.flowStep.findUnique({
+    // First find the chain LEADER by walking backward via
+    // "someone.combinedWithId === current".
+    let leaderId = step.id
+    const backSeen = new Set<string>([step.id])
+    while (true) {
+      const parent = await prisma.flowStep.findFirst({
+        where: { flowId: session.flowId, combinedWithId: leaderId },
+        select: { id: true },
+      })
+      if (!parent || backSeen.has(parent.id)) break
+      backSeen.add(parent.id)
+      leaderId = parent.id
+    }
+    // Now walk forward from leader collecting every member.
+    const fwdSeen = new Set<string>()
+    let cursor: string | null | undefined = leaderId
+    while (cursor && !fwdSeen.has(cursor)) {
+      fwdSeen.add(cursor)
+      const m: { id: string; stepType: string; questionType: string | null; questionText: string | null; captureConfig: unknown; combinedWithId: string | null } | null = await prisma.flowStep.findUnique({
         where: { id: cursor },
-        select: { id: true, stepType: true, captureConfig: true, combinedWithId: true, video: { select: { storageKey: true } } },
+        select: { id: true, stepType: true, questionType: true, questionText: true, captureConfig: true, combinedWithId: true },
       })
       if (!m) break
-      if (m.stepType === 'capture' || m.stepType === 'submission') {
+      if (m.id !== step.id) {
         companions.push({
           stepId: m.id,
           stepType: m.stepType,
+          questionType: m.questionType,
+          questionText: m.questionText,
           captureConfig: m.stepType === 'capture' ? tryParseCaptureConfig((m as any).captureConfig) : null,
           filename: null,
         })
       }
-      cursor = (m as any).combinedWithId
+      cursor = m.combinedWithId
     }
   }
 
