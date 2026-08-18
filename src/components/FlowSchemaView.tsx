@@ -4029,7 +4029,12 @@ function bezierCps(
   }
   const isBackward = toX < fromX
   if (isBackward) {
-    const drop = NODE_H + 80
+    // Drop scales with horizontal span so short backward hops get a
+    // shallow curve, only long ones dip below cards. Was fixed at
+    // NODE_H + 80 which made every backward arrow — even a small
+    // adjacent reroute — swing way down-left in a big loop.
+    const span = Math.abs(fromX - toX)
+    const drop = Math.min(NODE_H + 80, Math.max(60, span * 0.25))
     return [fromX + 60, fromY + drop, toX - 60, toY + drop] as const
   }
   const dx = Math.abs(toX - fromX)
