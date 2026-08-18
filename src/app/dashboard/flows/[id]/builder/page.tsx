@@ -2170,7 +2170,24 @@ export default function FlowBuilderPage() {
                             create an audio-answer (Capture) or video-answer
                             (Submission) step and combine it with this one so
                             the candidate can supplement the typed answer. */}
-                        {popupStep.questionType === 'text' && (
+                        {popupStep.questionType === 'text' && (() => {
+                          // Combine the new companion at the TAIL of the
+                          // existing chain, not at popupStep — otherwise the
+                          // PATCH overwrites popupStep's existing partner
+                          // and orphans it. Walk forward via combinedWithId
+                          // until we hit a step with no combined partner.
+                          const findChainTailId = (headId: string): string => {
+                            const seen = new Set<string>([headId])
+                            let cur = flow?.steps.find((s) => s.id === headId)
+                            while (cur?.combinedWithId && !seen.has(cur.combinedWithId)) {
+                              const next = flow?.steps.find((s) => s.id === cur!.combinedWithId)
+                              if (!next) break
+                              seen.add(next.id)
+                              cur = next
+                            }
+                            return cur?.id ?? headId
+                          }
+                          return (
                           <div className="rounded-[8px] border border-surface-border bg-brand-50/40 p-3 space-y-2">
                             <p className="text-xs text-grey-40">
                               Candidate types an open text answer. Add a recording alongside so they can also speak or show it:
@@ -2179,7 +2196,7 @@ export default function FlowBuilderPage() {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  createStep('capture', undefined, { combineSourceId: popupStep.id })
+                                  createStep('capture', undefined, { combineSourceId: findChainTailId(popupStep.id) })
                                   setPopupStepId(null)
                                 }}
                                 className="text-xs px-3 py-1.5 rounded-[6px] border border-brand-300 text-brand-700 bg-white hover:bg-brand-100 font-medium"
@@ -2189,7 +2206,7 @@ export default function FlowBuilderPage() {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  createStep('submission', undefined, { combineSourceId: popupStep.id })
+                                  createStep('submission', undefined, { combineSourceId: findChainTailId(popupStep.id) })
                                   setPopupStepId(null)
                                 }}
                                 className="text-xs px-3 py-1.5 rounded-[6px] border border-brand-300 text-brand-700 bg-white hover:bg-brand-100 font-medium"
@@ -2198,7 +2215,8 @@ export default function FlowBuilderPage() {
                               </button>
                             </div>
                           </div>
-                        )}
+                          )
+                        })()}
                         {/* Options — hidden for Yes/No and Text field */}
                         {popupStep.questionType !== 'yesno' && popupStep.questionType !== 'text' && (
                           <div>
