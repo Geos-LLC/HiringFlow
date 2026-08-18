@@ -3015,10 +3015,14 @@ export default function FlowSchemaView({
     if (pending) {
       const drift = Math.hypot(cx - pending.startCx, cy - pending.startCy)
       if (drift >= 6) {
-        const pos = positions[pending.stepId]
-        if (pos) {
+        // Use RENDERED position (chain-collapsed if the source is in a
+        // combined chain) so the draft line starts at where the port is
+        // actually painted — not at the raw grid position, which for
+        // chain members can be far off-screen.
+        const r = renderPosOf(pending.stepId)
+        if (r) {
           if (pending.kind === 'out') {
-            const out = getOutputPort(pos)
+            const out = rectOutputPort(r)
             setMode({
               type: 'connecting',
               fromStepId: pending.stepId,
@@ -3028,7 +3032,7 @@ export default function FlowSchemaView({
               mouseY: cy,
             })
           } else {
-            const inp = getInputPort(pos)
+            const inp = rectInputPort(r)
             setMode({
               type: 'connecting_reverse',
               targetStepId: pending.stepId,
