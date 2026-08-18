@@ -167,25 +167,81 @@ export async function GET(
       stageNumberByStep.set(s.id, stageNumberByStep.get(primary)!)
     }
   }
-  // visibleSteps = unique screens (combined partners collapse to primary).
-  // Ordered by the BFS-assigned stage number so slot N in the progress bar
-  // is the N-th screen the candidate encounters.
-  const visibleSteps = sortedByOrder
-    .filter((s) => !combinedPartners.has(s.id))
-    .sort((a, b) => (stageNumberByStep.get(a.id)! - stageNumberByStep.get(b.id)!))
-  const totalSteps = visibleSteps.length
-  const visibleStepIds = visibleSteps.map((s) => s.id)
-  // Current = the current step's stage number (or its primary's if the
-  // current step is a combined partner — they share a number).
+  // Longest-path progress: total = count of screens on the LONGEST path
+  // from a flow root to a terminal. Fork branches (e.g. "NO" answers
+  // that dead-end) are OFF this path and don't inflate the total — the
+  // candidate can only traverse one path at a time, so showing the count
+  // of every possible fork exit was misleading.
   const primaryOf = (sid: string): string => {
     const parent = allSteps.find((s) => s.combinedWithId === sid)
     return parent ? primaryOf(parent.id) : sid
   }
+  const longestPathCache = new Map<string, string[]>()
+  const inFlight = new Set<string>()
+  const longestPathFrom = (startId: string): string[] => {
+    if (longestPathCache.has(startId)) return longestPathCache.get(startId)!
+    if (inFlight.has(startId)) return []
+    inFlight.add(startId)
+    const s = stepById.get(startId)
+    if (!s) { inFlight.delete(startId); return [] }
+    const candidates: string[] = []
+    for (const o of s.options) {
+      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) candidates.push(o.nextStepId)
+    }
+    const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+    if (btn && btn !== '__end__' && stepById.has(btn)) candidates.push(btn)
+    if (s.combinedWithId && stepById.has(s.combinedWithId)) candidates.push(s.combinedWithId)
+    let bestTail: string[] = []
+    for (const c of candidates) {
+      const t = longestPathFrom(c)
+      if (t.length > bestTail.length) bestTail = t
+    }
+    inFlight.delete(startId)
+    // Prepend startId ONLY if it's a non-partner (partners share the
+    // primary's slot, so their inclusion would inflate the count).
+    const path = combinedPartners.has(startId) ? bestTail : [startId, ...bestTail]
+    longestPathCache.set(startId, path)
+    return path
+  }
+  let mainPath: string[] = []
+  const rootSearchOrder = rootIds.length > 0 ? rootIds : (sortedByOrder[0] ? [sortedByOrder[0].id] : [])
+  for (const rid of rootSearchOrder) {
+    const p = longestPathFrom(rid)
+    if (p.length > mainPath.length) mainPath = p
+  }
+  const visibleStepIds = mainPath
+  const totalSteps = visibleStepIds.length
+  // Current position: if candidate is on the main path (or a partner
+  // of one), use its index. Otherwise (on a fork branch off the main
+  // path) fall back to the branch parent's index — that keeps the
+  // progress bar sensible during a NO/branch detour.
+  const mainPathSet = new Set(visibleStepIds)
   const currentPrimaryId = primaryOf(step.id)
-  const currentPosition = Math.min(
-    stageNumberByStep.get(currentPrimaryId) ?? stageNumberByStep.get(step.id) ?? 1,
-    totalSteps || 1
-  )
+  let currentPosition = 1
+  if (mainPathSet.has(currentPrimaryId)) {
+    currentPosition = visibleStepIds.indexOf(currentPrimaryId) + 1
+  } else {
+    // Walk backward from the current step through incoming edges until
+    // we hit a main-path step; use its position as the current position.
+    const backSeen = new Set<string>([currentPrimaryId])
+    const queue: string[] = [currentPrimaryId]
+    let anchor: string | null = null
+    while (queue.length && !anchor) {
+      const id = queue.shift()!
+      for (const s of allSteps) {
+        const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+        const points = btn === id || s.options.some((o) => o.nextStepId === id) || s.combinedWithId === id
+        if (points && !backSeen.has(s.id)) {
+          backSeen.add(s.id)
+          const primaryS = primaryOf(s.id)
+          if (mainPathSet.has(primaryS)) { anchor = primaryS; break }
+          queue.push(s.id)
+        }
+      }
+    }
+    if (anchor) currentPosition = visibleStepIds.indexOf(anchor) + 1
+  }
+  currentPosition = Math.min(currentPosition, totalSteps || 1)
 
   void step.stepOrder
 
