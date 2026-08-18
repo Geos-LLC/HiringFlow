@@ -3362,8 +3362,13 @@ export default function FlowSchemaView({
         } else {
           onConnectSteps?.(mode.fromStepId, targetStep)
         }
+        setSelectedArrow(null)
       }
-      setSelectedArrow(null)
+      // If NO valid drop target: keep the arrow selected so the user
+      // can immediately try to grab it again without clicking to
+      // re-select first. Previously we cleared selection on every
+      // reconnecting_end mouseup, which made a "missed" drag feel like
+      // the whole selection was lost.
       setHoveredPort(null)
       setMode({ type: 'idle' })
       return
