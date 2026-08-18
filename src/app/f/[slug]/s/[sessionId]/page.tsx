@@ -215,7 +215,7 @@ export default function SessionPlayerPage() {
       const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stepId: step.stepId }),
+        body: JSON.stringify({ stepId: answerTargetStepId }),
       })
       if (res.ok) {
         const data = await res.json()
@@ -307,7 +307,7 @@ export default function SessionPlayerPage() {
     const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stepId: step.stepId, formData: formValues }),
+      body: JSON.stringify({ stepId: answerTargetStepId, formData: formValues }),
     })
     if (res.ok) {
       const data = await res.json()
@@ -338,7 +338,7 @@ export default function SessionPlayerPage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        stepId: step.stepId,
+        stepId: answerTargetStepId,
         optionId: option.optionId,
         formData: formSubmitted ? formValues : undefined,
       }),
@@ -422,7 +422,7 @@ export default function SessionPlayerPage() {
     if (!step || (!textMessage && !recordedVideo)) return
     setSubmitting(true)
     const formData = new FormData()
-    formData.append('stepId', step.stepId)
+    formData.append('stepId', answerTargetStepId)
     if (textMessage) formData.append('textMessage', textMessage)
     if (recordedVideo) formData.append('video', recordedVideo, 'recording.webm')
     if (formSubmitted) formData.append('formData', JSON.stringify(formValues))
@@ -858,7 +858,7 @@ export default function SessionPlayerPage() {
                 const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stepId: step.stepId }),
+                  body: JSON.stringify({ stepId: answerTargetStepId }),
                 })
                 if (res.ok) {
                   const data = await res.json()
@@ -888,7 +888,7 @@ export default function SessionPlayerPage() {
                 setSubmitting(true)
                 const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stepId: step.stepId }),
+                  body: JSON.stringify({ stepId: answerTargetStepId }),
                 })
                 if (res.ok) { const data = await res.json(); if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`); else fetchStep() }
                 setSubmitting(false)
@@ -971,7 +971,7 @@ export default function SessionPlayerPage() {
                     const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ stepId: step.stepId }),
+                      body: JSON.stringify({ stepId: answerTargetStepId }),
                     })
                     if (res.ok) {
                       const data = await res.json()
@@ -1016,7 +1016,7 @@ export default function SessionPlayerPage() {
                 const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stepId: step.stepId }),
+                  body: JSON.stringify({ stepId: answerTargetStepId }),
                 })
                 if (res.ok) {
                   const data = await res.json()
@@ -1137,7 +1137,7 @@ export default function SessionPlayerPage() {
                 const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stepId: step.stepId }),
+                  body: JSON.stringify({ stepId: answerTargetStepId }),
                 })
                 if (res.ok) {
                   const data = await res.json()
