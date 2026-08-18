@@ -2694,26 +2694,27 @@ export default function FlowSchemaView({
       }
     }
 
-    // Check End arrow drag handle
+    // Check End arrow drag handle — click near EITHER endpoint of the
+    // selected end arrow enters reconnect mode. Uses the actual drawn
+    // geometry (endArrowGeomByStep) so chain-collapsed sources still
+    // register correctly. Grabbing near End side lets user re-target;
+    // grabbing near source side lets user re-source.
     if (selectedArrow?.kind === 'end') {
-      const stepPos = positions[selectedArrow.stepId]
-      if (stepPos) {
-        const fromX = stepPos.x + NODE_W
-        const fromY = stepPos.y + NODE_H / 2
-        const d = dist(cx, cy, fromX, fromY)
-        if (d <= 18) {
-          const ep = positions[END_ID]
-          if (ep) {
-            setMode({
-              type: 'reconnecting_end',
-              fromStepId: selectedArrow.stepId,
-              fromX: ep.x,
-              fromY: ep.y + SPECIAL_H / 2,
-              mouseX: cx,
-              mouseY: cy,
-            })
-            return
-          }
+      const g = endArrowGeomByStep.get(selectedArrow.stepId)
+      const ep = positions[END_ID]
+      if (g && ep) {
+        const dFrom = dist(cx, cy, g.fromX, g.fromY)
+        const dTo = dist(cx, cy, g.toX, g.toY)
+        if (dFrom <= 18 || dTo <= 18) {
+          setMode({
+            type: 'reconnecting_end',
+            fromStepId: selectedArrow.stepId,
+            fromX: ep.x,
+            fromY: ep.y + SPECIAL_H / 2,
+            mouseX: cx,
+            mouseY: cy,
+          })
+          return
         }
       }
     }
@@ -2874,12 +2875,22 @@ export default function FlowSchemaView({
 
     // Check End arrow click — pick whichever drawn End arrow is hit
     // (covers implicit terminals AND explicit button-to-__end__ routes).
+    // Iterate the currently-SELECTED end arrow FIRST so a click near the
+    // shared End input port doesn't accidentally re-select a sibling
+    // arrow (whichever forEach happened to walk first).
     if (endPos && endArrowGeomByStep.size > 0 && endMessage !== '') {
       let hitStepId: string | null = null
-      endArrowGeomByStep.forEach((g, sid) => {
-        if (hitStepId) return
+      const entries = Array.from(endArrowGeomByStep.entries())
+      const selectedFirst = selectedArrow?.kind === 'end'
+        ? [
+            ...entries.filter(([sid]) => sid === selectedArrow.stepId),
+            ...entries.filter(([sid]) => sid !== selectedArrow.stepId),
+          ]
+        : entries
+      for (const [sid, g] of selectedFirst) {
+        if (hitStepId) break
         if (distToSegment(cx, cy, g.fromX, g.fromY, g.toX, g.toY) <= 10) hitStepId = sid
-      })
+      }
       if (hitStepId) {
         setSelectedArrow({ optionId: '__end_arrow__', stepId: hitStepId, kind: 'end' })
         return
