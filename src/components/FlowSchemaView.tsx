@@ -2007,7 +2007,17 @@ export default function FlowSchemaView({
     // so hit tests use identical lane / entry Y.
     const endPos = positions[END_ID]
     if (endPos && endMessage !== '') {
-      endArrowGeomByStep.forEach((g, stepId) => {
+      // Sort so the SELECTED end arrow paints LAST → its line + endpoint
+      // dots + drag handles land on top of every other end-arrow at the
+      // shared End input port. Without this, dozens of arrows converging
+      // on End would cover the selected arrow's handle and the user
+      // couldn't grab it.
+      const endEntries = Array.from(endArrowGeomByStep.entries()).sort(([sidA], [sidB]) => {
+        const aSel = selectedArrow?.kind === 'end' && selectedArrow.stepId === sidA ? 1 : 0
+        const bSel = selectedArrow?.kind === 'end' && selectedArrow.stepId === sidB ? 1 : 0
+        return aSel - bSel
+      })
+      for (const [stepId, g] of endEntries) {
         const isThisEndSelected =
           selectedArrow?.kind === 'end' && selectedArrow.stepId === stepId
         const isThisEndHovered =
@@ -2044,12 +2054,17 @@ export default function FlowSchemaView({
         // Delete on an End-selected arrow is suppressed globally to avoid
         // clearing the End card by accident (see keyboard handler).
         if (isThisEndSelected) {
+          // Draw handles on BOTH ends of the selected end arrow so the
+          // user can grab either the source-side or the End-side to
+          // reconnect. Also drawn AFTER the sort so this iteration is
+          // the last-paint winner over any other arrow's endpoint dots.
           drawDragHandle(ctx, g.fromX, g.fromY, SELECTED_COLOR)
+          drawDragHandle(ctx, g.toX, g.toY, SELECTED_COLOR)
         } else {
           const isPlusHovered = hoveredPort === `__insert_end_${stepId}`
           drawInsertButton(ctx, eMidX, eMidY, isPlusHovered)
         }
-      })
+      }
     }
 
     // Draw in-progress connection or reconnection
