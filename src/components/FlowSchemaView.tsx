@@ -3649,23 +3649,23 @@ export default function FlowSchemaView({
 
     // (output port context menu removed — use arrow click + delete instead)
 
-    // Right-click on the combined-pair bracket → Ungroup menu.
-    // Same hit shape as the drag-the-pair check in mousedown: inside
-    // the outer bracket rect but OUTSIDE both cards.
+    // Right-click ANYWHERE on a combined-chain card (leader or partner)
+    // → Ungroup menu. Historically this only triggered in the "bracket
+    // between the two cards" gap, but combined chains now render as a
+    // stacked deck where the partner sliver sits AT the leader's column
+    // — there's no gap to right-click. So we now match either side of
+    // the pair. Iterate every step and, if it has a combinedWithId, hit-
+    // test its rect (and the partner's rect); a hit on either fires the
+    // Ungroup menu for that (leader, partner) pair.
     for (const step of steps) {
       const partnerId = (step as any).combinedWithId as string | null | undefined
       if (!partnerId) continue
       const pos1 = positions[step.id]
       const pos2 = positions[partnerId]
       if (!pos1 || !pos2) continue
-      const minX = Math.min(pos1.x, pos2.x) - 6
-      const minY = Math.min(pos1.y, pos2.y) - 6
-      const maxX = Math.max(pos1.x + NODE_W, pos2.x + NODE_W) + 6
-      const maxY = Math.max(pos1.y + NODE_H, pos2.y + NODE_H) + 6
-      if (cx < minX - 8 || cx > maxX + 8 || cy < minY - 8 || cy > maxY + 8) continue
-      const insideCard1 = cx >= pos1.x && cx <= pos1.x + NODE_W && cy >= pos1.y && cy <= pos1.y + NODE_H
-      const insideCard2 = cx >= pos2.x && cx <= pos2.x + NODE_W && cy >= pos2.y && cy <= pos2.y + NODE_H
-      if (insideCard1 || insideCard2) continue
+      const inside1 = cx >= pos1.x && cx <= pos1.x + NODE_W && cy >= pos1.y && cy <= pos1.y + NODE_H
+      const inside2 = cx >= pos2.x && cx <= pos2.x + NODE_W && cy >= pos2.y && cy <= pos2.y + NODE_H
+      if (!inside1 && !inside2) continue
       setCombinedMenu({ x: e.clientX, y: e.clientY, aId: step.id, bId: partnerId })
       setContextMenu(null)
       return
