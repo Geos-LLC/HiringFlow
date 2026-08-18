@@ -873,39 +873,10 @@ export default function SessionPlayerPage() {
           </div>
         )}
 
-        {/* Text Answer Question */}
-        {(step.stepType || 'question') === 'question' && step.questionType === 'text' && (
-          <div className={overlay ? '' : 'max-w-md mx-auto'}>
-            <textarea
-              value={textAnswer}
-              onChange={(e) => setTextAnswer(e.target.value)}
-              rows={4}
-              placeholder="Type your answer..."
-              className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500 mb-3"
-            />
-            <button
-              onClick={async () => {
-                if (!textAnswer.trim()) return
-                setSubmitting(true)
-                const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stepId: step.stepId, textAnswer }),
-                })
-                if (res.ok) {
-                  const data = await res.json()
-                  if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
-                  else fetchStep()
-                }
-                setSubmitting(false)
-              }}
-              disabled={!textAnswer.trim() || submitting}
-              className="w-full py-3 bg-brand-500 text-white rounded-xl font-medium text-sm disabled:opacity-50 hover:bg-brand-600 transition-colors"
-            >
-              {submitting ? 'Submitting...' : 'Submit Answer'}
-            </button>
-          </div>
-        )}
+        {/* Duplicate "Text Answer Question" block removed — the earlier
+            block (questionType === 'text' inside the question branch)
+            already renders textarea + submitTextAnswer. Keeping both
+            painted two text boxes on the same screen. */}
 
         {!showOptions && step.videoUrl && (step.stepType || 'question') === 'question' && step.questionType !== 'text' && (
           <p className={`text-center text-sm ${overlay ? 'text-white/50' : 'text-gray-500'} mt-3`}>
