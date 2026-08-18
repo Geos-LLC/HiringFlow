@@ -461,7 +461,30 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
               <svg className="w-12 h-12 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
-              <p className="text-sm">{error ? 'Camera unavailable' : 'Starting camera…'}</p>
+              <p className="text-sm mb-3">{error ? (error.length > 60 ? 'Camera unavailable' : error) : 'Starting camera…'}</p>
+              <button
+                type="button"
+                onClick={async () => {
+                  // eslint-disable-next-line no-console
+                  console.log('[VideoRecorder] retry camera clicked')
+                  setError(null)
+                  try {
+                    const s = await navigator.mediaDevices.getUserMedia({
+                      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+                      audio: true,
+                    })
+                    // eslint-disable-next-line no-console
+                    console.log('[VideoRecorder] retry getUserMedia resolved', { tracks: s.getTracks().length })
+                    setStream(s)
+                  } catch (err) {
+                    console.error('[VideoRecorder] retry failed', err)
+                    setError(err instanceof Error ? err.message : 'Could not access camera')
+                  }
+                }}
+                className="px-3 py-1.5 text-xs bg-white text-gray-900 rounded-md hover:bg-gray-100"
+              >
+                Retry camera
+              </button>
             </div>
           </div>
         )}
