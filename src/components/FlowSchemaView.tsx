@@ -566,19 +566,40 @@ export default function FlowSchemaView({
       return d
     }
 
-    // primarySuccessor picks whichever forward CONNECTION (button/option)
-    // leads to the DEEPEST downstream chain. Does NOT return a combined
-    // partner — those are slivers rendered on the leader's card, not row
-    // cells. The walker handles combinedWithId separately by inlining the
-    // whole chain, then continuing from the chain TAIL's primarySuccessor.
-    // (Depth still walks combinedWithId internally — a combined chain can
-    // contain long outgoing option paths that should count toward depth.)
-    const primarySuccessor = (s: typeof sorted[0]): string | null => {
+    // Chain forward-walk: starting from a leader, follow combinedWithId
+    // to collect every partner in the visual chain. Used by chainExit()
+    // so exits can consider options from ANY chain member.
+    const chainMembersFrom = (headId: string): string[] => {
+      const members: string[] = [headId]
+      const seen = new Set<string>([headId])
+      let cur = stepById.get(headId)
+      while (cur) {
+        const nx = (cur as any).combinedWithId as string | null | undefined
+        if (!nx || seen.has(nx) || !stepById.has(nx)) break
+        members.push(nx)
+        seen.add(nx)
+        cur = stepById.get(nx)
+      }
+      return members
+    }
+
+    // chainExit picks the DEEPEST downstream chain reached by ANY
+    // button/option on ANY member of the combined chain rooted at s.
+    // (Not just the leader, not just the tail — because in real flows
+    // the outgoing option often sits on a middle sliver.) Combined
+    // partners are never returned as row cells — they're inlined.
+    const chainExit = (s: typeof sorted[0]): string | null => {
+      const members = chainMembersFrom(s.id)
+      const memberSet = new Set(members)
       const candidates: string[] = []
-      const btn = (s as any).buttonConfig?.nextStepId
-      if (btn && btn !== '__end__' && stepById.has(btn)) candidates.push(btn)
-      for (const o of s.options) {
-        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) candidates.push(o.nextStepId)
+      for (const mid of members) {
+        const m = stepById.get(mid)
+        if (!m) continue
+        const btn = (m as any).buttonConfig?.nextStepId
+        if (btn && btn !== '__end__' && stepById.has(btn) && !memberSet.has(btn)) candidates.push(btn)
+        for (const o of m.options) {
+          if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !memberSet.has(o.nextStepId)) candidates.push(o.nextStepId)
+        }
       }
       let best: string | null = null
       let bestDepth = -1
@@ -663,9 +684,7 @@ export default function FlowSchemaView({
         rowSeen.add(current.id)
         row.push(current.id)
         // Inline the combinedWithId chain — every partner stays on this
-        // row so slivers render at the leader's column and the row's
-        // TAIL is the true exit point for primarySuccessor.
-        let chainTail = current
+        // row so slivers render at the leader's column.
         let partnerId = (current as any).combinedWithId as string | null | undefined
         while (partnerId && !placed.has(partnerId) && !rowSeen.has(partnerId)) {
           const partner = stepById.get(partnerId)
@@ -673,11 +692,11 @@ export default function FlowSchemaView({
           placed.add(partner.id)
           rowSeen.add(partner.id)
           row.push(partner.id)
-          chainTail = partner
           partnerId = (partner as any).combinedWithId as string | null | undefined
         }
-        const nextId = primarySuccessor(chainTail)
-        chainTrace.push(`${label(current.id)}${chainTail !== current ? ` (tail ${label(chainTail.id)})` : ''} → ${nextId ? label(nextId) : 'END'}`)
+        // Chain exit — options from ANY chain member (leader OR sliver).
+        const nextId = chainExit(current)
+        chainTrace.push(`${label(current.id)} → ${nextId ? label(nextId) : 'END'}`)
         current = nextId ? (stepById.get(nextId) ?? null) : null
       }
       // eslint-disable-next-line no-console
