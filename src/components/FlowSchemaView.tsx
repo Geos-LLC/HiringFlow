@@ -639,14 +639,14 @@ export default function FlowSchemaView({
       row.reduce((n, id) => n + (combinedPartners.has(id) ? 0 : 1), 0)
     const rowsByLenDesc = [...rawRows].sort((a, b) => rowScreens(b) - rowScreens(a))
     const main = rowsByLenDesc[0]
-    // Branches sorted LONGEST-first so the deepest branch lands on the
-    // topmost available rowIdx (row 1), then progressively shorter
-    // branches on rows 2, 3, ... Previously sorted shortest-first,
-    // which pushed the longest branch to the bottom of the flow.
-    const branchesLongFirst = rowsByLenDesc
+    // Original ordering restored: branches sorted SHORTEST-first by
+    // downstreamReach (both use combined-collapsed counts now). Was the
+    // stable layout before the sibling-rank / right-align / longest-first
+    // experiments piled on and produced tangled output.
+    const branchesShortFirst = rowsByLenDesc
       .slice(1)
-      .sort((a, b) => downstreamReach(b[0]) - downstreamReach(a[0]))
-    const rows = main ? [main, ...branchesLongFirst] : rowsByLenDesc
+      .sort((a, b) => downstreamReach(a[0]) - downstreamReach(b[0]))
+    const rows = main ? [main, ...branchesShortFirst] : rowsByLenDesc
 
     const TIDY_H_GAP = 60
 
@@ -675,57 +675,16 @@ export default function FlowSchemaView({
       if (best) rowParent.set(r, best)
     }
 
-    // Fork sibling rank: at a fork where the parent card branches to
-    // multiple non-main-chain children, the branch with the DEEPEST reach
-    // gets slot parent.col + 1 (right under the main continuation);
-    // shorter siblings get pushed one column further right per rank. This
-    // keeps stubby dead-end branches from crowding the main path and
-    // matches the user's tidy rule "move the second card on the fork with
-    // less connections to the right".
-    const parentKey = (p: { row: number; col: number }) => `${p.row}:${p.col}`
-    const siblingsByParent = new Map<string, number[]>()
-    for (let r = 1; r < rows.length; r++) {
-      const p = rowParent.get(r)
-      if (!p) continue
-      const key = parentKey(p)
-      const arr = siblingsByParent.get(key) ?? []
-      arr.push(r)
-      siblingsByParent.set(key, arr)
-    }
-    const siblingRank = new Map<number, number>()
-    siblingsByParent.forEach((siblings) => {
-      // Rank 0 = deepest branch, then shallower branches at higher ranks.
-      const sorted2 = [...siblings].sort((a, b) => downstreamReach(rows[b][0]) - downstreamReach(rows[a][0]))
-      sorted2.forEach((r, i) => siblingRank.set(r, i))
-    })
-
     // Per user: a branch sits under the card that comes AFTER the branch
-    // source in the main chain, not under the source itself. So the
-    // startCol for a branch is parent.col + 1 (+ sibling rank offset).
-    // ORPHAN rows (no incoming edge from any earlier row) use the same
-    // algorithm as connected cards: place at the column matching their
-    // first step's position in the overall stepOrder sequence, so they
-    // sit next to where they would be if connected — not always pinned
-    // to column 0.
+    // source in the main chain, so startCol = parent.col + 1. Original
+    // simple algorithm restored — sibling-rank / parentHasMain / right-
+    // align iterations all made the layout worse for real flows.
     const stepIndexById = new Map<string, number>()
     sorted.forEach((s, i) => stepIndexById.set(s.id, i))
-    // Branch placement: start at parent.col + 1 (or + 2 if parent's main
-    // chain continues there so we don't overlap the main). Sibling rank
-    // shifts additional branches one col right so multiple branches
-    // from the same fork step-stack rather than pile up. Right-align
-    // heuristic was removed — pushing every short branch to the far
-    // right created a messy tangle for flows with many forks.
     const startColFor = (r: number): number => {
       const p = rowParent.get(r)
-      if (p) {
-        const parentStep = stepById.get(rows[p.row][p.col])
-        const mainChild = parentStep ? primarySuccessor(parentStep) : null
-        const parentHasMain = mainChild
-          ? rows[p.row][p.col + 1] === mainChild
-          : false
-        const floorCol = p.col + (parentHasMain ? 2 : 1)
-        return floorCol + (siblingRank.get(r) ?? 0)
-      }
+      if (p) return p.col + 1
+      // Orphan row: place at column derived from stepOrder position.
       const idx = stepIndexById.get(rows[r][0]) ?? 0
       return idx
     }
