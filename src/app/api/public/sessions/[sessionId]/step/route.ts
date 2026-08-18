@@ -167,46 +167,47 @@ export async function GET(
       stageNumberByStep.set(s.id, stageNumberByStep.get(primary)!)
     }
   }
-  // Longest-path progress: total = count of screens on the LONGEST path
-  // from a flow root to a terminal. Fork branches (e.g. "NO" answers
-  // that dead-end) are OFF this path and don't inflate the total — the
-  // candidate can only traverse one path at a time, so showing the count
-  // of every possible fork exit was misleading.
+  // Primary-path progress: at each step follow the PRIMARY successor
+  //   1. button.nextStepId (drag-to-connect Continue link)
+  //   2. else combinedWithId (chain member)
+  //   3. else FIRST option's nextStepId
+  // Path terminates when the primary successor is __end__ or unset.
+  // This models "the path the candidate walks when they always click
+  // the default action". Fork branches (NO answers, alternate paths)
+  // reached via non-first options don't extend the main path.
   const primaryOf = (sid: string): string => {
     const parent = allSteps.find((s) => s.combinedWithId === sid)
     return parent ? primaryOf(parent.id) : sid
   }
-  const longestPathCache = new Map<string, string[]>()
-  const inFlight = new Set<string>()
-  const longestPathFrom = (startId: string): string[] => {
-    if (longestPathCache.has(startId)) return longestPathCache.get(startId)!
-    if (inFlight.has(startId)) return []
-    inFlight.add(startId)
+  const primaryPathCache = new Map<string, string[]>()
+  const primaryInFlight = new Set<string>()
+  const primaryPathFrom = (startId: string): string[] => {
+    if (primaryPathCache.has(startId)) return primaryPathCache.get(startId)!
+    if (primaryInFlight.has(startId)) return []
+    primaryInFlight.add(startId)
     const s = stepById.get(startId)
-    if (!s) { inFlight.delete(startId); return [] }
-    const candidates: string[] = []
-    for (const o of s.options) {
-      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) candidates.push(o.nextStepId)
-    }
+    if (!s) { primaryInFlight.delete(startId); return [] }
+    // Pick the primary successor.
+    let nextId: string | null = null
     const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-    if (btn && btn !== '__end__' && stepById.has(btn)) candidates.push(btn)
-    if (s.combinedWithId && stepById.has(s.combinedWithId)) candidates.push(s.combinedWithId)
-    let bestTail: string[] = []
-    for (const c of candidates) {
-      const t = longestPathFrom(c)
-      if (t.length > bestTail.length) bestTail = t
+    if (btn && btn !== '__end__' && stepById.has(btn)) nextId = btn
+    if (!nextId && s.combinedWithId && stepById.has(s.combinedWithId)) nextId = s.combinedWithId
+    if (!nextId) {
+      // First option with a non-end target wins as primary.
+      for (const o of s.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) { nextId = o.nextStepId; break }
+      }
     }
-    inFlight.delete(startId)
-    // Prepend startId ONLY if it's a non-partner (partners share the
-    // primary's slot, so their inclusion would inflate the count).
-    const path = combinedPartners.has(startId) ? bestTail : [startId, ...bestTail]
-    longestPathCache.set(startId, path)
+    const tail = nextId ? primaryPathFrom(nextId) : []
+    primaryInFlight.delete(startId)
+    const path = combinedPartners.has(startId) ? tail : [startId, ...tail]
+    primaryPathCache.set(startId, path)
     return path
   }
   let mainPath: string[] = []
   const rootSearchOrder = rootIds.length > 0 ? rootIds : (sortedByOrder[0] ? [sortedByOrder[0].id] : [])
   for (const rid of rootSearchOrder) {
-    const p = longestPathFrom(rid)
+    const p = primaryPathFrom(rid)
     if (p.length > mainPath.length) mainPath = p
   }
   const visibleStepIds = mainPath
