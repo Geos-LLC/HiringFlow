@@ -836,15 +836,37 @@ export default function FlowSchemaView({
     // Main chain claims row 0.
     rowOccupancy.set(0, [[0, Math.max(0, (visualLenByRow.get(0) ?? rows[0].length) - 1)]])
 
-    // Process branches in a parent-grouped order — every sibling of a
-    // shared fork parent lands on consecutive rowIdx values, preventing
-    // unrelated shorter branches from stealing the "next available" row
-    // and pushing this fork's siblings far apart on the canvas.
+    // A "leaf branch" is a secondary row where every card only forwards
+    // to __end__ (or has no forward connection at all outside the row).
+    // These are the NO-answer branches that just terminate — if we let
+    // them scatter horizontally at each parent's column, their incoming
+    // connections cross other cards. Stack them under each other at the
+    // RIGHTMOST leaf's column instead so the arrows fan into one place.
+    const isLeafRow = (row: string[]): boolean => {
+      const rowSet = new Set(row)
+      for (const id of row) {
+        const s = stepById.get(id)
+        if (!s) continue
+        const btn = (s as any).buttonConfig?.nextStepId
+        if (btn && btn !== '__end__' && stepById.has(btn) && !rowSet.has(btn)) return false
+        for (const o of s.options) {
+          if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !rowSet.has(o.nextStepId)) return false
+        }
+      }
+      return true
+    }
+
+    // Process non-leaf branches first (parent-grouped), then leaves last.
     const parentKey = (p: { row: number; col: number } | undefined) =>
       p ? `${p.row}:${p.col}` : `__orphan__`
     const groupsMap = new Map<string, number[]>()
     const groupOrder: string[] = []
+    const leafBranches: number[] = []
     for (let r = 1; r < rows.length; r++) {
+      if (isLeafRow(rows[r])) {
+        leafBranches.push(r)
+        continue
+      }
       const key = parentKey(rowParent.get(r))
       if (!groupsMap.has(key)) { groupsMap.set(key, []); groupOrder.push(key) }
       groupsMap.get(key)!.push(r)
@@ -855,6 +877,19 @@ export default function FlowSchemaView({
         const startCol = startColFor(r)
         const rowIdx = claimRow(r, startCol)
         rowInfo.set(r, { rowIdx, startCol })
+      }
+    }
+    // Leaf branches: rightmost first (top of stack, closest to main row),
+    // then each subsequent leaf going LEFT drops one row below. All share
+    // the rightmost leaf's startCol so arrows converge into one column.
+    if (leafBranches.length > 0) {
+      const leavesRightFirst = [...leafBranches].sort(
+        (a, b) => startColFor(b) - startColFor(a),
+      )
+      const stackedCol = startColFor(leavesRightFirst[0])
+      for (const r of leavesRightFirst) {
+        const rowIdx = claimRow(r, stackedCol)
+        rowInfo.set(r, { rowIdx, startCol: stackedCol })
       }
     }
 
