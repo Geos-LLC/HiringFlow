@@ -523,16 +523,24 @@ export default function FlowSchemaView({
     const sorted = [...steps].sort((a, b) => a.stepOrder - b.stepOrder)
     const stepById = new Map(sorted.map((s) => [s.id, s]))
 
-    // Depth = length of the longest chain rooted at a given step. Follow
-    // every option/button (not just the first) and take the max, so the
-    // primary chain we walk below is truly the longest, not just the
-    // first-arrived. Cache + cycle-guarded.
+    // Combined-partner set (must be defined BEFORE depth() so depth can
+    // treat combined pairs as one screen — otherwise a chain of 3
+    // combined cards inflates a branch's apparent depth by 3.
+    const combinedPartners = new Set<string>()
+    for (const s of sorted) {
+      const cw = (s as any).combinedWithId as string | null | undefined
+      if (cw) combinedPartners.add(cw)
+    }
+
+    // Depth = number of SCREENS in the longest chain rooted at a given
+    // step. Combined partners share their primary's screen (add 0 depth).
+    // Follow every option/button + combinedWithId; take the max.
     const depthCache = new Map<string, number>()
     const inProgress = new Set<string>()
     const depth = (id: string): number => {
       const cached = depthCache.get(id)
       if (cached !== undefined) return cached
-      if (inProgress.has(id)) return 0  // cycle guard
+      if (inProgress.has(id)) return 0
       inProgress.add(id)
       const s = stepById.get(id)
       if (!s) { inProgress.delete(id); depthCache.set(id, 0); return 0 }
@@ -546,7 +554,13 @@ export default function FlowSchemaView({
       if (btn && btn !== '__end__' && stepById.has(btn)) {
         best = Math.max(best, depth(btn))
       }
-      const d = 1 + best
+      const cw = (s as any).combinedWithId as string | null | undefined
+      if (cw && stepById.has(cw)) {
+        best = Math.max(best, depth(cw))
+      }
+      // Add 1 only for real screens; combined partners share their primary.
+      const selfCount = combinedPartners.has(id) ? 0 : 1
+      const d = selfCount + best
       inProgress.delete(id)
       depthCache.set(id, d)
       return d
@@ -598,13 +612,16 @@ export default function FlowSchemaView({
     // hit already-placed cards, so row.length underestimates how "big"
     // a branch really is. downstreamReach walks every option/button
     // from the branch source and counts reachable steps.
+    // (combinedPartners set already defined above so depth() can use it.)
     const downstreamReach = (startId: string): number => {
       const seen = new Set<string>()
       const queue: string[] = [startId]
+      let uniqueScreens = 0
       while (queue.length) {
         const id = queue.shift()!
         if (seen.has(id)) continue
         seen.add(id)
+        if (!combinedPartners.has(id)) uniqueScreens++
         const s = stepById.get(id)
         if (!s) continue
         for (const o of s.options) {
@@ -612,15 +629,24 @@ export default function FlowSchemaView({
         }
         const btn = (s as any).buttonConfig?.nextStepId
         if (btn && btn !== '__end__' && !seen.has(btn)) queue.push(btn)
+        const cw = (s as any).combinedWithId as string | null | undefined
+        if (cw && !seen.has(cw)) queue.push(cw)
       }
-      return seen.size
+      return uniqueScreens
     }
-    const rowsByLenDesc = [...rawRows].sort((a, b) => b.length - a.length)
+    // Row length in SCREENS (combined partners count as 0 extra).
+    const rowScreens = (row: string[]) =>
+      row.reduce((n, id) => n + (combinedPartners.has(id) ? 0 : 1), 0)
+    const rowsByLenDesc = [...rawRows].sort((a, b) => rowScreens(b) - rowScreens(a))
     const main = rowsByLenDesc[0]
-    const branchesShortFirst = rowsByLenDesc
+    // Branches sorted LONGEST-first so the deepest branch lands on the
+    // topmost available rowIdx (row 1), then progressively shorter
+    // branches on rows 2, 3, ... Previously sorted shortest-first,
+    // which pushed the longest branch to the bottom of the flow.
+    const branchesLongFirst = rowsByLenDesc
       .slice(1)
-      .sort((a, b) => downstreamReach(a[0]) - downstreamReach(b[0]))
-    const rows = main ? [main, ...branchesShortFirst] : rowsByLenDesc
+      .sort((a, b) => downstreamReach(b[0]) - downstreamReach(a[0]))
+    const rows = main ? [main, ...branchesLongFirst] : rowsByLenDesc
 
     const TIDY_H_GAP = 60
 
