@@ -741,10 +741,46 @@ export default function FlowSchemaView({
     // downstreamReach (both use combined-collapsed counts now). Was the
     // stable layout before the sibling-rank / right-align / longest-first
     // experiments piled on and produced tangled output.
-    const branchesShortFirst = rowsByLenDesc
-      .slice(1)
-      .sort((a, b) => downstreamReach(a[0]) - downstreamReach(b[0]))
-    const rows = main ? [main, ...branchesShortFirst] : rowsByLenDesc
+    // For non-leaf secondary rows: original ordering (shortest reach first).
+    // For LEAF rows (single-card dead-ends that only lead to __end__):
+    // pull them out and sort by parent col DESC so rightmost-parent leaf
+    // is placed FIRST — since the placement loop iterates rows[] in order
+    // and each successive leaf drops one row of Y, that puts the SHORTEST
+    // connection at the TOP of the stack and longest at the bottom.
+    const isLeafRowCheck = (row: string[]): boolean => {
+      const rowSet = new Set(row)
+      for (const id of row) {
+        const s = stepById.get(id)
+        if (!s) continue
+        const btn = (s as any).buttonConfig?.nextStepId
+        if (btn && btn !== '__end__' && stepById.has(btn) && !rowSet.has(btn)) return false
+        for (const o of s.options) {
+          if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !rowSet.has(o.nextStepId)) return false
+        }
+      }
+      return true
+    }
+    // parentColOfBranch: index in the main row of the first parent that
+    // points into this branch. Used to sort leaves rightmost-first.
+    const parentColOfBranch = (row: string[]): number => {
+      const target = row[0]
+      if (!main) return -1
+      for (let i = 0; i < main.length; i++) {
+        const s = stepById.get(main[i])
+        if (!s) continue
+        const btn = (s as any).buttonConfig?.nextStepId
+        if (btn === target) return i
+        if (s.options.some((o) => o.nextStepId === target)) return i
+      }
+      return -1
+    }
+    const secondaries = rowsByLenDesc.slice(1)
+    const leafSecondaries = secondaries.filter(isLeafRowCheck)
+    const nonLeafSecondaries = secondaries.filter((r) => !isLeafRowCheck(r))
+    nonLeafSecondaries.sort((a, b) => downstreamReach(a[0]) - downstreamReach(b[0]))
+    leafSecondaries.sort((a, b) => parentColOfBranch(b) - parentColOfBranch(a))
+    // Leaves LAST so they don't disturb non-leaf branch parent detection.
+    const rows = main ? [main, ...nonLeafSecondaries, ...leafSecondaries] : rowsByLenDesc
 
     const TIDY_H_GAP = 60
 
@@ -836,35 +872,19 @@ export default function FlowSchemaView({
     // Main chain claims row 0.
     rowOccupancy.set(0, [[0, Math.max(0, (visualLenByRow.get(0) ?? rows[0].length) - 1)]])
 
-    // A "leaf branch" is a secondary row where every card only forwards
-    // to __end__ (or has no forward connection at all outside the row).
-    // These are the NO-answer branches that just terminate — if we let
-    // them scatter horizontally at each parent's column, their incoming
-    // connections cross other cards. Stack them under each other at the
-    // RIGHTMOST leaf's column instead so the arrows fan into one place.
-    const isLeafRow = (row: string[]): boolean => {
-      const rowSet = new Set(row)
-      for (const id of row) {
-        const s = stepById.get(id)
-        if (!s) continue
-        const btn = (s as any).buttonConfig?.nextStepId
-        if (btn && btn !== '__end__' && stepById.has(btn) && !rowSet.has(btn)) return false
-        for (const o of s.options) {
-          if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !rowSet.has(o.nextStepId)) return false
-        }
-      }
-      return true
-    }
-
-    // Process non-leaf branches first (parent-grouped), then leaves last.
+    // Process non-leaf branches first (parent-grouped), leaves last.
+    // Leaf rows are already at the end of rows[] in rightmost-parent-first
+    // order (see `rows` construction above). Placement Y is derived from
+    // colMaxBottom in the order rows are visited, so processing leaves
+    // last + in that order gives shortest-connection-at-top stacking.
     const parentKey = (p: { row: number; col: number } | undefined) =>
       p ? `${p.row}:${p.col}` : `__orphan__`
     const groupsMap = new Map<string, number[]>()
     const groupOrder: string[] = []
-    const leafBranches: number[] = []
+    const leafRowIndices: number[] = []
     for (let r = 1; r < rows.length; r++) {
-      if (isLeafRow(rows[r])) {
-        leafBranches.push(r)
+      if (isLeafRowCheck(rows[r])) {
+        leafRowIndices.push(r)
         continue
       }
       const key = parentKey(rowParent.get(r))
@@ -879,19 +899,16 @@ export default function FlowSchemaView({
         rowInfo.set(r, { rowIdx, startCol })
       }
     }
-    // Leaf branches: rightmost first (top of stack, closest to main row),
-    // then each subsequent leaf going LEFT drops one row below. All share
-    // the rightmost leaf's startCol so arrows converge into one column.
+    // Leaves: all share the rightmost leaf's natural startCol (so any
+    // leaf's parent is at-or-left-of the stack). rowIdx assigned in the
+    // order they appear in rows[] (rightmost parent first).
     // eslint-disable-next-line no-console
-    console.log('[TIDY] leaf branches:', leafBranches.map((r) => `row ${r}: [${rows[r].map((id) => label(id)).join(', ')}] naturalStartCol=${startColFor(r)}`))
-    if (leafBranches.length > 0) {
-      const leavesRightFirst = [...leafBranches].sort(
-        (a, b) => startColFor(b) - startColFor(a),
-      )
-      const stackedCol = startColFor(leavesRightFirst[0])
+    console.log('[TIDY] leaf rows:', leafRowIndices.map((r) => `row ${r}: [${rows[r].map((id) => label(id)).join(', ')}] parentCol=${parentColOfBranch(rows[r])}`))
+    if (leafRowIndices.length > 0) {
+      const stackedCol = Math.max(...leafRowIndices.map((r) => startColFor(r)))
       // eslint-disable-next-line no-console
-      console.log(`[TIDY] leaf stack: sharing startCol=${stackedCol}, order=${leavesRightFirst.map((r) => label(rows[r][0])).join(' → ')}`)
-      for (const r of leavesRightFirst) {
+      console.log(`[TIDY] leaf stack: stackedCol=${stackedCol}, top→bottom=${leafRowIndices.map((r) => label(rows[r][0])).join(' | ')}`)
+      for (const r of leafRowIndices) {
         const rowIdx = claimRow(r, stackedCol)
         rowInfo.set(r, { rowIdx, startCol: stackedCol })
       }
