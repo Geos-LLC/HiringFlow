@@ -57,9 +57,11 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   }, [playbackSrc])
 
   useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[VideoRecorder] stream effect', { hasStream: !!stream, tracks: stream?.getTracks().length, hasVideoRef: !!liveVideoRef.current })
     if (stream && liveVideoRef.current) {
       liveVideoRef.current.srcObject = stream
-      liveVideoRef.current.play().catch(() => {})
+      liveVideoRef.current.play().catch((e) => { console.log('[VideoRecorder] video.play() rejected', e?.message) })
     }
   }, [stream])
 
@@ -67,6 +69,8 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
   // before the user clicks Start Recording. This is the "mirror" UX they
   // expect from native camera apps.
   useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[VideoRecorder] mount — requesting camera')
     let cancelled = false
     let acquired: MediaStream | null = null
     ;(async () => {
@@ -75,6 +79,8 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
           video: { width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: true,
         })
+        // eslint-disable-next-line no-console
+        console.log('[VideoRecorder] getUserMedia resolved', { tracks: s.getTracks().length, cancelled })
         if (cancelled) {
           s.getTracks().forEach(t => t.stop())
           return
@@ -89,6 +95,8 @@ export default function VideoRecorder({ onRecordComplete, recordedVideo }: Video
       }
     })()
     return () => {
+      // eslint-disable-next-line no-console
+      console.log('[VideoRecorder] cleanup — stopping tracks', { hadAcquired: !!acquired })
       cancelled = true
       if (acquired) {
         acquired.getTracks().forEach(t => t.stop())
