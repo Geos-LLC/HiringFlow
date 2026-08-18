@@ -66,32 +66,57 @@ export async function POST(
     // Chain-collapse: when the submitted step is part of a combinedWithId
     // chain (e.g., text-Q + audio companion + video companion rendered as
     // one card with 3 answer methods), a single submission from ANY member
-    // should advance PAST the entire chain to the tail's exit target — not
-    // step through the sibling companions one at a time. Walk forward from
-    // the submitted step to find the tail, then read its exit wiring.
-    const chainSeen = new Set<string>([step.id])
+    // should advance PAST the entire chain to whatever chain member has
+    // an exit target wired — could be the leader, the tail, or anyone in
+    // between. Walks BOTH directions from the submitted step to find every
+    // chain member, then picks the FIRST exit wire found (buttonConfig or
+    // option nextStepId).
+    const chainMembers = new Set<string>([step.id])
+    // Walk forward via combinedWithId.
+    let fCursor: string | null | undefined = (step as any).combinedWithId
     let tailStep = step
-    let cursor: string | null | undefined = (step as any).combinedWithId
-    while (cursor && !chainSeen.has(cursor)) {
-      chainSeen.add(cursor)
-      const next = await prisma.flowStep.findUnique({ where: { id: cursor } })
+    while (fCursor && !chainMembers.has(fCursor)) {
+      chainMembers.add(fCursor)
+      const next = await prisma.flowStep.findUnique({ where: { id: fCursor } })
       if (!next) break
       tailStep = next
-      cursor = (next as any).combinedWithId
+      fCursor = (next as any).combinedWithId
     }
-    const buttonNextRaw = (tailStep as { buttonConfig?: { nextStepId?: string | null } | null }).buttonConfig?.nextStepId
-    const buttonNext = typeof buttonNextRaw === 'string' && buttonNextRaw.length > 0 ? buttonNextRaw : null
-    // Legacy wiring: some video/submission steps were built by adding an
-    // "option" with nextStepId set to the target, instead of using the
-    // buttonConfig.nextStepId (the newer drag-to-connect field). Read the
-    // FIRST option with a valid nextStepId (on the TAIL) as an implicit
-    // Continue target so those legacy flows still route correctly.
-    const stepOptions = await prisma.stepOption.findMany({
-      where: { stepId: tailStep.id, nextStepId: { not: null } },
-      orderBy: { createdAt: 'asc' },
-      select: { nextStepId: true },
-    })
-    const optionContinueTarget = stepOptions.find((o) => o.nextStepId && o.nextStepId.length > 0)?.nextStepId ?? null
+    // Walk backward — find every step whose combinedWithId points at a
+    // known chain member and add it. Repeat until no growth.
+    let grew = true
+    while (grew) {
+      grew = false
+      const parents = await prisma.flowStep.findMany({
+        where: { flowId: session.flowId, combinedWithId: { in: Array.from(chainMembers) } },
+        select: { id: true },
+      })
+      for (const p of parents) {
+        if (!chainMembers.has(p.id)) { chainMembers.add(p.id); grew = true }
+      }
+    }
+    // Now read every chain member and pick the first one with a wired
+    // exit target. Prefer the tail (semantic "exit point"), then walk the
+    // rest in insertion order.
+    const memberIds = [tailStep.id, ...Array.from(chainMembers).filter((id) => id !== tailStep.id)]
+    let buttonNext: string | null = null
+    let optionContinueTarget: string | null = null
+    for (const mid of memberIds) {
+      const m = await prisma.flowStep.findUnique({ where: { id: mid } })
+      if (!m) continue
+      const bRaw = (m as { buttonConfig?: { nextStepId?: string | null } | null }).buttonConfig?.nextStepId
+      if (!buttonNext && typeof bRaw === 'string' && bRaw.length > 0) buttonNext = bRaw
+      if (!optionContinueTarget) {
+        const opts = await prisma.stepOption.findMany({
+          where: { stepId: mid, nextStepId: { not: null } },
+          orderBy: { createdAt: 'asc' },
+          select: { nextStepId: true },
+        })
+        const t = opts.find((o) => o.nextStepId && o.nextStepId.length > 0)?.nextStepId ?? null
+        if (t) optionContinueTarget = t
+      }
+      if (buttonNext) break
+    }
 
     const finishSession = async () => {
       const now = new Date()
@@ -133,7 +158,7 @@ export async function POST(
       // of the chain's tail (the semantic "exit" of the combined card).
       // Also skip past every chain member so we don't step through the
       // sibling companions.
-      const parentTargets = new Set<string>(chainSeen)
+      const parentTargets = new Set<string>(chainMembers)
       parentTargets.delete(tailStep.id) // don't skip the tail itself when computing
       for (const x of allSteps) {
         if (x.id === tailStep.id) continue
