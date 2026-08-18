@@ -80,25 +80,48 @@ export async function GET(
   const stepById = new Map(allSteps.map((s) => [s.id, s]))
   const stageNumberByStep = new Map<string, number>()
   const sortedByOrder = [...allSteps].sort((a, b) => a.stepOrder - b.stepOrder)
-  let counter = 1
-  const assign = (id: string, shareWith?: string) => {
-    if (stageNumberByStep.has(id)) return
-    if (shareWith && stageNumberByStep.has(shareWith)) {
-      stageNumberByStep.set(id, stageNumberByStep.get(shareWith)!)
-    } else {
-      stageNumberByStep.set(id, counter++)
+  // Find real flow roots (no incoming from another step's option/button
+  // AND not a combined partner). Prefer these over lowest-stepOrder so
+  // BFS starts at the actual entry, giving stable stage numbers even if
+  // the entry step was added late in DB order.
+  const incoming = new Map<string, number>()
+  for (const s of allSteps) incoming.set(s.id, 0)
+  for (const s of allSteps) {
+    for (const o of s.options) {
+      if (o.nextStepId && o.nextStepId !== '__end__' && incoming.has(o.nextStepId)) {
+        incoming.set(o.nextStepId, (incoming.get(o.nextStepId) ?? 0) + 1)
+      }
+    }
+    const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+    if (btn && btn !== '__end__' && incoming.has(btn)) {
+      incoming.set(btn, (incoming.get(btn) ?? 0) + 1)
     }
   }
-  const entryId = sortedByOrder[0]?.id
-  if (entryId) {
-    const bfsQ: string[] = [entryId]
-    assign(entryId)
+  const rootIds = sortedByOrder
+    .filter((s) => !combinedPartners.has(s.id) && (incoming.get(s.id) ?? 0) === 0)
+    .map((s) => s.id)
+  let counter = 1
+  const assignShared = (id: string, shareWith: string) => {
+    if (stageNumberByStep.has(id)) return
+    if (stageNumberByStep.has(shareWith)) {
+      stageNumberByStep.set(id, stageNumberByStep.get(shareWith)!)
+    }
+  }
+  const assignNew = (id: string) => {
+    if (stageNumberByStep.has(id)) return
+    if (combinedPartners.has(id)) return // partners never get their own number
+    stageNumberByStep.set(id, counter++)
+  }
+  const bfsFromRoot = (rootId: string) => {
+    if (stageNumberByStep.has(rootId)) return
+    assignNew(rootId)
+    const bfsQ: string[] = [rootId]
     while (bfsQ.length) {
       const id = bfsQ.shift()!
       const s = stepById.get(id)
       if (!s) continue
       if (s.combinedWithId && stepById.has(s.combinedWithId) && !stageNumberByStep.has(s.combinedWithId)) {
-        assign(s.combinedWithId, id)
+        assignShared(s.combinedWithId, id)
         bfsQ.push(s.combinedWithId)
       }
       const children: string[] = []
@@ -112,13 +135,37 @@ export async function GET(
         children.push(btn)
       }
       for (const cid of children) {
-        assign(cid)
+        assignNew(cid)
         bfsQ.push(cid)
       }
     }
   }
+  if (rootIds.length > 0) {
+    for (const rid of rootIds) bfsFromRoot(rid)
+  } else if (sortedByOrder[0]) {
+    bfsFromRoot(sortedByOrder[0].id)
+  }
+  // Fallback: any non-partner still unassigned (orphan branch BFS missed).
   for (const s of sortedByOrder) {
+    if (combinedPartners.has(s.id)) continue
     if (!stageNumberByStep.has(s.id)) stageNumberByStep.set(s.id, counter++)
+  }
+  // Assign partners left over (BFS didn't reach their primary) the
+  // primary's number so they collapse into the same slot on the bar.
+  for (const s of sortedByOrder) {
+    if (!combinedPartners.has(s.id)) continue
+    if (stageNumberByStep.has(s.id)) continue
+    // Find primary by walking backward via "some other step's combinedWithId === s.id"
+    let primary = s.id
+    let guard = 32
+    while (guard-- > 0) {
+      const parent = allSteps.find((p) => p.combinedWithId === primary)
+      if (!parent) break
+      primary = parent.id
+    }
+    if (stageNumberByStep.has(primary)) {
+      stageNumberByStep.set(s.id, stageNumberByStep.get(primary)!)
+    }
   }
   // visibleSteps = unique screens (combined partners collapse to primary).
   // Ordered by the BFS-assigned stage number so slot N in the progress bar
