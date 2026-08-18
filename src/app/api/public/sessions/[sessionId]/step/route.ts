@@ -408,13 +408,19 @@ export async function GET(
         segments: m.captionsEnabled && m.video ? (m.video as any).segments || [] : [],
         formEnabled: m.formEnabled || m.stepType === 'form',
         formConfig: m.formConfig,
-        options: m.options.map((o) => {
+        options: m.options.map((o, idx) => {
           const isGeneric = !o.optionText || o.optionText.trim() === '' || o.optionText === 'Continue'
           let text = o.optionText
-          if (isGeneric && o.nextStepId && o.nextStepId !== '__end__') {
-            const target = stepById.get(o.nextStepId)
-            const cleanTitle = (target?.title || '').replace(/^\d+[\-\.\s]*/, '').trim()
-            if (cleanTitle) text = cleanTitle
+          if (isGeneric) {
+            if (o.nextStepId === '__end__') text = 'Finish'
+            else if (o.nextStepId) {
+              const target = stepById.get(o.nextStepId)
+              const cleanTitle = (target?.title || '').replace(/^\d+[\-\.\s]*/, '').trim()
+              if (cleanTitle) text = cleanTitle
+              else text = `Option ${idx + 1}`
+            } else {
+              text = `Option ${idx + 1}`
+            }
           }
           return { optionId: o.id, text, nextStepId: o.nextStepId }
         }),
@@ -741,21 +747,24 @@ export async function GET(
     chainVideoUrl,
     chainVideoHlsUrl,
     chainVideoStatus,
-    options: step.options.map((o) => ({
+    options: step.options.map((o, idx) => ({
       optionId: o.id,
       // Legacy connectSteps hard-coded optionText = "Continue" for every
       // drag-connected option — question steps with 3 answer options
-      // ended up showing three "Continue" buttons. Derive a label from
-      // the target step's title when the stored text is empty/Continue.
+      // ended up showing three "Continue" buttons. Fallback chain:
+      //   1. target step title (drag-connected → real answer step)
+      //   2. "Finish" if the option points to __end__
+      //   3. "Option N" as last resort (unwired option)
       text: (() => {
         const isGeneric = !o.optionText || o.optionText.trim() === '' || o.optionText === 'Continue'
         if (!isGeneric) return o.optionText
-        if (o.nextStepId && o.nextStepId !== '__end__') {
+        if (o.nextStepId === '__end__') return 'Finish'
+        if (o.nextStepId) {
           const target = stepById.get(o.nextStepId)
           const cleanTitle = (target?.title || '').replace(/^\d+[\-\.\s]*/, '').trim()
           if (cleanTitle) return cleanTitle
         }
-        return o.optionText || 'Continue'
+        return `Option ${idx + 1}`
       })(),
       nextStepId: o.nextStepId,
     })),
