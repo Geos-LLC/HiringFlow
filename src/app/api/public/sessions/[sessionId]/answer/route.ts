@@ -83,15 +83,36 @@ export async function POST(
       return NextResponse.json({ nextStepId })
     }
     const advance = async (override?: string | null): Promise<NextResponse> => {
-      // Move ONLY according to the flow's explicit connections:
-      //   1. override (option.nextStepId) — the selected answer's target
-      //   2. buttonConfig.nextStepId — the drag-to-connect Continue link
-      //   3. no connection wired → finish (End)
-      // stepOrder is a DB creation order, not a flow route — never use it
-      // for navigation. If a step is a dead-end, that's an End.
       const target = (override && override.length > 0) ? override : buttonNext
       if (target === '__end__') return finishSession()
       if (target) return advanceTo(target)
+      // Fall back to next by stepOrder, but SKIP the immediate next step
+      // if it's a sibling of the current step under a shared fork parent
+      // (e.g., stepping off "YES-answer video" shouldn't land on the
+      // sibling "NO-answer video"). Walk forward one at a time — each
+      // candidate is checked against fork-sibling status independently.
+      const allSteps = await prisma.flowStep.findMany({
+        where: { flowId: session.flowId },
+        select: { id: true, stepOrder: true, buttonConfig: true, options: { select: { nextStepId: true } } },
+        orderBy: { stepOrder: 'asc' },
+      })
+      // Fork-parent lookup: which step(s) route to `step.id`?
+      const parentTargets = new Set<string>()
+      for (const x of allSteps) {
+        if (x.id === step.id) continue
+        const targets: string[] = []
+        for (const o of x.options) if (o.nextStepId && o.nextStepId !== '__end__') targets.push(o.nextStepId)
+        const btn = (x.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+        if (btn && btn !== '__end__') targets.push(btn)
+        if (targets.includes(step.id)) {
+          for (const t of targets) if (t !== step.id) parentTargets.add(t)
+        }
+      }
+      for (const cand of allSteps) {
+        if (cand.stepOrder <= step.stepOrder) continue
+        if (parentTargets.has(cand.id)) continue // sibling branch under same fork
+        return advanceTo(cand.id)
+      }
       return finishSession()
     }
 
