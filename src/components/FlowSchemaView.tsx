@@ -566,10 +566,13 @@ export default function FlowSchemaView({
       return d
     }
 
-    // primarySuccessor picks whichever forward connection (button, option,
-    // OR combinedWithId partner) leads to the DEEPEST downstream chain.
-    // Row 0 becomes the longest possible path, and combined pairs stay
-    // in the SAME row so the chain's exit branches follow contiguously.
+    // primarySuccessor picks whichever forward CONNECTION (button/option)
+    // leads to the DEEPEST downstream chain. Does NOT return a combined
+    // partner — those are slivers rendered on the leader's card, not row
+    // cells. The walker handles combinedWithId separately by inlining the
+    // whole chain, then continuing from the chain TAIL's primarySuccessor.
+    // (Depth still walks combinedWithId internally — a combined chain can
+    // contain long outgoing option paths that should count toward depth.)
     const primarySuccessor = (s: typeof sorted[0]): string | null => {
       const candidates: string[] = []
       const btn = (s as any).buttonConfig?.nextStepId
@@ -577,8 +580,6 @@ export default function FlowSchemaView({
       for (const o of s.options) {
         if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) candidates.push(o.nextStepId)
       }
-      const cw = (s as any).combinedWithId as string | null | undefined
-      if (cw && stepById.has(cw)) candidates.push(cw)
       let best: string | null = null
       let bestDepth = -1
       for (const c of candidates) {
@@ -661,8 +662,22 @@ export default function FlowSchemaView({
         placed.add(current.id)
         rowSeen.add(current.id)
         row.push(current.id)
-        const nextId = primarySuccessor(current)
-        chainTrace.push(`${label(current.id)} → ${nextId ? label(nextId) : 'END'}`)
+        // Inline the combinedWithId chain — every partner stays on this
+        // row so slivers render at the leader's column and the row's
+        // TAIL is the true exit point for primarySuccessor.
+        let chainTail = current
+        let partnerId = (current as any).combinedWithId as string | null | undefined
+        while (partnerId && !placed.has(partnerId) && !rowSeen.has(partnerId)) {
+          const partner = stepById.get(partnerId)
+          if (!partner) break
+          placed.add(partner.id)
+          rowSeen.add(partner.id)
+          row.push(partner.id)
+          chainTail = partner
+          partnerId = (partner as any).combinedWithId as string | null | undefined
+        }
+        const nextId = primarySuccessor(chainTail)
+        chainTrace.push(`${label(current.id)}${chainTail !== current ? ` (tail ${label(chainTail.id)})` : ''} → ${nextId ? label(nextId) : 'END'}`)
         current = nextId ? (stepById.get(nextId) ?? null) : null
       }
       // eslint-disable-next-line no-console
