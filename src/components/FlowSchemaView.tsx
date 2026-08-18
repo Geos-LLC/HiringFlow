@@ -748,6 +748,25 @@ export default function FlowSchemaView({
 
     const TIDY_H_GAP = 60
 
+    // Combined partners are rendered as slivers stacked on their leader,
+    // NOT as their own column. So the layout's column math has to treat
+    // each partner as sharing the previous cell's column — otherwise the
+    // real card after a 3-member chain lands 3 columns away when it
+    // should be 1 column away (that's the "gaps grow after chains" bug).
+    const visualColByRow = new Map<number, number[]>()
+    const visualLenByRow = new Map<number, number>()
+    rows.forEach((row, r) => {
+      const arr: number[] = []
+      let vc = -1
+      for (let c = 0; c < row.length; c++) {
+        const id = row[c]
+        if (!combinedPartners.has(id)) vc++
+        arr.push(Math.max(0, vc))
+      }
+      visualColByRow.set(r, arr)
+      visualLenByRow.set(r, vc + 1)
+    })
+
     // For each row (except 0), find its "branch parent" — a step in an
     // earlier row that points to this row's first card via option/button.
     // We record BOTH the parent's row index and its column so we can:
@@ -798,8 +817,9 @@ export default function FlowSchemaView({
     rowInfo.set(0, { rowIdx: 0, startCol: 0 })
     // Occupancy: for each rowIdx, which column ranges are taken.
     const rowOccupancy = new Map<number, Array<[number, number]>>()
-    const claimRow = (row: string[], startCol: number): number => {
-      const endCol = startCol + row.length - 1
+    const claimRow = (rowIndex: number, startCol: number): number => {
+      const vlen = visualLenByRow.get(rowIndex) ?? rows[rowIndex].length
+      const endCol = startCol + Math.max(0, vlen - 1)
       // Find lowest rowIdx (>= 1) that has no overlap in [startCol..endCol].
       // Row 0 is always taken by the main chain.
       let ri = 1
@@ -814,7 +834,7 @@ export default function FlowSchemaView({
       }
     }
     // Main chain claims row 0.
-    rowOccupancy.set(0, [[0, rows[0].length - 1]])
+    rowOccupancy.set(0, [[0, Math.max(0, (visualLenByRow.get(0) ?? rows[0].length) - 1)]])
 
     // Process branches in a parent-grouped order — every sibling of a
     // shared fork parent lands on consecutive rowIdx values, preventing
@@ -833,7 +853,7 @@ export default function FlowSchemaView({
       const siblings = groupsMap.get(key)!
       for (const r of siblings) {
         const startCol = startColFor(r)
-        const rowIdx = claimRow(rows[r], startCol)
+        const rowIdx = claimRow(r, startCol)
         rowInfo.set(r, { rowIdx, startCol })
       }
     }
@@ -863,8 +883,10 @@ export default function FlowSchemaView({
     const rowIncomingSpan = new Map<number, number>()
     for (let r = 1; r < rows.length; r++) {
       let maxSpan = 0
+      const targetVisualCols = visualColByRow.get(r) ?? []
       for (const targetId of rows[r]) {
         for (let pr = 0; pr < r; pr++) {
+          const parentVisualCols = visualColByRow.get(pr) ?? []
           for (let pc = 0; pc < rows[pr].length; pc++) {
             const pStep = stepById.get(rows[pr][pc])
             if (!pStep) continue
@@ -873,10 +895,10 @@ export default function FlowSchemaView({
               pStep.options.some((o) => o.nextStepId === targetId)
             if (!points) continue
             const parentInfo = rowInfo.get(pr) ?? { rowIdx: pr, startCol: 0 }
-            const parentCol = parentInfo.startCol + pc
+            const parentCol = parentInfo.startCol + (parentVisualCols[pc] ?? pc)
             const targetInfo = rowInfo.get(r) ?? { rowIdx: r, startCol: 0 }
             const tc = rows[r].indexOf(targetId)
-            const targetCol = targetInfo.startCol + Math.max(0, tc)
+            const targetCol = targetInfo.startCol + (targetVisualCols[Math.max(0, tc)] ?? tc)
             const span = Math.abs(targetCol - parentCol)
             if (span > maxSpan) maxSpan = span
           }
@@ -889,7 +911,9 @@ export default function FlowSchemaView({
     let maxBaseline = 0
     rows.forEach((row, r) => {
       const info = rowInfo.get(r) ?? { rowIdx: r, startCol: 0 }
-      const chainRise = (row.length - 1) * RISE_PER_COL
+      const visualCols = visualColByRow.get(r) ?? row.map((_, i) => i)
+      const vlen = visualLenByRow.get(r) ?? row.length
+      const chainRise = Math.max(0, vlen - 1) * RISE_PER_COL
       // Row's effective vertical gap = base + extra padding for the
       // widest incoming connection to this row.
       const incomingSpan = rowIncomingSpan.get(r) ?? 0
@@ -900,10 +924,11 @@ export default function FlowSchemaView({
       } else {
         let req = 0
         for (let c = 0; c < row.length; c++) {
-          const col = info.startCol + c
+          const vc = visualCols[c]
+          const col = info.startCol + vc
           const priorBottom = colMaxBottom.get(col) ?? -Infinity
           if (priorBottom === -Infinity) continue
-          const need = priorBottom + effectiveVGap - chainRise + c * RISE_PER_COL
+          const need = priorBottom + effectiveVGap - chainRise + vc * RISE_PER_COL
           if (need > req) req = need
         }
         baseline = req
@@ -911,9 +936,10 @@ export default function FlowSchemaView({
       rowBaseline.set(r, baseline)
       if (baseline > maxBaseline) maxBaseline = baseline
       row.forEach((stepId, c) => {
-        const col = info.startCol + c
+        const vc = visualCols[c]
+        const col = info.startCol + vc
         if (col > maxCol) maxCol = col
-        const y = baseline + chainRise - c * RISE_PER_COL
+        const y = baseline + chainRise - vc * RISE_PER_COL
         posMap[stepId] = {
           x: (col + 1) * (NODE_W + TIDY_H_GAP),  // col 0 reserved for Start
           y,
