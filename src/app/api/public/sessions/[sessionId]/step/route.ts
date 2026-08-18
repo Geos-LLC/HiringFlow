@@ -62,7 +62,7 @@ export async function GET(
       stepOrder: true,
       combinedWithId: true,
       buttonConfig: true,
-      options: { select: { nextStepId: true } },
+      options: { select: { nextStepId: true }, orderBy: { createdAt: 'asc' } },
     },
   })
 
@@ -605,6 +605,23 @@ export async function GET(
       total: totalSteps,
     },
     stepIds: visibleStepIds,
+    _debugProgress: {
+      rootIds: rootSearchOrder,
+      mainPathIds: mainPath,
+      allStepsCount: allSteps.length,
+      combinedPartnersCount: combinedPartners.size,
+      forkSiblingsCount: forkSiblings.size,
+      // First 5 steps in stepOrder to see structure
+      first5: sortedByOrder.slice(0, 5).map((s) => ({
+        id: s.id,
+        stepOrder: s.stepOrder,
+        combinedWithId: s.combinedWithId,
+        btn: (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId ?? null,
+        optionTargets: s.options.map((o) => o.nextStepId).filter(Boolean),
+        isPartner: combinedPartners.has(s.id),
+        isFork: forkSiblings.has(s.id),
+      })),
+    },
     combinedStep,
     companions,
     chainVideoUrl,
