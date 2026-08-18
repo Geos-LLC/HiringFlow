@@ -683,13 +683,12 @@ export default function FlowSchemaView({
     // to column 0.
     const stepIndexById = new Map<string, number>()
     sorted.forEach((s, i) => stepIndexById.set(s.id, i))
-    // Right-align short fork branches so they sit close to End instead of
-    // stacking under the middle of the main chain. Rule the user asked
-    // for: at a fork, the branch with less downstream reach shifts to
-    // the right — visually the deep chain flows straight, the stubby
-    // branch tucks itself near the endpoint with a short arrow to End.
-    const mainRowLen = rows[0]?.length ?? 1
-    const mainRowMaxCol = Math.max(0, mainRowLen - 1)
+    // Branch placement: start at parent.col + 1 (or + 2 if parent's main
+    // chain continues there so we don't overlap the main). Sibling rank
+    // shifts additional branches one col right so multiple branches
+    // from the same fork step-stack rather than pile up. Right-align
+    // heuristic was removed — pushing every short branch to the far
+    // right created a messy tangle for flows with many forks.
     const startColFor = (r: number): number => {
       const p = rowParent.get(r)
       if (p) {
@@ -698,15 +697,8 @@ export default function FlowSchemaView({
         const parentHasMain = mainChild
           ? rows[p.row][p.col + 1] === mainChild
           : false
-        // Never place a branch at or before the parent's next-main slot.
         const floorCol = p.col + (parentHasMain ? 2 : 1)
-        // Right-aligned position — branch's LAST card sits at mainRowMaxCol,
-        // so its arrow to End is as short as possible.
-        const rightAligned = mainRowMaxCol - rows[r].length + 1
-        // Sibling rank shifts further right per additional sibling, so
-        // multiple short branches from the same fork step-stack rather
-        // than pile up.
-        return Math.max(floorCol, rightAligned) + (siblingRank.get(r) ?? 0)
+        return floorCol + (siblingRank.get(r) ?? 0)
       }
       const idx = stepIndexById.get(rows[r][0]) ?? 0
       return idx
