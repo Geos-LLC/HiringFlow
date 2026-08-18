@@ -59,6 +59,7 @@ export async function GET(
     orderBy: { stepOrder: 'asc' },
     select: {
       id: true,
+      title: true,
       stepOrder: true,
       combinedWithId: true,
       buttonConfig: true,
@@ -633,23 +634,55 @@ export async function GET(
       total: totalSteps,
     },
     stepIds: visibleStepIds,
-    _debugProgress: {
-      rootIds: rootSearchOrder,
-      mainPathIds: mainPath,
-      allStepsCount: allSteps.length,
-      combinedPartnersCount: combinedPartners.size,
-      forkSiblingsCount: forkSiblings.size,
-      // First 5 steps in stepOrder to see structure
-      first5: sortedByOrder.slice(0, 5).map((s) => ({
-        id: s.id,
-        stepOrder: s.stepOrder,
-        combinedWithId: s.combinedWithId,
-        btn: (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId ?? null,
-        optionTargets: s.options.map((o) => o.nextStepId).filter(Boolean),
-        isPartner: combinedPartners.has(s.id),
-        isFork: forkSiblings.has(s.id),
-      })),
-    },
+    _debugProgress: (() => {
+      const stepInfo = async (id: string) => {
+        const full = await prisma.flowStep.findUnique({
+          where: { id },
+          select: { id: true, title: true, stepOrder: true, combinedWithId: true, buttonConfig: true, options: { select: { nextStepId: true }, orderBy: { createdAt: 'asc' } } },
+        })
+        return full ? {
+          id: full.id.slice(0, 8),
+          title: full.title,
+          stepOrder: full.stepOrder,
+          combinedWithId: full.combinedWithId?.slice(0, 8) ?? null,
+          btn: (full.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId?.slice(0, 8) ?? null,
+          optionTargets: full.options.map((o) => o.nextStepId?.slice(0, 8) ?? null).filter(Boolean),
+          isPartner: combinedPartners.has(full.id),
+          isFork: forkSiblings.has(full.id),
+        } : null
+      }
+      return {
+        rootIds: rootSearchOrder.map((r) => r.slice(0, 8)),
+        mainPathIds: mainPath.map((id) => id.slice(0, 8)),
+        mainPathTitles: mainPath.map((id) => stepById.get(id)?.title ?? '?'),
+        lastStepId: mainPath[mainPath.length - 1]?.slice(0, 8),
+        lastStepWiring: (() => {
+          const last = mainPath[mainPath.length - 1]
+          if (!last) return null
+          const s = stepById.get(last)
+          if (!s) return null
+          return {
+            btn: (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId?.slice(0, 8) ?? null,
+            combinedWithId: s.combinedWithId?.slice(0, 8) ?? null,
+            optionTargets: s.options.map((o) => o.nextStepId?.slice(0, 8) ?? null).filter(Boolean),
+          }
+        })(),
+        allStepsCount: allSteps.length,
+        combinedPartnersCount: combinedPartners.size,
+        forkSiblingsCount: forkSiblings.size,
+        // All non-partner, non-fork steps not in main path (why aren't they reached?)
+        orphans: sortedByOrder
+          .filter((s) => !combinedPartners.has(s.id) && !forkSiblings.has(s.id) && !mainPath.includes(s.id))
+          .map((s) => ({
+            id: s.id.slice(0, 8),
+            title: s.title,
+            stepOrder: s.stepOrder,
+          })),
+      }
+      // (async stepInfo helper defined above but unused — keeping the
+      // synchronous view for now to avoid making the whole IIFE async.)
+      void stepInfo
+    })(),
     combinedStep,
     companions,
     chainVideoUrl,
