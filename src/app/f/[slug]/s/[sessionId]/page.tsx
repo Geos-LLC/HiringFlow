@@ -1403,8 +1403,15 @@ export default function SessionPlayerPage() {
                 </div>
                 <span className="font-semibold text-[15px] text-white tracking-[-0.01em] drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)]">HireFunnel</span>
               </div>
-              {/* Overlay questions on mobile */}
-              {renderQuestionContent(true)}
+              {/* Question panel — hidden while the video plays so the user
+                  sees just the video, then fades in as an overlay when the
+                  video ends (mirrors the desktop right-sidebar behavior).
+                  Preview/no-video steps show it immediately via showOptions. */}
+              <div
+                className={`transition-opacity duration-300 ${showOptions ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+              >
+                {renderQuestionContent(true)}
+              </div>
             </div>
           ) : (
             <div className="text-white text-center p-6">
