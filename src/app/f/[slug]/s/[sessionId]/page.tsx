@@ -111,6 +111,12 @@ interface StepData {
   options: StepOption[]
   finished?: boolean
   companions?: Array<{ stepId: string; stepType: string; questionType?: string | null; questionText?: string | null; captureConfig: CaptureStepConfig | null; filename?: string | null }>
+  // First video URL found anywhere in the combined chain, in case the
+  // current step is a text-Q/capture with no video of its own — the
+  // candidate should still see the intro video on the left panel.
+  chainVideoUrl?: string | null
+  chainVideoHlsUrl?: string | null
+  chainVideoStatus?: string | null
 }
 
 export default function SessionPlayerPage() {
@@ -1106,9 +1112,9 @@ export default function SessionPlayerPage() {
           style={{ background: '#0f0e0c', boxShadow: 'var(--shadow-card)' }}
         >
           {(() => {
-            const videoUrl = safeVideoUrl(step.videoUrl || step.combinedStep?.videoUrl)
-            const videoHlsUrl = safeVideoUrl(step.videoUrl ? step.videoHlsUrl : step.combinedStep?.videoHlsUrl)
-            const videoStatus = step.videoUrl ? step.videoStatus : step.combinedStep?.videoStatus
+            const videoUrl = safeVideoUrl(step.videoUrl || step.combinedStep?.videoUrl || step.chainVideoUrl)
+            const videoHlsUrl = safeVideoUrl(step.videoUrl ? step.videoHlsUrl : (step.combinedStep?.videoUrl ? step.combinedStep?.videoHlsUrl : step.chainVideoHlsUrl))
+            const videoStatus = step.videoUrl ? step.videoStatus : (step.combinedStep?.videoUrl ? step.combinedStep?.videoStatus : step.chainVideoStatus)
             const videoSegments = step.videoUrl ? step.segments : step.combinedStep?.segments
             const videoCaptionsEnabled = step.videoUrl ? step.captionsEnabled : step.combinedStep?.captionsEnabled
             if (videoUrl) {

@@ -216,7 +216,12 @@ export async function GET(
   // candidate UI uses this to render a "How would you like to answer?"
   // choice on a single card when a text-field question is combined
   // with audio (capture) / video (submission) companions and/or a
-  // question-with-video primary.
+  // question-with-video primary. Also finds a chain-wide video so the
+  // left panel keeps showing the intro video even when the current
+  // lastStep is a text-Q or capture step (no videoUrl of its own).
+  let chainVideoUrl: string | null = null
+  let chainVideoHlsUrl: string | null = null
+  let chainVideoStatus: string | null = null
   const companions: Array<{ stepId: string; stepType: string; questionType?: string | null; questionText?: string | null; captureConfig: unknown; filename?: string | null }> = []
   {
     // First find the chain LEADER by walking backward via
@@ -237,11 +242,16 @@ export async function GET(
     let cursor: string | null | undefined = leaderId
     while (cursor && !fwdSeen.has(cursor)) {
       fwdSeen.add(cursor)
-      const m: { id: string; stepType: string; questionType: string | null; questionText: string | null; captureConfig: unknown; combinedWithId: string | null } | null = await prisma.flowStep.findUnique({
+      const m: { id: string; stepType: string; questionType: string | null; questionText: string | null; captureConfig: unknown; combinedWithId: string | null; video: { storageKey: string; hlsManifestUrl: string | null; status: string | null } | null } | null = await prisma.flowStep.findUnique({
         where: { id: cursor },
-        select: { id: true, stepType: true, questionType: true, questionText: true, captureConfig: true, combinedWithId: true },
+        select: { id: true, stepType: true, questionType: true, questionText: true, captureConfig: true, combinedWithId: true, video: { select: { storageKey: true, hlsManifestUrl: true, status: true } } },
       })
       if (!m) break
+      if (m.video && !chainVideoUrl) {
+        chainVideoUrl = getVideoUrl(m.video.storageKey)
+        chainVideoHlsUrl = m.video.hlsManifestUrl ?? null
+        chainVideoStatus = m.video.status ?? null
+      }
       if (m.id !== step.id) {
         companions.push({
           stepId: m.id,
@@ -450,6 +460,9 @@ export async function GET(
     stepIds: visibleStepIds,
     combinedStep,
     companions,
+    chainVideoUrl,
+    chainVideoHlsUrl,
+    chainVideoStatus,
     options: step.options.map((o) => ({
       optionId: o.id,
       text: o.optionText,
