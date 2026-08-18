@@ -1925,7 +1925,20 @@ export default function FlowSchemaView({
     // matches across all connection types. Where arrows would otherwise
     // overlap (backward loopbacks), the lane-routing system below assigns
     // each its own bezier path.
-    for (const conn of allConnections) {
+    // Sort so the SELECTED arrow paints LAST → ends up on top of the pile
+    // when multiple arrows converge on the same target (e.g. many branches
+    // pointing at End). Lets the user grab / drag the active arrow's
+    // handle instead of grabbing whichever arrow happens to be drawn last.
+    const sortedConnections = [...allConnections].sort((a, b) => {
+      const aSel = a.kind === 'button'
+        ? (selectedArrow?.kind === 'button' && selectedArrow.stepId === a.sourceId ? 1 : 0)
+        : (selectedArrow?.optionId === a.optionId ? 1 : 0)
+      const bSel = b.kind === 'button'
+        ? (selectedArrow?.kind === 'button' && selectedArrow.stepId === b.sourceId ? 1 : 0)
+        : (selectedArrow?.optionId === b.optionId ? 1 : 0)
+      return aSel - bSel
+    })
+    for (const conn of sortedConnections) {
       // Intra-chain edges are implicit in the combined box — skip.
       if (isIntraCombinedPair(conn.sourceId, conn.targetId)) continue
       // Use visualPortsFor so ports come from RENDERED positions (stack-
