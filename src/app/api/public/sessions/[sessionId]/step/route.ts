@@ -179,6 +179,23 @@ export async function GET(
     const parent = allSteps.find((s) => s.combinedWithId === sid)
     return parent ? primaryOf(parent.id) : sid
   }
+  // Fork siblings — steps that are secondary targets from a fork (not
+  // on the primary path). Used to skip them during the stepOrder
+  // fallback so the main path doesn't accidentally jump onto a NO
+  // branch when a step's forward wiring is absent.
+  const forkSiblings = new Set<string>()
+  for (const s of allSteps) {
+    const targets: string[] = []
+    for (const o of s.options) {
+      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) targets.push(o.nextStepId)
+    }
+    const b = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+    if (b && b !== '__end__' && stepById.has(b)) targets.push(b)
+    // If a step has 2+ forward targets, all EXCEPT the first are forks.
+    if (targets.length > 1) {
+      for (let i = 1; i < targets.length; i++) forkSiblings.add(targets[i])
+    }
+  }
   const primaryPathCache = new Map<string, string[]>()
   const primaryInFlight = new Set<string>()
   const primaryPathFrom = (startId: string): string[] => {
@@ -196,6 +213,20 @@ export async function GET(
       // First option with a non-end target wins as primary.
       for (const o of s.options) {
         if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) { nextId = o.nextStepId; break }
+      }
+    }
+    // stepOrder fallback — mirrors the answer route's fallback so the
+    // main path chain doesn't terminate early on steps that lack any
+    // explicit forward wiring (very common for auto-generated flows).
+    // Skip forks and combined partners so we don't jump onto a NO
+    // branch or a sliver.
+    if (!nextId) {
+      for (const cand of sortedByOrder) {
+        if (cand.stepOrder <= s.stepOrder) continue
+        if (forkSiblings.has(cand.id)) continue
+        if (combinedPartners.has(cand.id)) continue
+        nextId = cand.id
+        break
       }
     }
     const tail = nextId ? primaryPathFrom(nextId) : []
