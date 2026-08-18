@@ -245,65 +245,77 @@ export async function GET(
 
   void step.stepOrder
 
-  // Check if this step has a combined partner
-  let combinedStep = null
-  const combinedWithId = (step as any).combinedWithId as string | null
-  if (combinedWithId) {
-    const partner = await prisma.flowStep.findUnique({
-      where: { id: combinedWithId },
-      include: { video: true, options: { orderBy: { createdAt: 'asc' } } },
-    })
-    if (partner) {
-      combinedStep = {
-        stepId: partner.id,
-        title: partner.title,
-        videoUrl: partner.video ? getVideoUrl(partner.video.storageKey) : null,
-        videoHlsUrl: partner.video?.hlsManifestUrl ?? null,
-        videoStatus: partner.video?.status ?? null,
-        questionText: partner.questionText,
-        stepType: partner.stepType,
-        questionType: partner.questionType,
-        infoContent: (partner as any).infoContent || null,
-        captionsEnabled: partner.captionsEnabled,
-        segments: partner.captionsEnabled && partner.video ? (partner.video as any).segments || [] : [],
-        formEnabled: partner.formEnabled || partner.stepType === 'form',
-        formConfig: partner.formConfig,
-        options: partner.options.map((o) => ({
-          optionId: o.id,
-          text: o.optionText,
-          nextStepId: o.nextStepId,
-        })),
+  // Walk the ENTIRE combinedWithId chain (both directions) and pick the
+  // best partner to expose as combinedStep. Priority for chains of 3+:
+  //   1. First chain member that's a question with options — that's the
+  //      one the candidate actually answers.
+  //   2. Any chain member with options.length > 0.
+  //   3. Any chain member that's a question step (even without options).
+  //   4. The direct partner (fallback for legacy 2-chains with no question).
+  // Without this walk, a middle member of a 3-chain would return the
+  // WRONG partner (typically its forward neighbor), hiding the question
+  // options from the candidate.
+  let combinedStep: {
+    stepId: string; title: string; videoUrl: string | null; videoHlsUrl: string | null;
+    videoStatus: string | null; questionText: string | null; stepType: string;
+    questionType: string | null; infoContent: string | null; captionsEnabled: boolean;
+    segments: unknown[]; formEnabled: boolean; formConfig: unknown;
+    options: Array<{ optionId: string; text: string; nextStepId: string | null }>;
+  } | null = null
+  {
+    const chainIds = new Set<string>([step.id])
+    // forward walk
+    let fwd: string | null | undefined = (step as any).combinedWithId
+    while (fwd && !chainIds.has(fwd)) {
+      chainIds.add(fwd)
+      const nx = await prisma.flowStep.findUnique({ where: { id: fwd }, select: { combinedWithId: true } })
+      fwd = nx?.combinedWithId
+    }
+    // backward walk (repeatedly find any step whose combinedWithId ∈ chain)
+    let grew = true
+    while (grew) {
+      grew = false
+      const parents = await prisma.flowStep.findMany({
+        where: { flowId: session.flowId, combinedWithId: { in: Array.from(chainIds) } },
+        select: { id: true },
+      })
+      for (const p of parents) {
+        if (!chainIds.has(p.id)) { chainIds.add(p.id); grew = true }
       }
     }
-  }
-
-  // Also check if another step combines WITH this step
-  if (!combinedStep) {
-    const reversePartner = await prisma.flowStep.findFirst({
-      where: { combinedWithId: step.id },
-      include: { video: true, options: { orderBy: { createdAt: 'asc' } } },
-    })
-    if (reversePartner) {
-      combinedStep = {
-        stepId: reversePartner.id,
-        title: reversePartner.title,
-        videoUrl: reversePartner.video ? getVideoUrl(reversePartner.video.storageKey) : null,
-        videoHlsUrl: reversePartner.video?.hlsManifestUrl ?? null,
-        videoStatus: reversePartner.video?.status ?? null,
-        questionText: reversePartner.questionText,
-        stepType: reversePartner.stepType,
-        questionType: reversePartner.questionType,
-        infoContent: (reversePartner as any).infoContent || null,
-        captionsEnabled: reversePartner.captionsEnabled,
-        segments: reversePartner.captionsEnabled && reversePartner.video ? (reversePartner.video as any).segments || [] : [],
-        formEnabled: reversePartner.formEnabled || reversePartner.stepType === 'form',
-        formConfig: reversePartner.formConfig,
-        options: reversePartner.options.map((o) => ({
-          optionId: o.id,
-          text: o.optionText,
-          nextStepId: o.nextStepId,
-        })),
-      }
+    const otherIds = Array.from(chainIds).filter((id) => id !== step.id)
+    if (otherIds.length > 0) {
+      const members = await prisma.flowStep.findMany({
+        where: { id: { in: otherIds } },
+        include: { video: true, options: { orderBy: { createdAt: 'asc' } } },
+      })
+      const shape = (m: (typeof members)[number]) => ({
+        stepId: m.id,
+        title: m.title,
+        videoUrl: m.video ? getVideoUrl(m.video.storageKey) : null,
+        videoHlsUrl: m.video?.hlsManifestUrl ?? null,
+        videoStatus: m.video?.status ?? null,
+        questionText: m.questionText,
+        stepType: m.stepType,
+        questionType: m.questionType,
+        infoContent: (m as any).infoContent || null,
+        captionsEnabled: m.captionsEnabled,
+        segments: m.captionsEnabled && m.video ? (m.video as any).segments || [] : [],
+        formEnabled: m.formEnabled || m.stepType === 'form',
+        formConfig: m.formConfig,
+        options: m.options.map((o) => ({ optionId: o.id, text: o.optionText, nextStepId: o.nextStepId })),
+      })
+      // Priority selection
+      const questionWithOptions = members.find((m) => m.stepType === 'question' && m.options.length > 0)
+      const anyWithOptions = questionWithOptions || members.find((m) => m.options.length > 0)
+      const anyQuestion = anyWithOptions || members.find((m) => m.stepType === 'question')
+      // Legacy fallback: direct partner (forward), then reverse
+      let directPartner: (typeof members)[number] | undefined
+      const directFwdId = (step as any).combinedWithId as string | null
+      if (directFwdId) directPartner = members.find((m) => m.id === directFwdId)
+      if (!directPartner) directPartner = members.find((m) => (m as any).combinedWithId === step.id)
+      const chosen = anyQuestion || directPartner || members[0]
+      if (chosen) combinedStep = shape(chosen)
     }
   }
 
