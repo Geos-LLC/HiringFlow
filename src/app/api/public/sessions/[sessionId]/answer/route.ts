@@ -86,37 +86,15 @@ export async function POST(
       const target = (override && override.length > 0) ? override : buttonNext
       if (target === '__end__') return finishSession()
       if (target) return advanceTo(target)
-      // stepOrder fallback: skip only the IMMEDIATE sibling branches of the
-      // fork that led to the current step. Fork parent = any step X that
-      // routes to the current step via option/button; siblings = X's OTHER
-      // targets. So a YES-branch leaf falls through past the NO-branch
-      // leaf, but doesn't skip further-out steps that are targets of
-      // OTHER forks. Prevents both the "YES lands on NO video" bug and
-      // the over-eager "skips half the flow" regression.
-      const allSteps = await prisma.flowStep.findMany({
-        where: { flowId: session.flowId },
-        select: { id: true, stepOrder: true, buttonConfig: true, options: { select: { nextStepId: true } } },
+      // Plain sequential fallback: next step by stepOrder. Skip-siblings
+      // heuristics kept mis-routing (either landed on the wrong branch or
+      // over-jumped past the flow). Recruiter wires Continue explicitly
+      // via buttonConfig for any non-sequential next.
+      const nextStep = await prisma.flowStep.findFirst({
+        where: { flowId: session.flowId, stepOrder: { gt: step.stepOrder } },
         orderBy: { stepOrder: 'asc' },
       })
-      const siblings = new Set<string>()
-      for (const x of allSteps) {
-        const xTargets: string[] = []
-        for (const o of x.options) {
-          if (o.nextStepId && o.nextStepId !== '__end__') xTargets.push(o.nextStepId)
-        }
-        const xBtn = (x.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-        if (xBtn && xBtn !== '__end__') xTargets.push(xBtn)
-        // Is the current step one of X's targets? If yes, X is a parent
-        // fork of us — X's OTHER targets are our siblings.
-        if (xTargets.includes(step.id)) {
-          for (const t of xTargets) if (t !== step.id) siblings.add(t)
-        }
-      }
-      for (const cand of allSteps) {
-        if (cand.stepOrder <= step.stepOrder) continue
-        if (siblings.has(cand.id)) continue
-        return advanceTo(cand.id)
-      }
+      if (nextStep) return advanceTo(nextStep.id)
       return finishSession()
     }
 
