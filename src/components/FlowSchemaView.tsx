@@ -2054,12 +2054,21 @@ export default function FlowSchemaView({
         // Delete on an End-selected arrow is suppressed globally to avoid
         // clearing the End card by accident (see keyboard handler).
         if (isThisEndSelected) {
-          // Draw handles on BOTH ends of the selected end arrow so the
-          // user can grab either the source-side or the End-side to
-          // reconnect. Also drawn AFTER the sort so this iteration is
-          // the last-paint winner over any other arrow's endpoint dots.
           drawDragHandle(ctx, g.fromX, g.fromY, SELECTED_COLOR)
           drawDragHandle(ctx, g.toX, g.toY, SELECTED_COLOR)
+          // DEBUG marker — cyan circles at the exact endpoint coords so
+          // you can see where my code thinks the hit zone is vs where
+          // your cursor lands.
+          ctx.beginPath()
+          ctx.arc(g.fromX, g.fromY, 24, 0, Math.PI * 2)
+          ctx.strokeStyle = '#00e5ff'
+          ctx.lineWidth = 1
+          ctx.setLineDash([3, 3])
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.arc(g.toX, g.toY, 24, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.setLineDash([])
         } else {
           const isPlusHovered = hoveredPort === `__insert_end_${stepId}`
           drawInsertButton(ctx, eMidX, eMidY, isPlusHovered)
@@ -3017,6 +3026,23 @@ export default function FlowSchemaView({
 
   const handleMouseMove = (e: React.MouseEvent) => {
     const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
+
+    // DEBUG: throttled mouse-tracking log for the selected end arrow.
+    // Fires at most every 100ms so DevTools stays readable.
+    if (selectedArrow?.kind === 'end') {
+      const now = Date.now()
+      const lastLog = (window as any).__endArrowLogAt || 0
+      if (now - lastLog > 100) {
+        ;(window as any).__endArrowLogAt = now
+        const g = endArrowGeomByStep.get(selectedArrow.stepId)
+        // eslint-disable-next-line no-console
+        console.log('[end-arrow] mouse', {
+          mouse: { canvas: { cx, cy }, client: { x: e.clientX, y: e.clientY } },
+          circleFrom: g ? { x: g.fromX, y: g.fromY, d: Math.round(dist(cx, cy, g.fromX, g.fromY)) } : null,
+          circleTo: g ? { x: g.toX, y: g.toY, d: Math.round(dist(cx, cy, g.toX, g.toY)) } : null,
+        })
+      }
+    }
 
     // Promote a pending port interaction to a real connecting drag once
     // the cursor has drifted past the threshold. Below threshold the
