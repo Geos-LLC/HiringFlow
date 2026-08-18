@@ -865,8 +865,10 @@ export default function SessionPlayerPage() {
           </div>
         )}
 
-        {/* Submission — Continue button */}
-        {step.stepType === 'submission' && (
+        {/* Submission — Continue button. Suppressed when the chain has a
+            question partner: that partner's own submit button (rendered in
+            the effStepType === 'question' branch above) handles advance. */}
+        {step.stepType === 'submission' && !questionStep && (
           <div className={`space-y-4 ${overlay ? '' : 'max-w-md mx-auto'}`}>
             <button
               onClick={async () => {
@@ -988,8 +990,9 @@ export default function SessionPlayerPage() {
           </div>
         )}
 
-        {/* Info Step */}
-        {step.stepType === 'info' && (
+        {/* Info Step. Suppressed when the chain has a question partner —
+            the partner's submit takes over the advance action. */}
+        {step.stepType === 'info' && !questionStep && (
           <div className={overlay ? '' : 'max-w-md mx-auto'}>
             {step.infoContent && (
               <p className={`text-sm ${textColorClass} mb-4 whitespace-pre-wrap`}>{step.infoContent}</p>
