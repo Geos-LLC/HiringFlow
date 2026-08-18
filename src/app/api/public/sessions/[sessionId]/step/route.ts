@@ -182,19 +182,38 @@ export async function GET(
   // Fork siblings — steps that are secondary targets from a fork (not
   // on the primary path). Used to skip them during the stepOrder
   // fallback so the main path doesn't accidentally jump onto a NO
-  // branch when a step's forward wiring is absent.
+  // branch when a step's forward wiring is absent. Dedupe targets so
+  // an option list like [A,A,A,B,B] doesn't mark A as a fork just
+  // because it appears in position [1].
   const forkSiblings = new Set<string>()
   for (const s of allSteps) {
-    const targets: string[] = []
+    const targetsList: string[] = []
     for (const o of s.options) {
-      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) targets.push(o.nextStepId)
+      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) targetsList.push(o.nextStepId)
     }
     const b = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-    if (b && b !== '__end__' && stepById.has(b)) targets.push(b)
-    // If a step has 2+ forward targets, all EXCEPT the first are forks.
+    if (b && b !== '__end__' && stepById.has(b)) targetsList.push(b)
+    const targets = Array.from(new Set(targetsList))
     if (targets.length > 1) {
       for (let i = 1; i < targets.length; i++) forkSiblings.add(targets[i])
     }
+  }
+  // Walk forward through combinedWithId to collect every member of the
+  // combined chain rooted at headId. The chain's "exit" is the first
+  // wired forward connection (button then first option) on ANY member —
+  // NOT on the tail alone, since exits often live on the leader.
+  const chainMembersFrom = (headId: string): string[] => {
+    const members: string[] = [headId]
+    const seen = new Set<string>([headId])
+    let cur = stepById.get(headId)
+    while (cur) {
+      const nx = cur.combinedWithId
+      if (!nx || seen.has(nx) || !stepById.has(nx)) break
+      members.push(nx)
+      seen.add(nx)
+      cur = stepById.get(nx)
+    }
+    return members
   }
   const primaryPathCache = new Map<string, string[]>()
   const primaryInFlight = new Set<string>()
@@ -204,27 +223,36 @@ export async function GET(
     primaryInFlight.add(startId)
     const s = stepById.get(startId)
     if (!s) { primaryInFlight.delete(startId); return [] }
-    // Pick the primary successor.
+    // Collect the whole combined chain so we can look for the exit on
+    // any member. Chain members are OFF the main path (they render as
+    // slivers on the leader), so the walker must skip them and jump to
+    // the chain's exit target.
+    const chain = combinedPartners.has(startId) ? [startId] : chainMembersFrom(startId)
+    const chainSet = new Set(chain)
+    // Pick the primary EXIT: button then first option, scanning members
+    // in chain order (leader first) — matches the answer route's chain
+    // exit resolution.
     let nextId: string | null = null
-    const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-    if (btn && btn !== '__end__' && stepById.has(btn)) nextId = btn
-    if (!nextId && s.combinedWithId && stepById.has(s.combinedWithId)) nextId = s.combinedWithId
-    if (!nextId) {
-      // First option with a non-end target wins as primary.
-      for (const o of s.options) {
-        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) { nextId = o.nextStepId; break }
+    for (const mid of chain) {
+      const m = stepById.get(mid)
+      if (!m) continue
+      const btn = (m.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+      if (btn && btn !== '__end__' && stepById.has(btn) && !chainSet.has(btn)) { nextId = btn; break }
+      for (const o of m.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !chainSet.has(o.nextStepId)) { nextId = o.nextStepId; break }
       }
+      if (nextId) break
     }
-    // stepOrder fallback — mirrors the answer route's fallback so the
-    // main path chain doesn't terminate early on steps that lack any
-    // explicit forward wiring (very common for auto-generated flows).
-    // Skip forks and combined partners so we don't jump onto a NO
-    // branch or a sliver.
+    // stepOrder fallback — mirrors the answer route so the main path
+    // doesn't terminate early on steps whose forward wiring is absent.
+    // Skip forks, combined partners, and any chain member.
     if (!nextId) {
+      const chainMaxOrder = Math.max(...chain.map((id) => stepById.get(id)?.stepOrder ?? 0))
       for (const cand of sortedByOrder) {
-        if (cand.stepOrder <= s.stepOrder) continue
+        if (cand.stepOrder <= chainMaxOrder) continue
         if (forkSiblings.has(cand.id)) continue
         if (combinedPartners.has(cand.id)) continue
+        if (chainSet.has(cand.id)) continue
         nextId = cand.id
         break
       }
