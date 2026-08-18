@@ -186,19 +186,10 @@ export async function GET(
   // branch when a step's forward wiring is absent. Dedupe targets so
   // an option list like [A,A,A,B,B] doesn't mark A as a fork just
   // because it appears in position [1].
+  // Populated AFTER downstreamReach is defined so we can pick the
+  // primary as the target with LARGEST downstream reach. The others
+  // are forks (used only by the stepOrder fallback).
   const forkSiblings = new Set<string>()
-  for (const s of allSteps) {
-    const targetsList: string[] = []
-    for (const o of s.options) {
-      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) targetsList.push(o.nextStepId)
-    }
-    const b = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-    if (b && b !== '__end__' && stepById.has(b)) targetsList.push(b)
-    const targets = Array.from(new Set(targetsList))
-    if (targets.length > 1) {
-      for (let i = 1; i < targets.length; i++) forkSiblings.add(targets[i])
-    }
-  }
   // Walk forward through combinedWithId to collect every member of the
   // combined chain rooted at headId. The chain's "exit" is the first
   // wired forward connection (button then first option) on ANY member —
@@ -216,6 +207,54 @@ export async function GET(
     }
     return members
   }
+  // Downstream reach — count of unique non-partner steps reachable
+  // from a given start via any option/button/combinedWithId. Used to
+  // choose between fork options: pick the one that leads to MORE
+  // remaining flow, so YES (which continues) beats NO (dead-end).
+  const reachCache = new Map<string, number>()
+  const reachInFlight = new Set<string>()
+  const downstreamReach = (id: string): number => {
+    if (reachCache.has(id)) return reachCache.get(id)!
+    if (reachInFlight.has(id)) return 0
+    reachInFlight.add(id)
+    const s = stepById.get(id)
+    if (!s) { reachInFlight.delete(id); return 0 }
+    let best = 0
+    const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+    if (btn && btn !== '__end__' && stepById.has(btn)) best = Math.max(best, downstreamReach(btn))
+    for (const o of s.options) {
+      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) {
+        best = Math.max(best, downstreamReach(o.nextStepId))
+      }
+    }
+    if (s.combinedWithId && stepById.has(s.combinedWithId)) best = Math.max(best, downstreamReach(s.combinedWithId))
+    reachInFlight.delete(id)
+    const self = combinedPartners.has(id) ? 0 : 1
+    const result = self + best
+    reachCache.set(id, result)
+    return result
+  }
+  // Now that downstreamReach is defined, seed forkSiblings.
+  for (const s of allSteps) {
+    const targetsList: string[] = []
+    for (const o of s.options) {
+      if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) targetsList.push(o.nextStepId)
+    }
+    const b = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+    if (b && b !== '__end__' && stepById.has(b)) targetsList.push(b)
+    const targets = Array.from(new Set(targetsList))
+    if (targets.length > 1) {
+      // Primary = target with largest downstream reach; the rest are forks.
+      let primaryIdx = 0
+      let bestR = -1
+      targets.forEach((t, i) => {
+        const r = downstreamReach(t)
+        if (r > bestR) { bestR = r; primaryIdx = i }
+      })
+      targets.forEach((t, i) => { if (i !== primaryIdx) forkSiblings.add(t) })
+    }
+  }
+
   const primaryPathCache = new Map<string, string[]>()
   const primaryInFlight = new Set<string>()
   const primaryPathFrom = (startId: string): string[] => {
@@ -230,19 +269,24 @@ export async function GET(
     // the chain's exit target.
     const chain = combinedPartners.has(startId) ? [startId] : chainMembersFrom(startId)
     const chainSet = new Set(chain)
-    // Pick the primary EXIT: button then first option, scanning members
-    // in chain order (leader first) — matches the answer route's chain
-    // exit resolution.
-    let nextId: string | null = null
+    // Collect all candidate exit targets from every chain member.
+    // Then pick the one with the LARGEST downstream reach — that's the
+    // continuation of the main flow, not a dead-end fork.
+    const exitCandidates: string[] = []
     for (const mid of chain) {
       const m = stepById.get(mid)
       if (!m) continue
       const btn = (m.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-      if (btn && btn !== '__end__' && stepById.has(btn) && !chainSet.has(btn)) { nextId = btn; break }
+      if (btn && btn !== '__end__' && stepById.has(btn) && !chainSet.has(btn)) exitCandidates.push(btn)
       for (const o of m.options) {
-        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !chainSet.has(o.nextStepId)) { nextId = o.nextStepId; break }
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !chainSet.has(o.nextStepId)) exitCandidates.push(o.nextStepId)
       }
-      if (nextId) break
+    }
+    let nextId: string | null = null
+    let bestReach = -1
+    for (const c of exitCandidates) {
+      const r = downstreamReach(c)
+      if (r > bestReach) { bestReach = r; nextId = c }
     }
     // stepOrder fallback — mirrors the answer route so the main path
     // doesn't terminate early on steps whose forward wiring is absent.
