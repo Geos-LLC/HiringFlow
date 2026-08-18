@@ -1150,11 +1150,27 @@ export default function FlowBuilderPage() {
   const connectSteps = async (fromStepId: string, toStepId: string): Promise<string | null> => {
     flowTrace('api.connectSteps.start', { fromStepId, toStepId })
     markChanged()
-    // Create a new option on the source step pointing to the target
+    // Auto-label the option based on the source step type:
+    //   - Question step → derive from target step title (candidates see
+    //     meaningful answer labels instead of "Continue Continue Continue"
+    //     when the recruiter wires multiple options via drag-to-connect).
+    //   - Any other step type → default to "Continue" (single implicit
+    //     link that the video/info step's Continue button represents).
+    const fromStep = flow?.steps.find((s) => s.id === fromStepId)
+    const toStep = flow?.steps.find((s) => s.id === toStepId)
+    let defaultText = 'Continue'
+    if (fromStep?.stepType === 'question') {
+      // Use the target step title minus any leading numeric prefix
+      // ("4-1 Equipment answer YES" → "Equipment answer YES"). Falls
+      // back to "Option N" when there's no useful title.
+      const cleanTargetTitle = (toStep?.title || '').replace(/^\d+[\-\.\s]*/, '').trim()
+      const currentOptionCount = fromStep.options?.length ?? 0
+      defaultText = cleanTargetTitle || `Option ${currentOptionCount + 1}`
+    }
     const res = await fetch(`/api/steps/${fromStepId}/options`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ optionText: 'Continue' }),
+      body: JSON.stringify({ optionText: defaultText }),
     })
     flowTrace('api.connectSteps.postOption', { fromStepId, ok: res.ok, status: res.status })
     if (res.ok) {

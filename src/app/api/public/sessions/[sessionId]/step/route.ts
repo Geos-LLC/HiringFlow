@@ -408,7 +408,16 @@ export async function GET(
         segments: m.captionsEnabled && m.video ? (m.video as any).segments || [] : [],
         formEnabled: m.formEnabled || m.stepType === 'form',
         formConfig: m.formConfig,
-        options: m.options.map((o) => ({ optionId: o.id, text: o.optionText, nextStepId: o.nextStepId })),
+        options: m.options.map((o) => {
+          const isGeneric = !o.optionText || o.optionText.trim() === '' || o.optionText === 'Continue'
+          let text = o.optionText
+          if (isGeneric && o.nextStepId && o.nextStepId !== '__end__') {
+            const target = stepById.get(o.nextStepId)
+            const cleanTitle = (target?.title || '').replace(/^\d+[\-\.\s]*/, '').trim()
+            if (cleanTitle) text = cleanTitle
+          }
+          return { optionId: o.id, text, nextStepId: o.nextStepId }
+        }),
       })
       // Priority selection
       const questionWithOptions = members.find((m) => m.stepType === 'question' && m.options.length > 0)
@@ -734,7 +743,20 @@ export async function GET(
     chainVideoStatus,
     options: step.options.map((o) => ({
       optionId: o.id,
-      text: o.optionText,
+      // Legacy connectSteps hard-coded optionText = "Continue" for every
+      // drag-connected option — question steps with 3 answer options
+      // ended up showing three "Continue" buttons. Derive a label from
+      // the target step's title when the stored text is empty/Continue.
+      text: (() => {
+        const isGeneric = !o.optionText || o.optionText.trim() === '' || o.optionText === 'Continue'
+        if (!isGeneric) return o.optionText
+        if (o.nextStepId && o.nextStepId !== '__end__') {
+          const target = stepById.get(o.nextStepId)
+          const cleanTitle = (target?.title || '').replace(/^\d+[\-\.\s]*/, '').trim()
+          if (cleanTitle) return cleanTitle
+        }
+        return o.optionText || 'Continue'
+      })(),
       nextStepId: o.nextStepId,
     })),
   })
