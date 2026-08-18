@@ -65,6 +65,17 @@ export async function POST(
     //   4. finish session
     const buttonNextRaw = (step as { buttonConfig?: { nextStepId?: string | null } | null }).buttonConfig?.nextStepId
     const buttonNext = typeof buttonNextRaw === 'string' && buttonNextRaw.length > 0 ? buttonNextRaw : null
+    // Legacy wiring: some video/submission steps were built by adding an
+    // "option" with nextStepId set to the target, instead of using the
+    // buttonConfig.nextStepId (the newer drag-to-connect field). Read the
+    // FIRST option with a valid nextStepId as an implicit Continue target
+    // so those legacy flows still route correctly.
+    const stepOptions = await prisma.stepOption.findMany({
+      where: { stepId, nextStepId: { not: null } },
+      orderBy: { createdAt: 'asc' },
+      select: { nextStepId: true },
+    })
+    const optionContinueTarget = stepOptions.find((o) => o.nextStepId && o.nextStepId.length > 0)?.nextStepId ?? null
 
     const finishSession = async () => {
       const now = new Date()
@@ -83,7 +94,12 @@ export async function POST(
       return NextResponse.json({ nextStepId })
     }
     const advance = async (override?: string | null): Promise<NextResponse> => {
-      const target = (override && override.length > 0) ? override : buttonNext
+      // Precedence: explicit override (from a selected option) > buttonConfig
+      // (drag-to-connect Continue link) > implicit option-target (legacy
+      // wiring on video/submission steps).
+      const target = (override && override.length > 0)
+        ? override
+        : (buttonNext ?? optionContinueTarget)
       if (target === '__end__') return finishSession()
       if (target) return advanceTo(target)
       // Fall back to next by stepOrder, but SKIP the immediate next step
