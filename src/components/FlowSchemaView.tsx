@@ -717,10 +717,27 @@ export default function FlowSchemaView({
     }
     // Main chain claims row 0.
     rowOccupancy.set(0, [[0, rows[0].length - 1]])
+
+    // Process branches in a parent-grouped order — every sibling of a
+    // shared fork parent lands on consecutive rowIdx values, preventing
+    // unrelated shorter branches from stealing the "next available" row
+    // and pushing this fork's siblings far apart on the canvas.
+    const parentKey = (p: { row: number; col: number } | undefined) =>
+      p ? `${p.row}:${p.col}` : `__orphan__`
+    const groupsMap = new Map<string, number[]>()
+    const groupOrder: string[] = []
     for (let r = 1; r < rows.length; r++) {
-      const startCol = startColFor(r)
-      const rowIdx = claimRow(rows[r], startCol)
-      rowInfo.set(r, { rowIdx, startCol })
+      const key = parentKey(rowParent.get(r))
+      if (!groupsMap.has(key)) { groupsMap.set(key, []); groupOrder.push(key) }
+      groupsMap.get(key)!.push(r)
+    }
+    for (const key of groupOrder) {
+      const siblings = groupsMap.get(key)!
+      for (const r of siblings) {
+        const startCol = startColFor(r)
+        const rowIdx = claimRow(rows[r], startCol)
+        rowInfo.set(r, { rowIdx, startCol })
+      }
     }
 
     // Subtle rising staircase inside each row (matches reference).
