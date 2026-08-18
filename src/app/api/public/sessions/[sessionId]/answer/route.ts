@@ -63,15 +63,31 @@ export async function POST(
     //      candidates flowed into the no-branch's first step.
     //   3. next step by stepOrder
     //   4. finish session
-    const buttonNextRaw = (step as { buttonConfig?: { nextStepId?: string | null } | null }).buttonConfig?.nextStepId
+    // Chain-collapse: when the submitted step is part of a combinedWithId
+    // chain (e.g., text-Q + audio companion + video companion rendered as
+    // one card with 3 answer methods), a single submission from ANY member
+    // should advance PAST the entire chain to the tail's exit target — not
+    // step through the sibling companions one at a time. Walk forward from
+    // the submitted step to find the tail, then read its exit wiring.
+    const chainSeen = new Set<string>([step.id])
+    let tailStep = step
+    let cursor: string | null | undefined = (step as any).combinedWithId
+    while (cursor && !chainSeen.has(cursor)) {
+      chainSeen.add(cursor)
+      const next = await prisma.flowStep.findUnique({ where: { id: cursor } })
+      if (!next) break
+      tailStep = next
+      cursor = (next as any).combinedWithId
+    }
+    const buttonNextRaw = (tailStep as { buttonConfig?: { nextStepId?: string | null } | null }).buttonConfig?.nextStepId
     const buttonNext = typeof buttonNextRaw === 'string' && buttonNextRaw.length > 0 ? buttonNextRaw : null
     // Legacy wiring: some video/submission steps were built by adding an
     // "option" with nextStepId set to the target, instead of using the
     // buttonConfig.nextStepId (the newer drag-to-connect field). Read the
-    // FIRST option with a valid nextStepId as an implicit Continue target
-    // so those legacy flows still route correctly.
+    // FIRST option with a valid nextStepId (on the TAIL) as an implicit
+    // Continue target so those legacy flows still route correctly.
     const stepOptions = await prisma.stepOption.findMany({
-      where: { stepId, nextStepId: { not: null } },
+      where: { stepId: tailStep.id, nextStepId: { not: null } },
       orderBy: { createdAt: 'asc' },
       select: { nextStepId: true },
     })
@@ -112,21 +128,29 @@ export async function POST(
         select: { id: true, stepOrder: true, buttonConfig: true, options: { select: { nextStepId: true } } },
         orderBy: { stepOrder: 'asc' },
       })
-      // Fork-parent lookup: which step(s) route to `step.id`?
-      const parentTargets = new Set<string>()
+      // Fork-parent lookup: which step(s) route to the tail? Uses tailStep
+      // so a submission from any chain member evaluates the fork context
+      // of the chain's tail (the semantic "exit" of the combined card).
+      // Also skip past every chain member so we don't step through the
+      // sibling companions.
+      const parentTargets = new Set<string>(chainSeen)
+      parentTargets.delete(tailStep.id) // don't skip the tail itself when computing
       for (const x of allSteps) {
-        if (x.id === step.id) continue
+        if (x.id === tailStep.id) continue
         const targets: string[] = []
         for (const o of x.options) if (o.nextStepId && o.nextStepId !== '__end__') targets.push(o.nextStepId)
         const btn = (x.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
         if (btn && btn !== '__end__') targets.push(btn)
-        if (targets.includes(step.id)) {
-          for (const t of targets) if (t !== step.id) parentTargets.add(t)
+        if (targets.includes(tailStep.id)) {
+          for (const t of targets) if (t !== tailStep.id) parentTargets.add(t)
         }
       }
       for (const cand of allSteps) {
-        if (cand.stepOrder <= step.stepOrder) continue
-        if (parentTargets.has(cand.id)) continue // sibling branch under same fork
+        // Anchor stepOrder walk at the TAIL so we don't accidentally land
+        // on a chain member that sits between the current step and the
+        // tail (would repeat the same combined card).
+        if (cand.stepOrder <= tailStep.stepOrder) continue
+        if (parentTargets.has(cand.id)) continue // sibling branch under same fork OR chain member
         return advanceTo(cand.id)
       }
       return finishSession()
