@@ -2056,19 +2056,6 @@ export default function FlowSchemaView({
         if (isThisEndSelected) {
           drawDragHandle(ctx, g.fromX, g.fromY, SELECTED_COLOR)
           drawDragHandle(ctx, g.toX, g.toY, SELECTED_COLOR)
-          // DEBUG marker — cyan circles at the exact endpoint coords so
-          // you can see where my code thinks the hit zone is vs where
-          // your cursor lands.
-          ctx.beginPath()
-          ctx.arc(g.fromX, g.fromY, 24, 0, Math.PI * 2)
-          ctx.strokeStyle = '#00e5ff'
-          ctx.lineWidth = 1
-          ctx.setLineDash([3, 3])
-          ctx.stroke()
-          ctx.beginPath()
-          ctx.arc(g.toX, g.toY, 24, 0, Math.PI * 2)
-          ctx.stroke()
-          ctx.setLineDash([])
         } else {
           const isPlusHovered = hoveredPort === `__insert_end_${stepId}`
           drawInsertButton(ctx, eMidX, eMidY, isPlusHovered)
@@ -2703,29 +2690,20 @@ export default function FlowSchemaView({
       }
     }
 
-    // Check End arrow drag handle — click near EITHER endpoint of the
-    // selected end arrow enters reconnect mode.
+    // Selected End arrow — grab logic. Blue drag handle should be on top
+    // and grabbable, no other action possible. Click near EITHER endpoint
+    // (30px) enters reconnect. Also, click ANYWHERE near End's input port
+    // (60px) commits to reconnect for the selected arrow — prevents the
+    // click from falling through to hitTestArrow and re-selecting a
+    // sibling arrow just because many arrows share the same shared toX/toY.
     if (selectedArrow?.kind === 'end') {
       const g = endArrowGeomByStep.get(selectedArrow.stepId)
       const ep = positions[END_ID]
-      // eslint-disable-next-line no-console
-      console.log('[end-arrow] endpoint check', {
-        cx, cy,
-        hasGeom: !!g, hasEndPos: !!ep,
-        from: g ? { x: g.fromX, y: g.fromY, d: dist(cx, cy, g.fromX, g.fromY) } : null,
-        to: g ? { x: g.toX, y: g.toY, d: dist(cx, cy, g.toX, g.toY) } : null,
-        selectedStepId: selectedArrow.stepId,
-        allEndGeomKeys: Array.from(endArrowGeomByStep.keys()),
-      })
       if (g && ep) {
         const dFrom = dist(cx, cy, g.fromX, g.fromY)
         const dTo = dist(cx, cy, g.toX, g.toY)
-        // Bump the radius from 18 → 24 so a click within a fatter zone
-        // around either endpoint still catches when multiple arrows
-        // converge and the user needs a slightly wider target.
-        if (dFrom <= 24 || dTo <= 24) {
-          // eslint-disable-next-line no-console
-          console.log('[end-arrow] entering reconnecting_end')
+        const dEndPort = dist(cx, cy, ep.x, ep.y + SPECIAL_H / 2)
+        if (dFrom <= 30 || dTo <= 30 || dEndPort <= 60) {
           setMode({
             type: 'reconnecting_end',
             fromStepId: selectedArrow.stepId,
@@ -3027,22 +3005,7 @@ export default function FlowSchemaView({
   const handleMouseMove = (e: React.MouseEvent) => {
     const { x: cx, y: cy } = toCanvas(e.clientX, e.clientY)
 
-    // DEBUG: throttled mouse-tracking log for the selected end arrow.
-    // Fires at most every 100ms so DevTools stays readable.
-    if (selectedArrow?.kind === 'end') {
-      const now = Date.now()
-      const lastLog = (window as any).__endArrowLogAt || 0
-      if (now - lastLog > 100) {
-        ;(window as any).__endArrowLogAt = now
-        const g = endArrowGeomByStep.get(selectedArrow.stepId)
-        // eslint-disable-next-line no-console
-        console.log('[end-arrow] mouse', {
-          mouse: { canvas: { cx, cy }, client: { x: e.clientX, y: e.clientY } },
-          circleFrom: g ? { x: g.fromX, y: g.fromY, d: Math.round(dist(cx, cy, g.fromX, g.fromY)) } : null,
-          circleTo: g ? { x: g.toX, y: g.toY, d: Math.round(dist(cx, cy, g.toX, g.toY)) } : null,
-        })
-      }
-    }
+    // (throttled end-arrow mouse log removed after diagnosis)
 
     // Promote a pending port interaction to a real connecting drag once
     // the cursor has drifted past the threshold. Below threshold the
@@ -4121,7 +4084,21 @@ function drawConnection(
   scale: number = 1
 ) {
   const lineColor = color || '#FF9500'
-  const [c1x, c1y, c2x, c2y] = bezierCps(fromX, fromY, toX, toY, laneY)
+  // Draft (mid-drag) connections skip the backward-edge deep-loop bezier —
+  // the user is still moving the cursor, not committing an edge. A mild
+  // horizontal S-curve reads as a smooth follow-line whether the cursor
+  // is left or right of the source port. Once committed, the real edge
+  // renders with the proper lane-aware bezier via the standard path.
+  const [c1x, c1y, c2x, c2y] = isDraft
+    ? (() => {
+        const dx = Math.abs(toX - fromX)
+        const cpOffset = Math.max(dx * 0.4, 40)
+        // Symmetric horizontal S — sign of cpOffset flips based on direction
+        // so both left→right and right→left drafts stay smooth curves.
+        const dir = toX >= fromX ? 1 : -1
+        return [fromX + dir * cpOffset, fromY, toX - dir * cpOffset, toY] as const
+      })()
+    : bezierCps(fromX, fromY, toX, toY, laneY)
 
   // Dashes get scaled by ctx.scale(), so at small zooms the pattern
   // collapses into a solid line. Divide by scale so the on-screen dash
