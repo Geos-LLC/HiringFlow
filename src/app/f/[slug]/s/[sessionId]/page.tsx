@@ -1390,7 +1390,8 @@ export default function SessionPlayerPage() {
                 onEnded={handleVideoEnd}
                 onError={handleVideoEnd}
                 onWatchTelemetry={(data) => reportWatchTelemetry(step.stepId, data)}
-                className="w-full h-full object-cover"
+                className="w-full h-full"
+                videoClassName="w-full h-full object-cover"
               />
               {/* Wordmark overlay — replaces the top header on mobile. */}
               <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none z-10">

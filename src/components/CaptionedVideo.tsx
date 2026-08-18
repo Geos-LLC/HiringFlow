@@ -508,7 +508,7 @@ export default function CaptionedVideo({
   }
 
   return (
-    <div className="relative">
+    <div className="relative w-full h-full">
       {/* Video */}
       <div ref={containerRef} className={`relative rounded-md overflow-hidden bg-black ${className || ''}`}>
         {/* Render the <video> element whenever there's a playable source:
