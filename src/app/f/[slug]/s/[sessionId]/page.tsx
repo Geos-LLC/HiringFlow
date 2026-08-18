@@ -110,6 +110,7 @@ interface StepData {
   combinedStep?: CombinedStepData | null
   options: StepOption[]
   finished?: boolean
+  companions?: Array<{ stepId: string; stepType: string; captureConfig: CaptureStepConfig | null; filename?: string | null }>
 }
 
 export default function SessionPlayerPage() {
@@ -132,6 +133,10 @@ export default function SessionPlayerPage() {
   const [textAnswer, setTextAnswer] = useState('')
   const [recordedVideo, setRecordedVideo] = useState<Blob | null>(null)
   const [isDesktop, setIsDesktop] = useState(true)
+  // Choice for text-field questions with capture/video companions —
+  // "How would you like to answer?" state. null = show choice buttons;
+  // 'text'/'audio'/'video' = show the corresponding input inline.
+  const [answerMode, setAnswerMode] = useState<null | 'text' | 'audio' | 'video'>(null)
 
   // Detect desktop vs mobile to render only one video element
   useEffect(() => {
@@ -227,6 +232,7 @@ export default function SessionPlayerPage() {
     setRecordedVideo(null)
     setFormSubmitted(false)
     setFormValues({})
+    setAnswerMode(null)
     const res = await fetch(`/api/public/sessions/${sessionId}/step`)
     if (res.ok) {
       const data = await res.json()
@@ -608,9 +614,107 @@ export default function SessionPlayerPage() {
               </div>
             )}
 
-            {/* Open text answer */}
-            {step.questionType === 'text' && (
+            {/* Open text answer — with optional audio/video companions.
+                When the recruiter combined a text-field question with a
+                capture (audio) or submission (video) step, the candidate
+                sees "How would you like to answer?" with buttons for
+                each available mode. Clicking a mode reveals the input
+                inline. When no companions exist, textarea shows directly. */}
+            {step.questionType === 'text' && (() => {
+              const companions = step.companions || []
+              const audioCompanion = companions.find((c) => c.stepType === 'capture' && c.captureConfig?.mode === 'audio')
+              const videoCompanion = companions.find((c) => c.stepType === 'submission')
+              const hasChoices = !!(audioCompanion || videoCompanion)
+              if (hasChoices && answerMode === null) {
+                return (
+                  <div className="space-y-4">
+                    <p className={`text-center text-sm ${overlay ? 'text-white' : 'text-gray-700'}`}>How would you like to answer?</p>
+                    <div className="flex gap-3 justify-center">
+                      {videoCompanion && (
+                        <button onClick={() => setAnswerMode('video')} className="flex flex-col items-center gap-2 px-6 py-4 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                          <span className="text-xs font-semibold uppercase tracking-wider">Video</span>
+                        </button>
+                      )}
+                      {audioCompanion && (
+                        <button onClick={() => setAnswerMode('audio')} className="flex flex-col items-center gap-2 px-6 py-4 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 10v-4m0 0a3 3 0 01-3-3V5a3 3 0 016 0v9a3 3 0 01-3 3z" /></svg>
+                          <span className="text-xs font-semibold uppercase tracking-wider">Audio</span>
+                        </button>
+                      )}
+                      <button onClick={() => setAnswerMode('text')} className="flex flex-col items-center gap-2 px-6 py-4 bg-brand-500 text-white rounded-xl hover:bg-brand-600 transition-colors">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h10M4 18h10" /></svg>
+                        <span className="text-xs font-semibold uppercase tracking-wider">Text</span>
+                      </button>
+                    </div>
+                  </div>
+                )
+              }
+              if (hasChoices && answerMode === 'audio' && audioCompanion) {
+                return (
+                  <div className="space-y-3">
+                    <button onClick={() => setAnswerMode(null)} className={`text-xs ${overlay ? 'text-white/70' : 'text-gray-500'} hover:underline`}>← Choose different method</button>
+                    <CaptureRecorder
+                      sessionId={sessionId}
+                      stepId={audioCompanion.stepId}
+                      mode="audio"
+                      prompt={audioCompanion.captureConfig?.prompt ?? step.questionText ?? null}
+                      allowRetake={audioCompanion.captureConfig?.allowRetake ?? true}
+                      maxRetakes={audioCompanion.captureConfig?.maxRetakes ?? null}
+                      maxDurationSec={audioCompanion.captureConfig?.maxDurationSec ?? null}
+                      minDurationSec={audioCompanion.captureConfig?.minDurationSec ?? null}
+                      onSubmitted={async () => {
+                        setSubmitting(true)
+                        const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ stepId: audioCompanion.stepId }),
+                        })
+                        if (res.ok) { const data = await res.json(); if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`); else fetchStep() }
+                        setSubmitting(false)
+                      }}
+                    />
+                  </div>
+                )
+              }
+              if (hasChoices && answerMode === 'video' && videoCompanion) {
+                return (
+                  <div className="space-y-3">
+                    <button onClick={() => setAnswerMode(null)} className={`text-xs ${overlay ? 'text-white/70' : 'text-gray-500'} hover:underline`}>← Choose different method</button>
+                    <VideoRecorder recordedVideo={recordedVideo} onRecordComplete={setRecordedVideo} />
+                    <button
+                      onClick={async () => {
+                        if (!recordedVideo) return
+                        setSubmitting(true)
+                        const formData = new FormData()
+                        formData.append('stepId', videoCompanion.stepId)
+                        formData.append('video', recordedVideo, 'recording.webm')
+                        const res = await fetch(`/api/public/sessions/${sessionId}/submit`, { method: 'POST', body: formData })
+                        if (res.ok) {
+                          const advanceRes = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ stepId: videoCompanion.stepId }),
+                          })
+                          if (advanceRes.ok) {
+                            const data = await advanceRes.json()
+                            if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
+                            else fetchStep()
+                          }
+                        }
+                        setSubmitting(false)
+                      }}
+                      disabled={!recordedVideo || submitting}
+                      className="w-full py-3 bg-brand-500 text-white rounded-xl font-medium text-sm disabled:opacity-50 hover:bg-brand-600 transition-colors"
+                    >
+                      {submitting ? 'Uploading…' : 'Submit video'}
+                    </button>
+                  </div>
+                )
+              }
+              return (
               <div className="space-y-3">
+                {hasChoices && (
+                  <button onClick={() => setAnswerMode(null)} className={`text-xs ${overlay ? 'text-white/70' : 'text-gray-500'} hover:underline`}>← Choose different method</button>
+                )}
                 <textarea
                   value={textMessage}
                   onChange={(e) => setTextMessage(e.target.value)}
@@ -631,7 +735,8 @@ export default function SessionPlayerPage() {
                   {submitting ? 'Submitting…' : 'Continue'}
                 </button>
               </div>
-            )}
+              )
+            })()}
 
             {/* Multiselect */}
             {step.questionType === 'multiselect' && (

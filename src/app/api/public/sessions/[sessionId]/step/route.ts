@@ -211,6 +211,35 @@ export async function GET(
   const captureConfig =
     step.stepType === 'capture' ? tryParseCaptureConfig((step as any).captureConfig) : null
 
+  // Chain companions: for a text-field question whose recruiter combined it
+  // with capture/submission steps (audio/video companions), collect ALL
+  // chain members forward from the current step so the candidate UI can
+  // render a "How would you like to answer?" choice with Text / Audio /
+  // Video buttons on a SINGLE card. Walks forward-only via combinedWithId;
+  // reverse partners are handled by the existing combinedStep block above.
+  const companions: Array<{ stepId: string; stepType: string; captureConfig: unknown; filename?: string | null }> = []
+  {
+    const seen = new Set<string>([step.id])
+    let cursor: string | null | undefined = (step as any).combinedWithId
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor)
+      const m = await prisma.flowStep.findUnique({
+        where: { id: cursor },
+        select: { id: true, stepType: true, captureConfig: true, combinedWithId: true, video: { select: { storageKey: true } } },
+      })
+      if (!m) break
+      if (m.stepType === 'capture' || m.stepType === 'submission') {
+        companions.push({
+          stepId: m.id,
+          stepType: m.stepType,
+          captureConfig: m.stepType === 'capture' ? tryParseCaptureConfig((m as any).captureConfig) : null,
+          filename: null,
+        })
+      }
+      cursor = (m as any).combinedWithId
+    }
+  }
+
   // Composite gate: global env + workspace opt-in. Client renders the
   // recorder only when this is true.
   const captureStepsEnabled = isCaptureStepsEnabledForWorkspace({
@@ -404,6 +433,7 @@ export async function GET(
     },
     stepIds: visibleStepIds,
     combinedStep,
+    companions,
     options: step.options.map((o) => ({
       optionId: o.id,
       text: o.optionText,
