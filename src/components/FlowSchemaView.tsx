@@ -882,11 +882,15 @@ export default function FlowSchemaView({
     // Leaf branches: rightmost first (top of stack, closest to main row),
     // then each subsequent leaf going LEFT drops one row below. All share
     // the rightmost leaf's startCol so arrows converge into one column.
+    // eslint-disable-next-line no-console
+    console.log('[TIDY] leaf branches:', leafBranches.map((r) => `row ${r}: [${rows[r].map((id) => label(id)).join(', ')}] naturalStartCol=${startColFor(r)}`))
     if (leafBranches.length > 0) {
       const leavesRightFirst = [...leafBranches].sort(
         (a, b) => startColFor(b) - startColFor(a),
       )
       const stackedCol = startColFor(leavesRightFirst[0])
+      // eslint-disable-next-line no-console
+      console.log(`[TIDY] leaf stack: sharing startCol=${stackedCol}, order=${leavesRightFirst.map((r) => label(rows[r][0])).join(' → ')}`)
       for (const r of leavesRightFirst) {
         const rowIdx = claimRow(r, stackedCol)
         rowInfo.set(r, { rowIdx, startCol: stackedCol })
