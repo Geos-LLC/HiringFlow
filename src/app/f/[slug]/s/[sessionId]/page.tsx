@@ -1029,8 +1029,11 @@ export default function SessionPlayerPage() {
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)', fontFamily: 'var(--body-font)' }}>
-      {/* Classic header — wordmark + company pill + progress + restart. Purely
-          presentational; no behavior change. */}
+      {/* Classic header — desktop only. On mobile the progress bar is
+          duplicated inside renderQuestionContent(true) at the bottom of
+          the overlay, and the HireFunnel wordmark is painted as a small
+          overlay on the video itself (see the mobile video block). */}
+      {isDesktop && (
       <header className="w-full px-5 pt-5 pb-4">
         <div className="max-w-[1280px] mx-auto flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2.5">
@@ -1063,6 +1066,7 @@ export default function SessionPlayerPage() {
           )}
         </div>
       </header>
+      )}
 
       {/* Training steps bypass the two-column video+sidebar layout — the
           embedded TrainingViewer needs the full page width to render its
@@ -1364,12 +1368,16 @@ export default function SessionPlayerPage() {
       </div>
       )}
 
-      {/* Mobile: video with overlay questions */}
+      {/* Mobile: video fills viewport, questions overlay on top.
+          h-[100dvh] uses the dynamic viewport unit so the video ALWAYS
+          fits the visible mobile screen (100vh includes the address bar
+          on iOS and would leave the Continue button hidden under the
+          browser chrome). */}
       {step.stepType !== 'training' && !isDesktop && (
-      <div className="flex flex-col min-h-screen">
-        <div className="flex-1 relative flex items-center justify-center">
+      <div className="flex flex-col h-[100dvh]">
+        <div className="flex-1 relative flex items-center justify-center overflow-hidden">
           {step.videoUrl ? (
-            <div className="w-full h-full">
+            <div className="w-full h-full relative">
               <CaptionedVideo
                 key={`mobile-${step.stepId}`}
                 src={safeVideoUrl(step.videoUrl)!}
@@ -1384,6 +1392,16 @@ export default function SessionPlayerPage() {
                 onWatchTelemetry={(data) => reportWatchTelemetry(step.stepId, data)}
                 className="w-full h-full object-cover"
               />
+              {/* Wordmark overlay — replaces the top header on mobile. */}
+              <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none z-10">
+                <div
+                  className="w-8 h-8 rounded-[10px] flex items-center justify-center text-white font-bold text-[16px]"
+                  style={{ background: 'var(--brand-primary)', boxShadow: 'var(--shadow-brand)' }}
+                >
+                  h
+                </div>
+                <span className="font-semibold text-[15px] text-white tracking-[-0.01em] drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)]">HireFunnel</span>
+              </div>
               {/* Overlay questions on mobile */}
               {renderQuestionContent(true)}
             </div>
