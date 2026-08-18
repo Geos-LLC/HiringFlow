@@ -576,6 +576,39 @@ export default function SessionPlayerPage() {
 
   // Question/options rendering (shared between mobile overlay and desktop sidebar)
   const renderQuestionContent = (overlay = false) => {
+    // Combined-step data hoist: when the current step is a video-only
+    // step combined with a question step, step.options/step.questionText
+    // are empty — the actual question lives on step.combinedStep. Desktop
+    // resolves this in-place. Mirror that here so the mobile overlay
+    // ALSO renders the question and its options when applicable.
+    const cs = step.combinedStep
+    const questionStep = cs && (cs.stepType === 'question' || cs.options.length > 0) ? cs : null
+    const effTitle = questionStep ? cs!.title : step.title
+    const effQuestionText = questionStep ? cs!.questionText : step.questionText
+    const effQuestionType = questionStep ? cs!.questionType : step.questionType
+    const effStepType = questionStep ? cs!.stepType : (step.stepType || 'question')
+    const effOptions = questionStep ? cs!.options : step.options
+    const effTargetStepId = questionStep ? cs!.stepId : step.stepId
+    const submitOption = async (option: StepOption) => {
+      if (!step) return
+      setSubmitting(true)
+      const res = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stepId: effTargetStepId,
+          optionId: option.optionId,
+          formData: formSubmitted ? formValues : undefined,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
+        else fetchStep()
+      }
+      setSubmitting(false)
+    }
+
     const containerClass = overlay
       ? 'absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/70 to-transparent p-6 pt-16'
       : ''
@@ -592,24 +625,24 @@ export default function SessionPlayerPage() {
 
     return (
       <div className={containerClass}>
-        {step.questionText && (
+        {effQuestionText && (
           <h2 className={`text-lg font-semibold ${textColorClass} ${overlay ? 'text-left' : 'text-center'} mb-4`}>
-            {step.questionText}
+            {effQuestionText}
           </h2>
         )}
 
-        {(step.stepType || 'question') === 'question' && (
+        {effStepType === 'question' && (
           <div className={overlay ? '' : 'max-w-md mx-auto'}>
             {/* Single/Button */}
-            {((step.questionType || 'single') === 'single' || step.questionType === 'button') && (
+            {((effQuestionType || 'single') === 'single' || effQuestionType === 'button') && (
               <div className="space-y-2.5">
-                {step.options.map((option) => (
+                {effOptions.map((option) => (
                   <button
                     key={option.optionId}
-                    onClick={() => selectOption(option)}
+                    onClick={() => submitOption(option)}
                     disabled={submitting || (!showOptions && step.videoUrl !== null)}
                     className={`w-full py-3 px-5 rounded-xl border-2 transition-all ${
-                      step.questionType === 'button' ? 'text-center' : 'text-left'
+                      effQuestionType === 'button' ? 'text-center' : 'text-left'
                     } ${
                       showOptions || !step.videoUrl ? optionBorderClass : disabledClass
                     } ${submitting ? 'opacity-50' : ''}`}
@@ -626,7 +659,7 @@ export default function SessionPlayerPage() {
                 sees "How would you like to answer?" with buttons for
                 each available mode. Clicking a mode reveals the input
                 inline. When no companions exist, textarea shows directly. */}
-            {step.questionType === 'text' && (() => {
+            {effQuestionType === 'text' && (() => {
               const companions = step.companions || []
               const audioCompanion = companions.find((c) => c.stepType === 'capture' && c.captureConfig?.mode === 'audio')
               const videoCompanion = companions.find((c) => c.stepType === 'submission')
@@ -745,10 +778,10 @@ export default function SessionPlayerPage() {
             })()}
 
             {/* Multiselect */}
-            {step.questionType === 'multiselect' && (
+            {effQuestionType === 'multiselect' && (
               <>
                 <div className="space-y-2.5 mb-4">
-                  {step.options.map((option) => (
+                  {effOptions.map((option) => (
                     <label
                       key={option.optionId}
                       className={`flex items-center w-full py-3 px-5 rounded-xl border-2 cursor-pointer transition-all ${
