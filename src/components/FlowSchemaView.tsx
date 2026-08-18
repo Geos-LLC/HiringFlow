@@ -566,10 +566,10 @@ export default function FlowSchemaView({
       return d
     }
 
-    // primarySuccessor picks whichever forward connection (button OR any
-    // option) leads to the DEEPEST downstream chain — that's how row 0
-    // becomes the longest possible path from the start, and how each
-    // subsequent row's walk stays as long as possible.
+    // primarySuccessor picks whichever forward connection (button, option,
+    // OR combinedWithId partner) leads to the DEEPEST downstream chain.
+    // Row 0 becomes the longest possible path, and combined pairs stay
+    // in the SAME row so the chain's exit branches follow contiguously.
     const primarySuccessor = (s: typeof sorted[0]): string | null => {
       const candidates: string[] = []
       const btn = (s as any).buttonConfig?.nextStepId
@@ -577,6 +577,8 @@ export default function FlowSchemaView({
       for (const o of s.options) {
         if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId)) candidates.push(o.nextStepId)
       }
+      const cw = (s as any).combinedWithId as string | null | undefined
+      if (cw && stepById.has(cw)) candidates.push(cw)
       let best: string | null = null
       let bestDepth = -1
       for (const c of candidates) {
