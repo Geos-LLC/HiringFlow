@@ -588,9 +588,61 @@ export default function FlowSchemaView({
       return best
     }
 
+    // Walker start order MUST be flow-position order, not stepOrder (DB
+    // creation order). If the actual flow root was created late, its
+    // stepOrder is high — walker picks some middle step first, produces
+    // its long chain, and the root gets stranded as a secondary row.
+    // Fix: BFS from real roots (no incoming edges) and sort by visit
+    // index. Falls back to stepOrder for orphans BFS never reaches.
+    const incomingCount = new Map<string, number>()
+    for (const s of sorted) incomingCount.set(s.id, 0)
+    for (const s of sorted) {
+      const btn = (s as any).buttonConfig?.nextStepId
+      if (btn && btn !== '__end__' && incomingCount.has(btn)) {
+        incomingCount.set(btn, (incomingCount.get(btn) ?? 0) + 1)
+      }
+      for (const o of s.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__' && incomingCount.has(o.nextStepId)) {
+          incomingCount.set(o.nextStepId, (incomingCount.get(o.nextStepId) ?? 0) + 1)
+        }
+      }
+      const cw = (s as any).combinedWithId as string | null | undefined
+      if (cw && incomingCount.has(cw)) {
+        incomingCount.set(cw, (incomingCount.get(cw) ?? 0) + 1)
+      }
+    }
+    const bfsOrder = new Map<string, number>()
+    const bfsQueue: string[] = sorted
+      .filter((s) => (incomingCount.get(s.id) ?? 0) === 0)
+      .sort((a, b) => a.stepOrder - b.stepOrder)
+      .map((s) => s.id)
+    let bfsIdx = 0
+    const bfsSeen = new Set<string>()
+    while (bfsQueue.length) {
+      const id = bfsQueue.shift()!
+      if (bfsSeen.has(id)) continue
+      bfsSeen.add(id)
+      bfsOrder.set(id, bfsIdx++)
+      const s = stepById.get(id)
+      if (!s) continue
+      const btn = (s as any).buttonConfig?.nextStepId
+      if (btn && btn !== '__end__' && stepById.has(btn) && !bfsSeen.has(btn)) bfsQueue.push(btn)
+      for (const o of s.options) {
+        if (o.nextStepId && o.nextStepId !== '__end__' && stepById.has(o.nextStepId) && !bfsSeen.has(o.nextStepId)) bfsQueue.push(o.nextStepId)
+      }
+      const cw = (s as any).combinedWithId as string | null | undefined
+      if (cw && stepById.has(cw) && !bfsSeen.has(cw)) bfsQueue.push(cw)
+    }
+    const walkerStart = [...sorted].sort((a, b) => {
+      const ao = bfsOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER
+      const bo = bfsOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER
+      if (ao !== bo) return ao - bo
+      return a.stepOrder - b.stepOrder
+    })
+
     const placed = new Set<string>()
     const rawRows: string[][] = []
-    for (const startStep of sorted) {
+    for (const startStep of walkerStart) {
       if (placed.has(startStep.id)) continue
       const row: string[] = []
       let current: typeof sorted[0] | null = startStep
