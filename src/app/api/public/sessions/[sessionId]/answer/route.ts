@@ -86,34 +86,36 @@ export async function POST(
       const target = (override && override.length > 0) ? override : buttonNext
       if (target === '__end__') return finishSession()
       if (target) return advanceTo(target)
-      // stepOrder fallback: skip any step that is itself an explicit
-      // option/button target from ANOTHER step. Those are fork branch
-      // destinations and should only be reached via their explicit route;
-      // otherwise a YES-branch leaf falls through to the NO-branch leaf
-      // (both at stepOrder+1 and stepOrder+2 of the fork parent) and the
-      // candidate ends up on the branch they didn't pick.
-      const laterSteps = await prisma.flowStep.findMany({
-        where: { flowId: session.flowId, stepOrder: { gt: step.stepOrder } },
+      // stepOrder fallback: skip only the IMMEDIATE sibling branches of the
+      // fork that led to the current step. Fork parent = any step X that
+      // routes to the current step via option/button; siblings = X's OTHER
+      // targets. So a YES-branch leaf falls through past the NO-branch
+      // leaf, but doesn't skip further-out steps that are targets of
+      // OTHER forks. Prevents both the "YES lands on NO video" bug and
+      // the over-eager "skips half the flow" regression.
+      const allSteps = await prisma.flowStep.findMany({
+        where: { flowId: session.flowId },
+        select: { id: true, stepOrder: true, buttonConfig: true, options: { select: { nextStepId: true } } },
         orderBy: { stepOrder: 'asc' },
-        select: { id: true },
       })
-      if (laterSteps.length > 0) {
-        const allSteps = await prisma.flowStep.findMany({
-          where: { flowId: session.flowId },
-          select: { id: true, buttonConfig: true, options: { select: { nextStepId: true } } },
-        })
-        const explicitTargets = new Set<string>()
-        for (const s of allSteps) {
-          if (s.id === step.id) continue // links from the current step don't disqualify their targets
-          for (const o of s.options) {
-            if (o.nextStepId && o.nextStepId !== '__end__') explicitTargets.add(o.nextStepId)
-          }
-          const btn = (s.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
-          if (btn && btn !== '__end__') explicitTargets.add(btn)
+      const siblings = new Set<string>()
+      for (const x of allSteps) {
+        const xTargets: string[] = []
+        for (const o of x.options) {
+          if (o.nextStepId && o.nextStepId !== '__end__') xTargets.push(o.nextStepId)
         }
-        for (const cand of laterSteps) {
-          if (!explicitTargets.has(cand.id)) return advanceTo(cand.id)
+        const xBtn = (x.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+        if (xBtn && xBtn !== '__end__') xTargets.push(xBtn)
+        // Is the current step one of X's targets? If yes, X is a parent
+        // fork of us — X's OTHER targets are our siblings.
+        if (xTargets.includes(step.id)) {
+          for (const t of xTargets) if (t !== step.id) siblings.add(t)
         }
+      }
+      for (const cand of allSteps) {
+        if (cand.stepOrder <= step.stepOrder) continue
+        if (siblings.has(cand.id)) continue
+        return advanceTo(cand.id)
       }
       return finishSession()
     }
