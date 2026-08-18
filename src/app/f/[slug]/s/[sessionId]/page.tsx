@@ -557,7 +557,10 @@ export default function SessionPlayerPage() {
     )
   }
 
-  const showOptions = !step.videoUrl || videoEnded
+  // Preview mode (recruiter reviewing their own flow) unlocks options /
+  // Continue immediately regardless of video playback — otherwise the
+  // recruiter has to sit through every video end-to-end to walk the flow.
+  const showOptions = isPreview || !step.videoUrl || videoEnded
 
   // Question/options rendering (shared between mobile overlay and desktop sidebar)
   const renderQuestionContent = (overlay = false) => {
@@ -1119,7 +1122,7 @@ export default function SessionPlayerPage() {
                 {questionStep ? (
                   <div className="space-y-2">
                     {questionStep.options.map((opt) => {
-                      const locked = !videoEnded && !!(step.videoUrl || cs?.videoUrl)
+                      const locked = !isPreview && !videoEnded && !!(step.videoUrl || cs?.videoUrl)
                       return (
                         <button
                           key={opt.optionId}
