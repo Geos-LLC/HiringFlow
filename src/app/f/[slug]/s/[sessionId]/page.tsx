@@ -360,6 +360,19 @@ export default function SessionPlayerPage() {
     )
   }
 
+  // The "answer target" is the step whose options/question the candidate
+  // actually answers. For a solo step it's step.stepId. For a combined
+  // chain where the primary step is a video/submission and its partner
+  // is the question, the target is the partner's ID — otherwise the
+  // answer endpoint receives option/text/multiselect data for a stepId
+  // whose stepType has none of that, and rejects the request as 400.
+  const answerTargetStepId = (() => {
+    if (!step) return ''
+    const cs = step.combinedStep
+    const questionStep = cs && (cs.stepType === 'question' || cs.options.length > 0) ? cs : null
+    return questionStep ? cs!.stepId : step.stepId
+  })()
+
   const submitMultiselect = async () => {
     if (!step || selectedOptions.length === 0) return
     setSubmitting(true)
@@ -367,7 +380,7 @@ export default function SessionPlayerPage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        stepId: step.stepId,
+        stepId: answerTargetStepId,
         optionIds: selectedOptions,
         formData: formSubmitted ? formValues : undefined,
       }),
@@ -392,7 +405,7 @@ export default function SessionPlayerPage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        stepId: step.stepId,
+        stepId: answerTargetStepId,
         textAnswer: textMessage.trim(),
         formData: formSubmitted ? formValues : undefined,
       }),
