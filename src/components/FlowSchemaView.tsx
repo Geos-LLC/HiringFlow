@@ -642,21 +642,31 @@ export default function FlowSchemaView({
 
     const placed = new Set<string>()
     const rawRows: string[][] = []
+    const label = (id: string) => {
+      const s = stepById.get(id)
+      const t = (s as any)?.title || (s as any)?.question || (s as any)?.name || id.slice(0, 6)
+      return `${t}[so=${s?.stepOrder ?? '?'}]`
+    }
+    // eslint-disable-next-line no-console
+    console.log('[TIDY] roots (no incoming):', sorted.filter((s) => (incomingCount.get(s.id) ?? 0) === 0).map((s) => label(s.id)))
+    // eslint-disable-next-line no-console
+    console.log('[TIDY] walkerStart first 8:', walkerStart.slice(0, 8).map((s) => `${label(s.id)}[bfs=${bfsOrder.get(s.id) ?? '-'}]`))
     for (const startStep of walkerStart) {
       if (placed.has(startStep.id)) continue
       const row: string[] = []
       let current: typeof sorted[0] | null = startStep
-      // Walk the primary chain until it terminates or loops into a
-      // placed step. Guard against pathological cycles by also
-      // checking `row` (a step can appear at most once per row).
       const rowSeen = new Set<string>()
+      const chainTrace: string[] = []
       while (current && !placed.has(current.id) && !rowSeen.has(current.id)) {
         placed.add(current.id)
         rowSeen.add(current.id)
         row.push(current.id)
         const nextId = primarySuccessor(current)
+        chainTrace.push(`${label(current.id)} → ${nextId ? label(nextId) : 'END'}`)
         current = nextId ? (stepById.get(nextId) ?? null) : null
       }
+      // eslint-disable-next-line no-console
+      console.log(`[TIDY] row from ${label(startStep.id)}:`, chainTrace)
       rawRows.push(row)
     }
 
