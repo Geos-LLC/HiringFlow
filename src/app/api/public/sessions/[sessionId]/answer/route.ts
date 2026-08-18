@@ -98,6 +98,10 @@ export async function POST(
     // Now read every chain member and pick the first one with a wired
     // exit target. Prefer the tail (semantic "exit point"), then walk the
     // rest in insertion order.
+    // IMPORTANT: skip targets that are themselves chain members — those
+    // are internal chain wiring left over from before the two steps got
+    // combined. Following them creates a Video1 → Video2 → Video1 loop
+    // ("playing on circle").
     const memberIds = [tailStep.id, ...Array.from(chainMembers).filter((id) => id !== tailStep.id)]
     let buttonNext: string | null = null
     let optionContinueTarget: string | null = null
@@ -105,14 +109,14 @@ export async function POST(
       const m = await prisma.flowStep.findUnique({ where: { id: mid } })
       if (!m) continue
       const bRaw = (m as { buttonConfig?: { nextStepId?: string | null } | null }).buttonConfig?.nextStepId
-      if (!buttonNext && typeof bRaw === 'string' && bRaw.length > 0) buttonNext = bRaw
+      if (!buttonNext && typeof bRaw === 'string' && bRaw.length > 0 && !chainMembers.has(bRaw)) buttonNext = bRaw
       if (!optionContinueTarget) {
         const opts = await prisma.stepOption.findMany({
           where: { stepId: mid, nextStepId: { not: null } },
           orderBy: { createdAt: 'asc' },
           select: { nextStepId: true },
         })
-        const t = opts.find((o) => o.nextStepId && o.nextStepId.length > 0)?.nextStepId ?? null
+        const t = opts.find((o) => o.nextStepId && o.nextStepId.length > 0 && !chainMembers.has(o.nextStepId))?.nextStepId ?? null
         if (t) optionContinueTarget = t
       }
       if (buttonNext) break
