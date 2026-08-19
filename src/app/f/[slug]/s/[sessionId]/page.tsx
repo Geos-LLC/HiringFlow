@@ -713,20 +713,28 @@ export default function SessionPlayerPage() {
                   onClick={async () => {
                     if (!recordedVideo) return
                     setSubmitting(true)
+                    // eslint-disable-next-line no-console
+                    console.log('[submit-video]', { stepId: videoCompanion.stepId, size: recordedVideo.size, type: recordedVideo.type, companion: videoCompanion })
                     const formData = new FormData()
                     formData.append('stepId', videoCompanion.stepId)
                     formData.append('video', recordedVideo, 'recording.webm')
                     const res = await fetch(`/api/public/sessions/${sessionId}/submit`, { method: 'POST', body: formData })
-                    if (res.ok) {
-                      const advanceRes = await fetch(`/api/public/sessions/${sessionId}/answer`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ stepId: videoCompanion.stepId }),
-                      })
-                      if (advanceRes.ok) {
-                        const data = await advanceRes.json()
-                        if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
-                        else fetchStep()
-                      }
+                    if (!res.ok) {
+                      const errorBody = await res.text()
+                      // eslint-disable-next-line no-console
+                      console.error('[submit-video] failed', res.status, errorBody)
+                      alert(`Submit failed (${res.status}): ${errorBody}`)
+                      setSubmitting(false)
+                      return
+                    }
+                    const advanceRes = await fetch(`/api/public/sessions/${sessionId}/answer`, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ stepId: videoCompanion.stepId }),
+                    })
+                    if (advanceRes.ok) {
+                      const data = await advanceRes.json()
+                      if (data.finished) router.push(`/f/${slug}/s/${sessionId}/done`)
+                      else fetchStep()
                     }
                     setSubmitting(false)
                   }}
