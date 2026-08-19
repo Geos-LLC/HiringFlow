@@ -109,17 +109,22 @@ export async function POST(
       select: { id: true },
     })
 
-    // Mark session as finished (submission step ends the flow). The Prisma
-    // lifecycle middleware sees the `finishedAt` write and fires the
-    // `flow_completed` automations — no explicit call needed.
+    // Only finish the flow if this submission step has NO forward wiring
+    // (button/option targets). A submission step used as a chain
+    // companion (recruiter combines a question with a Video answer) is
+    // mid-flow, not terminal — marking finishedAt here strands the
+    // candidate on the End screen. The /answer call the client fires
+    // after /submit will finishSession() when the flow actually ends.
     {
       const now = new Date()
+      const btn = (step.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
+      const hasForwardWiring = !!btn && btn !== '__end__'
+      const isTerminal = !hasForwardWiring
       await prisma.session.update({
         where: { id: params.sessionId },
         data: {
           lastStepId: stepId,
-          finishedAt: now,
-          outcome: 'completed',
+          ...(isTerminal ? { finishedAt: now, outcome: 'completed' } : {}),
           lastActivityAt: now,
           lastProgressAt: now,
         },
