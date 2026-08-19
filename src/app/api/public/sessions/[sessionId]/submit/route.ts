@@ -109,17 +109,24 @@ export async function POST(
       select: { id: true },
     })
 
-    // Only finish the flow if this submission step has NO forward wiring
-    // (button/option targets). A submission step used as a chain
-    // companion (recruiter combines a question with a Video answer) is
-    // mid-flow, not terminal — marking finishedAt here strands the
-    // candidate on the End screen. The /answer call the client fires
-    // after /submit will finishSession() when the flow actually ends.
+    // Terminal detection: don't finish the session if this submission
+    // step is part of a combined chain (i.e. a Video answer companion
+    // to a question). Chain companions are mid-flow — the chain's
+    // leader carries the forward wiring, not the companion, so a
+    // buttonConfig check on the companion incorrectly reports "no
+    // forward wiring" and marks the session complete. The /answer call
+    // the client fires next handles real flow termination.
     {
       const now = new Date()
+      const isChainMember =
+        !!step.combinedWithId ||
+        !!(await prisma.flowStep.findFirst({
+          where: { flowId: session.flow.id, combinedWithId: stepId },
+          select: { id: true },
+        }))
       const btn = (step.buttonConfig as { nextStepId?: string | null } | null)?.nextStepId
       const hasForwardWiring = !!btn && btn !== '__end__'
-      const isTerminal = !hasForwardWiring
+      const isTerminal = !isChainMember && !hasForwardWiring
       await prisma.session.update({
         where: { id: params.sessionId },
         data: {
