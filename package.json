@@ -6,6 +6,7 @@
     "dev": "next dev",
     "postinstall": "prisma generate",
     "build": "next build",
+    "vercel-build": "next build && npx --yes @fixprompt/cli deploy-start --source hiringflow-prod --key \"$NEXT_PUBLIC_FIXPROMPT_KEY\" --status success",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
