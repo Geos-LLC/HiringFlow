@@ -29,6 +29,7 @@ import { BackgroundCheckCard } from './_BackgroundCheckCard'
 import { CapturesPanel } from './_CapturesPanel'
 import CapturePlayback from '@/components/CapturePlayback'
 import { AICallsPanel } from './_AICallsPanel'
+import { McSimulationsPanel } from './_McSimulationsPanel'
 import { DispositionReasonPicker } from '../_DispositionReasonPicker'
 import { SendMessageModal } from '../_SendMessageModal'
 import AutomationPreviewModal from '@/components/AutomationPreviewModal'
@@ -1563,6 +1564,12 @@ export default function CandidateDetailPage() {
           one, and run the AI evaluation against the candidate's accumulated
           transcripts (AI calls, self-intro captures, meetings). */}
       <AICallsPanel sessionId={id} candidateName={candidate.candidateName} />
+
+      {/* MockCustomer integration (PR1B). Renders only when the workspace is
+          on the canary — self-hides when the launch endpoint 403s with
+          canary_disabled or mc_not_configured. Legacy AICall stack above is
+          intentionally untouched. */}
+      <McSimulationsPanel sessionId={id} candidateName={candidate.candidateName} />
 
       {/* Background check — Certn integration; self-hides gracefully if the
           workspace hasn't connected Certn yet (the order button just returns

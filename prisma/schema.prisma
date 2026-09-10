@@ -124,6 +124,8 @@ model Workspace {
   telegramSubscription TelegramSubscription?
   telegramChannels     TelegramChannel[]
   telegramPlacements   TelegramPlacement[]
+  mcWorkspaceMapping   McWorkspaceMapping?
+  mcSimulations        McSimulation[]
 
   @@map("workspaces")
 }
@@ -958,6 +960,7 @@ model Session {
   evaluations             CandidateEvaluation[]
   videoWatches            SessionVideoWatch[]
   trainingVideoWatches    TrainingVideoWatch[]
+  mcSimulations           McSimulation[]
 
   // Composite index for the board's default "active candidates" filter and
   // for the cron stalled detector's per-workspace sweep — both query by
@@ -2174,4 +2177,117 @@ model TelegramPlacement {
   @@index([workspaceId, status])
   @@index([channelId])
   @@map("telegram_placements")
+}
+
+// ---------------------------------------------------------------------------
+// MockCustomer integration (PR1B)
+//
+// HF's local surface for driving simulations run by the MockCustomer product
+// (Geos-LLC/mockcustomer). One MC Organization per HF Workspace. MC remains
+// system of record for transcripts, evaluation, and detailed diagnostics;
+// HF stores only the lightweight projection its recruiter UX needs.
+// ---------------------------------------------------------------------------
+
+/// Per-workspace MockCustomer binding. Lazy — created the first time a
+/// workspace onboards to the MC-backed simulation flow. Encrypted key + webhook
+/// secret use lib/crypto's AES-256-GCM (same idiom as CertnIntegration).
+model McWorkspaceMapping {
+  id                       String    @id @default(uuid())
+  workspaceId              String    @unique @map("workspace_id")
+  workspace                Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  /// Immutable MC-side identity. Preferred correlation anchor over the slug
+  /// which is display/routing (may be renamed).
+  mcOrganizationId         String    @map("mc_organization_id")
+  /// Display-facing MC org slug — used for the deep link in the UI. Not
+  /// authoritative — always resolve identity from mcOrganizationId.
+  mcOrganizationSlug       String    @map("mc_organization_slug")
+  /// Encrypted (`iv:tag:cipher` hex) mc_(live|test)_* bearer used for
+  /// server-to-server calls to MC's /v1/external-simulations/* surface.
+  mcApiKeyEncrypted        String    @map("mc_api_key_encrypted")
+  /// Encrypted `whsec_*` used to verify inbound X-MC-Signature over the raw
+  /// request body. Never logged / never sent to the browser.
+  mcWebhookSecretEncrypted String    @map("mc_webhook_secret_encrypted")
+  /// Matches MC's ApiKey.environment. `test` keys drive against MC staging;
+  /// `live` against MC production. Enforced by MC's own guard — HF just
+  /// records it for observability.
+  mcEnvironment            String    @map("mc_environment") // 'test' | 'live'
+  /// Per-workspace canary gate. When false, the launch route + UI treat
+  /// the mapping as absent. Flipped by operator (not a self-serve UI in
+  /// PR1B).
+  canaryEnabled            Boolean   @default(false) @map("canary_enabled")
+  provisionedAt            DateTime  @default(now()) @map("provisioned_at")
+  provisionedByUserId      String?   @map("provisioned_by_user_id")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @updatedAt @map("updated_at")
+
+  @@map("mc_workspace_mappings")
+}
+
+/// HF's shadow row for a simulation MC is running. Created BEFORE the dial
+/// so its `id` can be used as both the MC Idempotency-Key AND the
+/// clientReferenceId — MC echoes clientReferenceId back verbatim in every
+/// webhook, so HF correlates inbound events primarily by matching
+/// `data.clientReferenceId` against `McSimulation.id`. `mcCallId` is
+/// secondary metadata and must not be required for the first webhook.
+model McSimulation {
+  id                 String    @id @default(uuid())
+  workspaceId        String    @map("workspace_id")
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  candidateId        String    @map("candidate_id") // FK Session.id
+  candidate          Session   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  launchedByUserId   String    @map("launched_by_user_id")
+  /// MC's ExternalCall.id, populated after `POST /v1/external-simulations/dial`
+  /// returns. Nullable until then — a race can put the first webhook (which
+  /// only carries clientReferenceId) ahead of the dial response, and HF
+  /// must handle that.
+  mcCallId           String?   @unique @map("mc_call_id")
+  /// Denormalized from McWorkspaceMapping.mcOrganizationId for audit.
+  mcOrganizationId   String    @map("mc_organization_id")
+  /// Mirrors MC's ExternalCallStatus: queued | ringing | in_progress |
+  /// completed | failed | cancelled. Only forward transitions are permitted
+  /// (see status-ladder.ts).
+  status             String    @default("queued")
+  /// Lightweight projection surfaced to the recruiter UI. Present only
+  /// once a terminal event arrives with an evaluation. Fields inside are
+  /// individually nullable — MC never fabricates values.
+  resultProjection   Json?     @map("result_projection")
+  queuedAt           DateTime  @default(now()) @map("queued_at")
+  ringingAt          DateTime? @map("ringing_at")
+  answeredAt         DateTime? @map("answered_at")
+  completedAt        DateTime? @map("completed_at")
+  failedAt           DateTime? @map("failed_at")
+  failureReason      String?   @map("failure_reason")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  webhookEvents      McWebhookEvent[]
+
+  @@index([workspaceId, candidateId, createdAt])
+  @@index([workspaceId, status])
+  @@map("mc_simulations")
+}
+
+/// Immutable log of MC webhook events received. Uniqueness on `mcEventId`
+/// gives exactly-once processing on top of MC's at-least-once delivery.
+/// Insert-then-update-in-same-tx is the enforcement mechanism:
+/// unique-conflict → dup → 200 no-op; unique-insert → apply forward
+/// transition on the linked McSimulation.
+model McWebhookEvent {
+  id             String       @id @default(uuid())
+  /// MC's `event.id` — HF's idempotency anchor.
+  mcEventId      String       @unique @map("mc_event_id")
+  mcSimulationId String       @map("mc_simulation_id")
+  mcSimulation   McSimulation @relation(fields: [mcSimulationId], references: [id], onDelete: Cascade)
+  /// Denormalized MC callId (may be null on the first event under the
+  /// race path where the dial response hasn't landed yet).
+  mcCallId       String?      @map("mc_call_id")
+  /// Wire-form MC event type: external_call.queued | .ringing |
+  /// .in_progress | .completed | .failed | .cancelled.
+  eventType      String       @map("event_type")
+  /// Verbatim body received on the wire (used for audit + replay).
+  payload        Json
+  receivedAt     DateTime     @default(now()) @map("received_at")
+
+  @@index([mcSimulationId, receivedAt])
+  @@map("mc_webhook_events")
 }
