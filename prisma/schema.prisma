@@ -2236,6 +2236,14 @@ model McSimulation {
   candidateId        String    @map("candidate_id") // FK Session.id
   candidate          Session   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   launchedByUserId   String    @map("launched_by_user_id")
+  /// Client-generated request idempotency key. The recruiter UI mints
+  /// a fresh UUID on click; the server dedups any duplicate/concurrent
+  /// POST that carries the same value inside the same workspace. Scope
+  /// is (workspaceId, launchRequestId) so a client bug that reuses a
+  /// UUID across workspaces still stays isolated. Nullable to keep the
+  /// migration additive for rows that predate this column, but ALL new
+  /// launches after this PR must supply one.
+  launchRequestId    String?   @map("launch_request_id")
   /// MC's ExternalCall.id, populated after `POST /v1/external-simulations/dial`
   /// returns. Nullable until then — a race can put the first webhook (which
   /// only carries clientReferenceId) ahead of the dial response, and HF
@@ -2264,6 +2272,11 @@ model McSimulation {
 
   @@index([workspaceId, candidateId, createdAt])
   @@index([workspaceId, status])
+  /// Idempotency uniqueness: a duplicate/concurrent POST with the same
+  /// launchRequestId inside the same workspace hits this constraint;
+  /// the runner's try/catch on P2002 reuses the existing row rather
+  /// than creating a second simulation and firing a second MC dial.
+  @@unique([workspaceId, launchRequestId], name: "workspace_launch_request_unique")
   @@map("mc_simulations")
 }
 

@@ -22,7 +22,7 @@
 
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 interface McSimulationRow {
   id: string
@@ -76,6 +76,17 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Per-intent launch idempotency key. Minted when the recruiter opens
+  // the confirmation dialog, reused across:
+  //   - the initial POST
+  //   - any double-click on the "Launch" button
+  //   - any browser retry that survived a network hiccup
+  // The server treats a duplicate/concurrent POST with the same value
+  // as the same launch (returns the existing McSimulation, does NOT
+  // dial MC twice). A NEW UUID is minted only when the recruiter opens
+  // the confirmation dialog for a distinct intent.
+  const launchRequestIdRef = useRef<string | null>(null)
+
   const loadRows = useCallback(async () => {
     try {
       const res = await fetch(`/api/candidates/${sessionId}/mc-simulations`, {
@@ -127,11 +138,20 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
   }, [hasNonTerminal, rows, sessionId])
 
   const launch = useCallback(async () => {
+    // If the ref has been cleared (e.g. by a prior successful launch),
+    // mint a fresh id — this defends against a stale "Launch" click
+    // after the previous run completed and the dialog was left open.
+    if (!launchRequestIdRef.current) {
+      launchRequestIdRef.current = crypto.randomUUID()
+    }
+    const launchRequestId = launchRequestIdRef.current
     setLaunching(true)
     setError(null)
     try {
       const res = await fetch(`/api/candidates/${sessionId}/mc-simulations`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launchRequestId }),
       })
       if (res.status === 403) {
         const body = (await res.json().catch(() => ({}))) as { reason?: string }
@@ -147,6 +167,9 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
       }
       setEnabled(true)
       setConfirmOpen(false)
+      // Successful launch — retire this idempotency key. The next
+      // opening of the confirmation dialog mints a fresh one.
+      launchRequestIdRef.current = null
       await loadRows()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Launch failed')
@@ -154,6 +177,22 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
       setLaunching(false)
     }
   }, [sessionId, loadRows])
+
+  // Mint a fresh launchRequestId per opening of the confirmation
+  // dialog — distinct intent = distinct launch. Reuse it across the
+  // launch call so a mid-flight double-click / network retry stays
+  // dedup'd server-side.
+  const openConfirm = useCallback(() => {
+    launchRequestIdRef.current = crypto.randomUUID()
+    setError(null)
+    setConfirmOpen(true)
+  }, [])
+
+  const cancelConfirm = useCallback(() => {
+    if (launching) return
+    launchRequestIdRef.current = null
+    setConfirmOpen(false)
+  }, [launching])
 
   // On initial load, if any rows exist we know the workspace is
   // enabled (they got launched somehow). Otherwise we don't know yet.
@@ -174,8 +213,8 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setConfirmOpen(true)}
-            disabled={launching}
+            onClick={openConfirm}
+            disabled={launching || confirmOpen}
             className="text-[12px] px-3 py-1.5 rounded-[8px] bg-brand-500 text-white font-semibold hover:bg-brand-600 transition-colors disabled:opacity-50"
           >
             Run AI Customer Simulation
@@ -201,7 +240,7 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
               {launching ? 'Launching…' : 'Launch'}
             </button>
             <button
-              onClick={() => setConfirmOpen(false)}
+              onClick={cancelConfirm}
               disabled={launching}
               className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-grey-35 hover:text-ink transition-colors disabled:opacity-50"
             >

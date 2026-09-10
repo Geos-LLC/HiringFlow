@@ -15,14 +15,33 @@ export interface LaunchSimulationInput {
   workspaceId: string
   candidateId: string // HF Session.id
   launchedByUserId: string
-  // No scenario/persona selector in PR1B. Runners use the mapped MC
-  // organization's default configuration.
+  /**
+   * Client-generated request idempotency key. The recruiter UI mints
+   * a UUID before POSTing and reuses it on any retry-with-same-intent
+   * (network hiccup, double-click, browser back button). The runner
+   * dedups by `(workspaceId, launchRequestId)`: a duplicate/concurrent
+   * launch returns the SAME McSimulation and does NOT dial MC twice.
+   *
+   * Required in production paths. Left optional at the type level so
+   * legacy internal callers (Flow automation in PR2, one-off scripts)
+   * can opt in incrementally — but a null value degrades to
+   * "no launch-level dedup," so callers with any concurrency risk
+   * must supply one.
+   */
+  launchRequestId?: string | null
 }
 
 export interface LaunchSimulationResult {
   simulationId: string
   status: string
   mcCallId: string | null
+  /**
+   * True when the runner reused an existing McSimulation instead of
+   * creating a new one. Lets the API/UI distinguish a fresh launch
+   * from a duplicate — telemetry only, no functional effect on the
+   * response shape.
+   */
+  reusedExisting: boolean
 }
 
 export interface SimulationRunner {
@@ -44,6 +63,7 @@ export class SimulationLaunchError extends Error {
     | 'candidate_missing_phone'
     | 'mc_dial_rejected'
     | 'mc_timeout'
+    | 'launch_request_id_conflict'
     | 'internal'
   detail?: string
   upstream?: unknown

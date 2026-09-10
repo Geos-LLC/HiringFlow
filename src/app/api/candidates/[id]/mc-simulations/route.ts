@@ -58,6 +58,12 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
   return NextResponse.json({ simulations: rows })
 }
 
+// RFC-4122 v1..v5 UUID (case-insensitive). We accept any variant so a
+// client that generates v7 (time-ordered) or v4 (random) both work —
+// the runner only cares about `(workspaceId, launchRequestId)`
+// uniqueness, not the version bits.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   const ws = await getWorkspaceSession()
   if (!ws) return unauthorized()
@@ -71,6 +77,38 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   })
   if (!candidate) return NextResponse.json({ error: 'Candidate not found' }, { status: 404 })
 
+  // Parse + validate the launchRequestId. The UI mints a UUID per
+  // click; a double-click / network-retry / concurrent submit reuses
+  // it, and the runner returns the SAME McSimulation without firing a
+  // second MC dial.
+  //
+  // The field is REQUIRED for browser callers to keep the dedup
+  // invariant. We tolerate an empty body for backwards-compat with
+  // any legacy internal caller that hasn't been updated yet — but a
+  // 400 fires if the field is present but malformed.
+  let launchRequestId: string | null = null
+  try {
+    const body = (await request.json().catch(() => ({}))) as {
+      launchRequestId?: unknown
+    }
+    if (body && body.launchRequestId !== undefined && body.launchRequestId !== null) {
+      if (typeof body.launchRequestId !== 'string' || !UUID_RE.test(body.launchRequestId)) {
+        return NextResponse.json(
+          {
+            error: 'launchRequestId must be a UUID string',
+            reason: 'invalid_launch_request_id',
+          },
+          { status: 400 },
+        )
+      }
+      launchRequestId = body.launchRequestId
+    }
+  } catch {
+    // Malformed JSON: treat as missing field. If the caller wanted
+    // dedup they should have supplied a valid body.
+    launchRequestId = null
+  }
+
   const runner = new McSimulationRunner({
     prisma,
     webhookCallbackUrl: resolveWebhookCallbackUrl(request),
@@ -81,12 +119,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       workspaceId: ws.workspaceId,
       candidateId: params.id,
       launchedByUserId: ws.userId,
+      launchRequestId,
     })
     return NextResponse.json(
       {
         simulationId: result.simulationId,
         mcCallId: result.mcCallId,
         status: result.status,
+        reusedExisting: result.reusedExisting,
       },
       { status: 202 },
     )
@@ -99,11 +139,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
             ? 422
             : err.reason === 'mc_not_configured' || err.reason === 'canary_disabled'
               ? 403
-              : err.reason === 'mc_timeout'
-                ? 504
-                : err.reason === 'mc_dial_rejected'
-                  ? 502
-                  : 500
+              : err.reason === 'launch_request_id_conflict'
+                ? 409
+                : err.reason === 'mc_timeout'
+                  ? 504
+                  : err.reason === 'mc_dial_rejected'
+                    ? 502
+                    : 500
       return NextResponse.json(
         { error: err.message, reason: err.reason, detail: err.detail },
         { status },

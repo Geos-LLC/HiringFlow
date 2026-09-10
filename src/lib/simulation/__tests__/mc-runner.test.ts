@@ -1,6 +1,40 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+
+// Mock @prisma/client's Prisma.PrismaClientKnownRequestError so the
+// runner's `err instanceof Prisma.PrismaClientKnownRequestError`
+// matches what our fake throws on P2002. Kept in vi.hoisted so the
+// class is available to both the vi.mock factory (hoisted to top)
+// and the makePrisma fake below.
+const { MockPrismaKnownError } = vi.hoisted(() => {
+  class MockPrismaKnownError extends Error {
+    code: string
+    meta: unknown
+    constructor(message: string, args: { code: string; meta?: unknown }) {
+      super(message)
+      this.name = 'PrismaClientKnownRequestError'
+      this.code = args.code
+      this.meta = args.meta
+    }
+  }
+  return { MockPrismaKnownError }
+})
+
+vi.mock('@prisma/client', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+  return {
+    ...actual,
+    Prisma: {
+      ...(actual as any).Prisma,
+      PrismaClientKnownRequestError: MockPrismaKnownError,
+    },
+  }
+})
+
+// eslint-disable-next-line import/first
 import { McSimulationRunner } from '../mc-runner'
+// eslint-disable-next-line import/first
 import { SimulationLaunchError } from '../runner'
+// eslint-disable-next-line import/first
 import { encryptMcSecret } from '@/lib/mockcustomer/encryption'
 
 // AES-256-GCM helpers derive their key from NEXTAUTH_SECRET (fallback).
@@ -42,6 +76,7 @@ interface McSimulationRow {
   launchedByUserId: string
   mcOrganizationId: string
   queuedAt: Date
+  launchRequestId?: string | null
 }
 
 function makePrisma(opts: {
@@ -70,6 +105,22 @@ function makePrisma(opts: {
     },
     mcSimulation: {
       create: vi.fn(async (args: { data: McSimulationRow }) => {
+        // Enforce @@unique([workspaceId, launchRequestId]) — mirrors
+        // the DB constraint. Concurrent-launch tests exercise this
+        // path directly.
+        if (args.data.launchRequestId != null) {
+          for (const existing of Array.from(sims.values())) {
+            if (
+              existing.workspaceId === args.data.workspaceId &&
+              existing.launchRequestId === args.data.launchRequestId
+            ) {
+              throw new MockPrismaKnownError('unique constraint failed', {
+                code: 'P2002',
+                meta: { target: ['workspace_id', 'launch_request_id'] },
+              })
+            }
+          }
+        }
         sims.set(args.data.id, {
           ...args.data,
           status: args.data.status ?? 'queued',
@@ -79,6 +130,21 @@ function makePrisma(opts: {
         })
         return sims.get(args.data.id)!
       }),
+      findFirst: vi.fn(
+        async (args: {
+          where: { workspaceId: string; launchRequestId: string }
+        }) => {
+          for (const existing of Array.from(sims.values())) {
+            if (
+              existing.workspaceId === args.where.workspaceId &&
+              existing.launchRequestId === args.where.launchRequestId
+            ) {
+              return existing
+            }
+          }
+          return null
+        },
+      ),
       update: vi.fn(
         async (args: {
           where: { id: string }
@@ -304,5 +370,292 @@ describe('McSimulationRunner.launch — zero candidate side effects on failure',
       }),
     ).rejects.toBeInstanceOf(SimulationLaunchError)
     // Fake threw no unexpected access → the runner stayed in its lane.
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Launch-level idempotency — client-generated launchRequestId
+// ---------------------------------------------------------------------------
+//
+// Guards the "double-click / retried POST / two-parallel-requests"
+// race that MC's per-callId idempotency alone cannot cover. The
+// UI mints a UUID per opening of the confirm dialog and reuses it
+// across any retry-with-same-intent; the runner dedups on
+// (workspaceId, launchRequestId) via the @@unique constraint.
+// ---------------------------------------------------------------------------
+
+const LAUNCH_REQ_ID = '11111111-2222-3333-4444-555555555555'
+
+function newRunnerWithSingleDialSuccess(
+  p: ReturnType<typeof makePrisma>,
+  fetchImpl?: ReturnType<typeof vi.fn>,
+) {
+  const impl =
+    fetchImpl ??
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          callId: 'mc-call-abc',
+          status: 'ringing',
+          estimatedRingSeconds: 3,
+        }),
+        { status: 202 },
+      ),
+    )
+  const runner = new McSimulationRunner({
+    prisma: p as never,
+    webhookCallbackUrl: WEBHOOK_URL,
+    fetchImpl: impl as never,
+  })
+  return { runner, fetchImpl: impl }
+}
+
+describe('McSimulationRunner.launch — launchRequestId idempotency', () => {
+  it('acceptance: sequential duplicate POST with same launchRequestId → same McSimulation, one MC dial', async () => {
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const { runner, fetchImpl } = newRunnerWithSingleDialSuccess(p)
+    const first = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    const second = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    expect(first.simulationId).toBe(second.simulationId)
+    expect(first.reusedExisting).toBe(false)
+    expect(second.reusedExisting).toBe(true)
+    // MC dial fired ONCE across both launches — this is the whole
+    // point: MC's per-callId idempotency can't help here because the
+    // second launch would generate a fresh callId without our own
+    // dedup at the launch level.
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    // Only ONE McSimulation row exists in the DB (the second .create
+    // ATTEMPT threw P2002 and did not persist).
+    expect(p._state.sims.size).toBe(1)
+    // The second launch's response echoes the original mcCallId.
+    expect(second.mcCallId).toBe('mc-call-abc')
+  })
+
+  it('acceptance: concurrent duplicate POST → same McSimulation, one MC dial (P2002 race resolved by re-fetch)', async () => {
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const { runner, fetchImpl } = newRunnerWithSingleDialSuccess(p)
+    // Fire both launches "concurrently" via Promise.all — one wins
+    // the DB race, the other catches P2002 and reuses.
+    const [a, b] = await Promise.all([
+      runner.launch({
+        workspaceId: WORKSPACE,
+        candidateId: CANDIDATE,
+        launchedByUserId: USER,
+        launchRequestId: LAUNCH_REQ_ID,
+      }),
+      runner.launch({
+        workspaceId: WORKSPACE,
+        candidateId: CANDIDATE,
+        launchedByUserId: USER,
+        launchRequestId: LAUNCH_REQ_ID,
+      }),
+    ])
+    expect(a.simulationId).toBe(b.simulationId)
+    // Exactly one of the two must have reused; the other created.
+    const reusedCount = [a.reusedExisting, b.reusedExisting].filter(Boolean).length
+    expect(reusedCount).toBe(1)
+    // MC dial fired ONCE across both concurrent launches.
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    // Only one McSimulation row exists.
+    expect(p._state.sims.size).toBe(1)
+  })
+
+  it('acceptance: retry after HF response loss (same launchRequestId) → same simulation, no re-dial', async () => {
+    // Reproduces: recruiter clicks Launch, server processes the dial
+    // and MC returns success, but the network drops the HF→browser
+    // response. The browser retries with the SAME launchRequestId.
+    // The second POST must return the existing McSimulation without
+    // firing a second MC dial.
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const { runner, fetchImpl } = newRunnerWithSingleDialSuccess(p)
+    const first = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    // Simulate the browser retry ~500ms later.
+    await new Promise((r) => setTimeout(r, 10))
+    const retry = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    expect(retry.simulationId).toBe(first.simulationId)
+    expect(retry.reusedExisting).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    // MC's client-side idempotency-key was set to the (unchanged)
+    // McSimulation.id, so even if the second launch HAD reached MC
+    // it would have been deduped there — but the launch-level guard
+    // prevents the second request entirely.
+  })
+
+  it('acceptance: two genuinely separate launches with different launchRequestIds → two McSimulations, two dials', async () => {
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ callId: 'mc-call-1', status: 'ringing', estimatedRingSeconds: 3 }),
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ callId: 'mc-call-2', status: 'ringing', estimatedRingSeconds: 3 }),
+          { status: 202 },
+        ),
+      )
+    const { runner } = newRunnerWithSingleDialSuccess(p, fetchImpl)
+    const a = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: '11111111-1111-1111-1111-111111111111',
+    })
+    const b = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: '22222222-2222-2222-2222-222222222222',
+    })
+    expect(a.simulationId).not.toBe(b.simulationId)
+    expect(a.reusedExisting).toBe(false)
+    expect(b.reusedExisting).toBe(false)
+    // Distinct MC calls returned.
+    expect(a.mcCallId).toBe('mc-call-1')
+    expect(b.mcCallId).toBe('mc-call-2')
+    // Two distinct MC dials happened.
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(p._state.sims.size).toBe(2)
+  })
+
+  it('acceptance: launchRequestId reused across a DIFFERENT candidate (same workspace) → 409 conflict, no reuse leak', async () => {
+    // A client bug (or malicious probe) sends the same launchRequestId
+    // for two different candidates. The unique constraint fires, but
+    // returning the OTHER candidate's simulation would leak its
+    // existence. Runner throws launch_request_id_conflict; API maps
+    // to 409.
+    const otherCandidate = {
+      id: 'cand-other',
+      workspaceId: WORKSPACE,
+      candidateName: 'Other',
+      candidateEmail: null,
+      candidatePhone: '+15559999999',
+    }
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    // Also register the "other" candidate under the same workspace.
+    ;(p.session.findFirst as any).mockImplementation(
+      async (args: { where: { id: string; workspaceId: string } }) => {
+        if (args.where.id === CANDIDATE && args.where.workspaceId === WORKSPACE) {
+          return validCandidate
+        }
+        if (args.where.id === otherCandidate.id && args.where.workspaceId === WORKSPACE) {
+          return otherCandidate
+        }
+        return null
+      },
+    )
+    const { runner } = newRunnerWithSingleDialSuccess(p)
+    // First launch — succeeds, binds LAUNCH_REQ_ID to CANDIDATE.
+    await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    // Second launch — same launchRequestId, different candidate.
+    await expect(
+      runner.launch({
+        workspaceId: WORKSPACE,
+        candidateId: otherCandidate.id,
+        launchedByUserId: USER,
+        launchRequestId: LAUNCH_REQ_ID,
+      }),
+    ).rejects.toMatchObject({ reason: 'launch_request_id_conflict' })
+    // The other candidate has ZERO simulations — the first candidate's
+    // simulation was NOT reused for it.
+    const otherSims = Array.from(p._state.sims.values()).filter(
+      (r) => r.candidateId === otherCandidate.id,
+    )
+    expect(otherSims).toHaveLength(0)
+  })
+
+  it('sanity: same launchRequestId across DIFFERENT workspaces is isolated (no cross-workspace conflict)', async () => {
+    // Uniqueness scope is (workspaceId, launchRequestId) — the same
+    // UUID can legitimately appear under two workspaces because
+    // clients don't share UUIDs across tenants deliberately. This
+    // test confirms the constraint doesn't fire across workspaces.
+    const otherWorkspaceMapping = {
+      ...validMapping,
+      workspaceId: 'ws-2',
+    }
+    const otherWorkspaceCandidate = {
+      id: 'cand-in-ws2',
+      workspaceId: 'ws-2',
+      candidateName: 'WS2 Candidate',
+      candidateEmail: null,
+      candidatePhone: '+15558888888',
+    }
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    ;(p.mcWorkspaceMapping.findUnique as any).mockImplementation(async (args: any) => {
+      if (args.where.workspaceId === WORKSPACE) return validMapping
+      if (args.where.workspaceId === 'ws-2') return otherWorkspaceMapping
+      return null
+    })
+    ;(p.session.findFirst as any).mockImplementation(async (args: any) => {
+      if (args.where.id === CANDIDATE && args.where.workspaceId === WORKSPACE) {
+        return validCandidate
+      }
+      if (
+        args.where.id === otherWorkspaceCandidate.id &&
+        args.where.workspaceId === 'ws-2'
+      ) {
+        return otherWorkspaceCandidate
+      }
+      return null
+    })
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ callId: 'mc-call-ws1', status: 'ringing', estimatedRingSeconds: 3 }),
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ callId: 'mc-call-ws2', status: 'ringing', estimatedRingSeconds: 3 }),
+          { status: 202 },
+        ),
+      )
+    const { runner } = newRunnerWithSingleDialSuccess(p, fetchImpl)
+    const a = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    const b = await runner.launch({
+      workspaceId: 'ws-2',
+      candidateId: otherWorkspaceCandidate.id,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID, // deliberately reused across ws
+    })
+    expect(a.simulationId).not.toBe(b.simulationId)
+    expect(b.reusedExisting).toBe(false)
+    expect(p._state.sims.size).toBe(2)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 })
