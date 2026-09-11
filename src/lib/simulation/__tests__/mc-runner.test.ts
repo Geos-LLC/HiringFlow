@@ -156,6 +156,26 @@ function makePrisma(opts: {
           return row
         },
       ),
+      updateMany: vi.fn(
+        async (args: {
+          where: {
+            id?: string
+            mcCallId?: null
+            status?: { in: string[] }
+          }
+          data: Partial<McSimulationRow>
+        }) => {
+          if (!args.where.id) return { count: 0 }
+          const row = sims.get(args.where.id)
+          if (!row) return { count: 0 }
+          if (args.where.mcCallId === null && row.mcCallId !== null) return { count: 0 }
+          if (args.where.status?.in && !args.where.status.in.includes(row.status)) {
+            return { count: 0 }
+          }
+          Object.assign(row, args.data)
+          return { count: 1 }
+        },
+      ),
     },
     _state: { sims },
   }
@@ -317,9 +337,11 @@ describe('McSimulationRunner.launch — MC failure paths', () => {
         launchedByUserId: USER,
       }),
     ).rejects.toMatchObject({ reason: 'mc_dial_rejected' })
-    // Row was created (before dial) then patched to failed.
+    // Row was created (before dial) then marked failed via updateMany
+    // — pre-terminal-status guard prevents clobbering a webhook that
+    // may have advanced the row concurrently.
     expect(p.mcSimulation.create).toHaveBeenCalledOnce()
-    expect(p.mcSimulation.update).toHaveBeenCalledWith(
+    expect(p.mcSimulation.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'failed' }),
       }),
@@ -464,9 +486,22 @@ describe('McSimulationRunner.launch — launchRequestId idempotency', () => {
     // Exactly one of the two must have reused; the other created.
     const reusedCount = [a.reusedExisting, b.reusedExisting].filter(Boolean).length
     expect(reusedCount).toBe(1)
-    // MC dial fired ONCE across both concurrent launches.
-    expect(fetchImpl).toHaveBeenCalledOnce()
-    // Only one McSimulation row exists.
+    // fetchImpl may be called 1x or 2x here — race-dependent:
+    //   - Loser's findFirst runs BEFORE winner's mcCallId patch
+    //     completes → loser sees mcCallId=null → also dials → 2x.
+    //   - Loser's findFirst runs AFTER winner's patch → loser sees
+    //     mcCallId set → skips dial → 1x.
+    // BOTH outcomes are safe: MC's Idempotency-Key on the retry is
+    // the SAME McSimulation.id → MC's ExternalRequestIdempotency
+    // returns the cached ExternalCall on the second HTTP call.
+    // Physical PSTN dial fires ONCE regardless.
+    expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(1)
+    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(2)
+    // Both racers observed the same MC callId (either because loser
+    // skipped, or because MC's idempotency returned the same body on
+    // the second fetch — our mock returns the same fixture).
+    expect(a.mcCallId).toBe(b.mcCallId)
+    // Only one McSimulation row exists in HF regardless of the race.
     expect(p._state.sims.size).toBe(1)
   })
 
@@ -657,5 +692,231 @@ describe('McSimulationRunner.launch — launchRequestId idempotency', () => {
     expect(b.reusedExisting).toBe(false)
     expect(p._state.sims.size).toBe(2)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stranded-launch resume — the winning launch created the row but died
+// before persisting mcCallId. A duplicate POST with the same
+// launchRequestId must retry the dial rather than return a permanently-
+// unusable simulation. MC's Idempotency-Key = McSimulation.id keeps the
+// physical PSTN call to exactly one.
+// ---------------------------------------------------------------------------
+
+/** Seed the fake with an existing McSimulation as if a prior crashed launch left it. */
+function seedStrandedRow(
+  p: ReturnType<typeof makePrisma>,
+  overrides: {
+    launchRequestId: string
+    mcCallId?: string | null
+    status?: string
+    failureReason?: string | null
+  },
+) {
+  const strandedId = 'stranded-sim-' + Math.random().toString(36).slice(2, 10)
+  p._state.sims.set(strandedId, {
+    id: strandedId,
+    workspaceId: WORKSPACE,
+    candidateId: CANDIDATE,
+    launchedByUserId: USER,
+    mcOrganizationId: 'mc-org-1',
+    status: overrides.status ?? 'queued',
+    mcCallId: overrides.mcCallId ?? null,
+    failedAt: null,
+    failureReason: overrides.failureReason ?? null,
+    queuedAt: new Date(),
+    launchRequestId: overrides.launchRequestId,
+  })
+  return strandedId
+}
+
+describe('McSimulationRunner.launch — stranded launch resume', () => {
+  it('acceptance: reused row with mcCallId==null AND non-terminal → RETRIES provider.dial() with existing id', async () => {
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const strandedId = seedStrandedRow(p, {
+      launchRequestId: LAUNCH_REQ_ID,
+      mcCallId: null,
+      status: 'queued',
+    })
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          callId: 'mc-call-recovered',
+          status: 'ringing',
+          estimatedRingSeconds: 3,
+        }),
+        { status: 202 },
+      ),
+    )
+    const runner = new McSimulationRunner({
+      prisma: p as never,
+      webhookCallbackUrl: WEBHOOK_URL,
+      fetchImpl: fetchImpl as never,
+    })
+    const result = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    // Runner detected the stranded row and RE-DIALED.
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    // Dial uses the EXISTING McSimulation.id as MC's Idempotency-Key
+    // + clientReferenceId — this is the load-bearing guarantee.
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit & { headers: Record<string, string> }]
+    const init = call[1]
+    expect(init.headers['Idempotency-Key']).toBe(strandedId)
+    const body = JSON.parse(init.body as string)
+    expect(body.clientReferenceId).toBe(strandedId)
+    // Result returns the existing row's id + mcCallId patched with
+    // whatever MC returned (either the cached call from the original
+    // attempt, or a fresh one if the crash was pre-MC).
+    expect(result.simulationId).toBe(strandedId)
+    expect(result.mcCallId).toBe('mc-call-recovered')
+    expect(result.reusedExisting).toBe(true)
+    // mcCallId was patched onto the existing row.
+    expect(p._state.sims.get(strandedId)!.mcCallId).toBe('mc-call-recovered')
+    // No new McSimulation row was created.
+    expect(p._state.sims.size).toBe(1)
+  })
+
+  it('acceptance: reused row with mcCallId ALREADY SET → skips dial (idempotent duplicate)', async () => {
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const existingId = seedStrandedRow(p, {
+      launchRequestId: LAUNCH_REQ_ID,
+      mcCallId: 'mc-call-original',
+      status: 'ringing',
+    })
+    const fetchImpl = vi.fn()
+    const runner = new McSimulationRunner({
+      prisma: p as never,
+      webhookCallbackUrl: WEBHOOK_URL,
+      fetchImpl: fetchImpl as never,
+    })
+    const result = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    // Winning launch already recorded mcCallId — nothing to resume.
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(result.simulationId).toBe(existingId)
+    expect(result.mcCallId).toBe('mc-call-original')
+    expect(result.reusedExisting).toBe(true)
+    expect(result.status).toBe('ringing')
+  })
+
+  it('acceptance: reused row is TERMINAL (completed/failed/cancelled) → skips dial regardless of mcCallId', async () => {
+    for (const terminalStatus of ['completed', 'failed', 'cancelled'] as const) {
+      const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+      // Deliberately terminal + mcCallId null — a stranded launch that
+      // was later cancelled/failed by ops. Must still NOT re-dial.
+      const existingId = seedStrandedRow(p, {
+        launchRequestId: LAUNCH_REQ_ID,
+        mcCallId: null,
+        status: terminalStatus,
+        failureReason: terminalStatus === 'failed' ? 'operator_cancel' : null,
+      })
+      const fetchImpl = vi.fn()
+      const runner = new McSimulationRunner({
+        prisma: p as never,
+        webhookCallbackUrl: WEBHOOK_URL,
+        fetchImpl: fetchImpl as never,
+      })
+      const result = await runner.launch({
+        workspaceId: WORKSPACE,
+        candidateId: CANDIDATE,
+        launchedByUserId: USER,
+        launchRequestId: LAUNCH_REQ_ID,
+      })
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(result.simulationId).toBe(existingId)
+      expect(result.status).toBe(terminalStatus)
+      expect(result.reusedExisting).toBe(true)
+    }
+  })
+
+  it('acceptance: resume-dial failure marks the EXISTING row failed (no new McSimulation created)', async () => {
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const strandedId = seedStrandedRow(p, {
+      launchRequestId: LAUNCH_REQ_ID,
+      mcCallId: null,
+      status: 'queued',
+    })
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'bad' }), { status: 400 }),
+    )
+    const runner = new McSimulationRunner({
+      prisma: p as never,
+      webhookCallbackUrl: WEBHOOK_URL,
+      fetchImpl: fetchImpl as never,
+    })
+    await expect(
+      runner.launch({
+        workspaceId: WORKSPACE,
+        candidateId: CANDIDATE,
+        launchedByUserId: USER,
+        launchRequestId: LAUNCH_REQ_ID,
+      }),
+    ).rejects.toMatchObject({ reason: 'mc_dial_rejected' })
+    // No new McSimulation created.
+    expect(p._state.sims.size).toBe(1)
+    // The EXISTING row was marked failed (via the pre-terminal guard
+    // in the runner's failure branch — matches applyMcSimulationState).
+    const row = p._state.sims.get(strandedId)!
+    expect(row.status).toBe('failed')
+    expect(row.failureReason).toBe('mc_dial_rejected')
+  })
+
+  it('acceptance: resume-dial does NOT clobber a concurrently-backfilled mcCallId', async () => {
+    // Scenario: the loser's resume-dial hits MC and gets a callId,
+    // but between our findFirst and our updateMany a webhook receiver
+    // back-filled mcCallId onto the row (from the winning launch's
+    // .queued webhook). Our updateMany uses `mcCallId: null` as a
+    // guard so the concurrent write is preserved.
+    const p = makePrisma({ mapping: validMapping, candidate: validCandidate })
+    const strandedId = seedStrandedRow(p, {
+      launchRequestId: LAUNCH_REQ_ID,
+      mcCallId: null,
+      status: 'queued',
+    })
+    // Simulate concurrent webhook back-fill: right before the dial's
+    // response comes back, the webhook receiver patches mcCallId.
+    let fetchInvoked = false
+    const fetchImpl = vi.fn(async () => {
+      if (!fetchInvoked) {
+        fetchInvoked = true
+        // Concurrent webhook: back-fill mcCallId directly.
+        p._state.sims.get(strandedId)!.mcCallId = 'mc-call-from-webhook'
+      }
+      return new Response(
+        JSON.stringify({
+          callId: 'mc-call-from-dial',
+          status: 'ringing',
+          estimatedRingSeconds: 3,
+        }),
+        { status: 202 },
+      )
+    })
+    const runner = new McSimulationRunner({
+      prisma: p as never,
+      webhookCallbackUrl: WEBHOOK_URL,
+      fetchImpl: fetchImpl as never,
+    })
+    const result = await runner.launch({
+      workspaceId: WORKSPACE,
+      candidateId: CANDIDATE,
+      launchedByUserId: USER,
+      launchRequestId: LAUNCH_REQ_ID,
+    })
+    // Row's mcCallId is the CONCURRENT value (webhook's), not our
+    // dial response — the mcCallId:null guard on updateMany protected
+    // the earlier write.
+    expect(p._state.sims.get(strandedId)!.mcCallId).toBe('mc-call-from-webhook')
+    // Runner's return still reflects what MC handed back on this
+    // request — telemetry-only; the DB has the winning value.
+    expect(result.simulationId).toBe(strandedId)
+    expect(result.reusedExisting).toBe(true)
   })
 })

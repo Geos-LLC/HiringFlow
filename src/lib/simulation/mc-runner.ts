@@ -200,10 +200,24 @@ export class McSimulationRunner implements SimulationRunner {
       effectiveRow = existing
     }
 
-    if (!created) {
-      // Duplicate launch: skip the dial entirely. Original launch
-      // already handled it (or is in flight). Return the existing
-      // row's state.
+    // 4. Decide whether to dial. Three cases:
+    //    - Fresh row (created=true): always dial.
+    //    - Reused row with mcCallId already set: the winning launch's
+    //      dial succeeded and patched mcCallId. Nothing to do — return
+    //      the existing row's state.
+    //    - Reused row already terminal: the winning launch reached its
+    //      terminal (via webhooks or a prior dial that recorded failure).
+    //      Dialing would be wrong; return the existing state.
+    //    - Reused row with mcCallId==null AND non-terminal: STRANDED —
+    //      the winning launch crashed between row-create and mcCallId
+    //      persist. Retry dial using the EXISTING simulationId as MC's
+    //      Idempotency-Key + clientReferenceId. MC's own idempotency
+    //      guarantees the same physical ExternalCall (returns cached
+    //      callId if it already dialed; dials fresh if the crashed
+    //      request never reached MC).
+    const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
+    const rowTerminal = TERMINAL_STATUSES.has(effectiveRow.status)
+    if (!created && (effectiveRow.mcCallId || rowTerminal)) {
       return {
         simulationId: effectiveRow.id,
         status: effectiveRow.status,
@@ -212,9 +226,13 @@ export class McSimulationRunner implements SimulationRunner {
       }
     }
 
-    // 4. Dial MC. Any error here leaves the row visible in the UI as
-    //    failed with a recruiter-facing reason. Row identity (id) is
-    //    already reserved for correlation.
+    // 5. Dial MC. Uses `effectiveRow.id` (fresh-created id OR reused
+    //    existing id) — that value is what MC receives as the
+    //    Idempotency-Key AND clientReferenceId. A resumed stranded
+    //    launch therefore hits MC with the SAME key as the original,
+    //    so MC's per-request idempotency returns the same ExternalCall
+    //    rather than creating a second physical call.
+    const dialCallId = effectiveRow.id
     const cfg =
       this.deps.mcClientOverride ??
       buildMcClientConfig({
@@ -224,22 +242,35 @@ export class McSimulationRunner implements SimulationRunner {
     try {
       const dialResp = await mcDial(cfg, {
         destinationPhone: candidate.candidatePhone,
-        clientReferenceId: simulationId,
-        idempotencyKey: simulationId,
+        clientReferenceId: dialCallId,
+        idempotencyKey: dialCallId,
         callbackUrl: this.deps.webhookCallbackUrl,
         personaContext: DEFAULT_DESTINATION_PERSONA,
       })
-      await this.deps.prisma.mcSimulation.update({
-        where: { id: simulationId },
-        data: {
-          mcCallId: dialResp.callId,
-        },
-      })
+      // Patch/backfill mcCallId. On the resume path the row's
+      // mcCallId may already be null (that's what put us here) — the
+      // updateMany with `mcCallId: null` guard prevents overwriting a
+      // concurrently-back-filled value that snuck in via the webhook
+      // receiver between our findFirst and now.
+      if (created) {
+        await this.deps.prisma.mcSimulation.update({
+          where: { id: dialCallId },
+          data: { mcCallId: dialResp.callId },
+        })
+      } else {
+        // Reused row — do NOT clobber a value that a concurrent
+        // webhook may have back-filled between our conflict lookup
+        // and this write.
+        await this.deps.prisma.mcSimulation.updateMany({
+          where: { id: dialCallId, mcCallId: null },
+          data: { mcCallId: dialResp.callId },
+        })
+      }
       return {
-        simulationId,
-        status: 'queued',
+        simulationId: dialCallId,
+        status: created ? 'queued' : effectiveRow.status,
         mcCallId: dialResp.callId,
-        reusedExisting: false,
+        reusedExisting: !created,
       }
     } catch (err) {
       const isTimeout =
@@ -260,8 +291,12 @@ export class McSimulationRunner implements SimulationRunner {
         : err instanceof Error
           ? err.message
           : String(err)
-      await this.deps.prisma.mcSimulation.update({
-        where: { id: simulationId },
+      // Only stamp `failed` when the row is still pre-terminal —
+      // matches applyMcSimulationState's ladder posture. A concurrent
+      // webhook that already advanced the row to terminal must not be
+      // clobbered by this failure branch.
+      await this.deps.prisma.mcSimulation.updateMany({
+        where: { id: dialCallId, status: { in: ['queued', 'ringing', 'in_progress'] } },
         data: {
           status: 'failed',
           failedAt: now(),
