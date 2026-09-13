@@ -33,7 +33,11 @@ interface PositionResponse {
   }
   pipelinePerformance: { stage: string; count: number; pct: number }[]
   topSources: { source: string; count: number; pct: number }[]
-  ads: { id: string; name: string; source: string; createdAt: string }[]
+  ads: {
+    id: string; name: string; source: string; slug: string; isActive: boolean
+    applicants: number; flowName: string | null
+    createdAt: string; updatedAt: string
+  }[]
   recentCandidates: {
     id: string; name: string; email: string | null; status: string
     pipelineStatus: string | null; flowName: string | null; lastActivityAt: string
@@ -109,6 +113,7 @@ export default function PositionDetailPage() {
           <SummaryRow summary={data.summary} />
           <PipelinePerfCard rows={data.pipelinePerformance} />
           <TopSourcesCard rows={data.topSources} />
+          <AdsCard rows={data.ads} positionSlug={data.position.slug} />
           <RecentCandidatesCard rows={data.recentCandidates} />
         </div>
 
@@ -253,6 +258,71 @@ function RecentCandidatesCard({ rows }: { rows: PositionResponse['recentCandidat
         <Link href="/dashboard/candidates" className="text-[12px] text-brand-600 hover:text-brand-700 font-medium">
           View all candidates →
         </Link>
+      </div>
+    </div>
+  )
+}
+
+// ─── Ads table ──────────────────────────────────────────────────────────────
+
+function AdsCard({ rows, positionSlug }: { rows: PositionResponse['ads']; positionSlug: string }) {
+  return (
+    <div className="bg-white border border-surface-border rounded-[14px]">
+      <header className="flex items-center justify-between px-4 pt-4 pb-2">
+        <h3 className="text-[14px] font-semibold text-ink m-0">Ads ({rows.length})</h3>
+        <Link
+          href={`/dashboard/campaigns/${encodeURIComponent(positionSlug)}`}
+          className="text-[12px] text-brand-600 hover:text-brand-700 font-medium"
+        >
+          Manage ads →
+        </Link>
+      </header>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-[11px] uppercase text-grey-40 border-t border-surface-divider">
+              <th className="px-4 py-2 font-medium">Name</th>
+              <th className="px-4 py-2 font-medium">Source</th>
+              <th className="px-4 py-2 font-medium">Flow</th>
+              <th className="px-4 py-2 font-medium text-right">Applicants</th>
+              <th className="px-4 py-2 font-medium">Status</th>
+              <th className="px-4 py-2 font-medium">Created</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-surface-divider">
+            {rows.length === 0 && (
+              <tr><td colSpan={6} className="px-4 py-6 text-grey-40 text-center">No ads in this position yet.</td></tr>
+            )}
+            {rows.map(a => (
+              <tr key={a.id} className="hover:bg-surface-light">
+                <td className="px-4 py-3">
+                  <Link href={`/dashboard/campaigns/preview/${a.id}`} className="font-medium text-ink hover:text-brand-600">
+                    {a.name}
+                  </Link>
+                </td>
+                <td className="px-4 py-3 text-grey-35 capitalize">{a.source}</td>
+                <td className="px-4 py-3 text-grey-35">{a.flowName || '—'}</td>
+                <td className="px-4 py-3 text-right tabular-nums">
+                  {a.applicants > 0 ? (
+                    <Link href={`/dashboard/candidates?adId=${a.id}`} className="text-brand-600 hover:text-brand-700 font-medium">
+                      {a.applicants}
+                    </Link>
+                  ) : (
+                    <span className="text-grey-40">0</span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${a.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-grey-40'}`}>
+                    {a.isActive ? 'Active' : 'Archived'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-grey-40 tabular-nums text-[12px]">
+                  {new Date(a.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )

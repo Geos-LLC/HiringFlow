@@ -36,9 +36,13 @@ export async function GET(
       where: isUnassigned
         ? { workspaceId: ws.workspaceId, targetPosition: null }
         : { workspaceId: ws.workspaceId, targetPosition: positionSlug },
-      orderBy: { createdAt: 'asc' },
-      take: 5,
-      select: { id: true, name: true, source: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true, name: true, source: true, slug: true, isActive: true,
+        createdAt: true, updatedAt: true,
+        flow: { select: { id: true, name: true } },
+        _count: { select: { sessions: true } },
+      },
     }),
     prisma.session.findMany({
       where: sessionWhere,
@@ -109,7 +113,17 @@ export async function GET(
     },
     pipelinePerformance: pipelinePerf,
     topSources,
-    ads,
+    ads: ads.map(a => ({
+      id: a.id,
+      name: a.name,
+      source: a.source,
+      slug: a.slug,
+      isActive: a.isActive,
+      applicants: a._count.sessions,
+      flowName: a.flow?.name ?? null,
+      createdAt: a.createdAt.toISOString(),
+      updatedAt: a.updatedAt.toISOString(),
+    })),
     recentCandidates: recent.map(s => ({
       id: s.id,
       name: s.candidateName || 'Anonymous',
