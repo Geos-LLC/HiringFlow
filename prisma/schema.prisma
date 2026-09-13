@@ -124,6 +124,7 @@ model Workspace {
   telegramSubscription TelegramSubscription?
   telegramChannels     TelegramChannel[]
   telegramPlacements   TelegramPlacement[]
+  adPlacements         AdPlacement[]
 
   @@map("workspaces")
 }
@@ -768,8 +769,39 @@ model Ad {
   updatedAt          DateTime            @updatedAt @map("updated_at")
   sessions           Session[]
   telegramPlacements TelegramPlacement[]
+  placements         AdPlacement[]
 
   @@map("ads")
+}
+
+// Recruiter-recorded manual placement of an Ad on an external board. An ad
+// can be posted to multiple boards, and to the same board multiple times
+// (renewals, re-posts, edits). One row per posting event.
+//
+// Distinct from TelegramPlacement, which is the fully-automated Telegram
+// send record with async status callbacks. AdPlacement has no automation —
+// the recruiter clicks "Mark as posted" after publishing on Indeed /
+// Craigslist / Facebook / Bazar / Work.Ua / etc. and pastes the URL.
+model AdPlacement {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  adId        String    @map("ad_id")
+  ad          Ad        @relation(fields: [adId], references: [id], onDelete: Cascade)
+  // Free-text so recruiters can log any board (indeed, craigslist,
+  // facebook, work.ua, bazar, olx, telegram, other, …). No enum on
+  // purpose — keeps parity with Ad.source which is also free-text.
+  source      String
+  url         String?
+  postedAt    DateTime  @map("posted_at")
+  note        String?
+  createdById String    @map("created_by_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([workspaceId, adId])
+  @@index([adId, postedAt])
+  @@map("ad_placements")
 }
 
 model FlowStep {

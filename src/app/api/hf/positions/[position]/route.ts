@@ -41,7 +41,11 @@ export async function GET(
         id: true, name: true, source: true, slug: true, isActive: true,
         createdAt: true, updatedAt: true,
         flow: { select: { id: true, name: true } },
-        _count: { select: { sessions: true } },
+        _count: { select: { sessions: true, placements: true } },
+        placements: {
+          orderBy: { postedAt: 'desc' },
+          select: { source: true, postedAt: true },
+        },
       },
     }),
     prisma.session.findMany({
@@ -113,17 +117,24 @@ export async function GET(
     },
     pipelinePerformance: pipelinePerf,
     topSources,
-    ads: ads.map(a => ({
-      id: a.id,
-      name: a.name,
-      source: a.source,
-      slug: a.slug,
-      isActive: a.isActive,
-      applicants: a._count.sessions,
-      flowName: a.flow?.name ?? null,
-      createdAt: a.createdAt.toISOString(),
-      updatedAt: a.updatedAt.toISOString(),
-    })),
+    ads: ads.map(a => {
+      const placementSources = Array.from(new Set(a.placements.map(p => p.source)))
+      const lastPostedAt = a.placements[0]?.postedAt ?? null
+      return {
+        id: a.id,
+        name: a.name,
+        source: a.source,
+        slug: a.slug,
+        isActive: a.isActive,
+        applicants: a._count.sessions,
+        flowName: a.flow?.name ?? null,
+        createdAt: a.createdAt.toISOString(),
+        updatedAt: a.updatedAt.toISOString(),
+        placementCount: a._count.placements,
+        placementSources,
+        lastPostedAt: lastPostedAt ? lastPostedAt.toISOString() : null,
+      }
+    }),
     recentCandidates: recent.map(s => ({
       id: s.id,
       name: s.candidateName || 'Anonymous',

@@ -37,6 +37,7 @@ interface PositionResponse {
     id: string; name: string; source: string; slug: string; isActive: boolean
     applicants: number; flowName: string | null
     createdAt: string; updatedAt: string
+    placementCount: number; placementSources: string[]; lastPostedAt: string | null
   }[]
   recentCandidates: {
     id: string; name: string; email: string | null; status: string
@@ -285,13 +286,14 @@ function AdsCard({ rows, positionSlug }: { rows: PositionResponse['ads']; positi
               <th className="px-4 py-2 font-medium">Source</th>
               <th className="px-4 py-2 font-medium">Flow</th>
               <th className="px-4 py-2 font-medium text-right">Applicants</th>
+              <th className="px-4 py-2 font-medium">Posted</th>
               <th className="px-4 py-2 font-medium">Status</th>
               <th className="px-4 py-2 font-medium">Created</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-surface-divider">
             {rows.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-6 text-grey-40 text-center">No ads in this position yet.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-6 text-grey-40 text-center">No ads in this position yet.</td></tr>
             )}
             {rows.map(a => (
               <tr key={a.id} className="hover:bg-surface-light">
@@ -312,6 +314,14 @@ function AdsCard({ rows, positionSlug }: { rows: PositionResponse['ads']; positi
                   )}
                 </td>
                 <td className="px-4 py-3">
+                  <PostedCell
+                    adId={a.id}
+                    count={a.placementCount}
+                    sources={a.placementSources}
+                    lastPostedAt={a.lastPostedAt}
+                  />
+                </td>
+                <td className="px-4 py-3">
                   <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${a.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-grey-40'}`}>
                     {a.isActive ? 'Active' : 'Archived'}
                   </span>
@@ -326,6 +336,43 @@ function AdsCard({ rows, positionSlug }: { rows: PositionResponse['ads']; positi
       </div>
     </div>
   )
+}
+
+function PostedCell({ adId, count, sources, lastPostedAt }: {
+  adId: string; count: number; sources: string[]; lastPostedAt: string | null
+}) {
+  if (count === 0) {
+    return (
+      <Link
+        href={`/dashboard/campaigns/preview/${adId}#placements`}
+        className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-gray-100 text-grey-40 hover:text-ink"
+        title="Mark this ad as posted"
+      >
+        Not posted
+      </Link>
+    )
+  }
+  const rel = lastPostedAt ? relativeDate(lastPostedAt) : ''
+  return (
+    <Link
+      href={`/dashboard/campaigns/preview/${adId}#placements`}
+      className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700 hover:bg-green-200"
+      title={sources.length > 0 ? `Posted on ${sources.join(', ')}` : 'Posted'}
+    >
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-600" />
+      {count === 1 ? 'Posted' : `Posted · ${count}`}{rel ? ` · ${rel}` : ''}
+    </Link>
+  )
+}
+
+function relativeDate(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime()
+  const days = Math.floor(diffMs / (24 * 3600_000))
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 30) return `${days}d ago`
+  const months = Math.floor(days / 30)
+  return `${months}mo ago`
 }
 
 function StatusPill({ status }: { status: string }) {

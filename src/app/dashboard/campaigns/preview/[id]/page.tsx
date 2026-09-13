@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { TelegramPublishModal } from './_TelegramPublishModal'
 import { TelegramPlacementHistory } from './_TelegramPlacementHistory'
+import { PlacementsPanel } from './_PlacementsPanel'
 
 interface Ad {
   id: string; name: string; source: string; campaign: string | null
@@ -246,6 +247,8 @@ export default function AdPreviewPage() {
           </p>
         </div>
       </div>
+
+      <PlacementsPanel adId={ad.id} defaultSource={ad.source} />
 
       <TelegramPlacementHistory adId={ad.id} refreshKey={tgHistoryKey} />
 
