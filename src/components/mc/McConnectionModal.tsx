@@ -30,17 +30,31 @@ export interface McConnectionStatus {
   mcEnvironment: 'test' | 'live' | null
 }
 
-type Branch = 'default' | 'login'
+/**
+ * Modal render states:
+ *   'pick'    — landing screen: two side-by-side cards (log in vs create new).
+ *               User must consciously choose; we don't presume defaults.
+ *   'default' — auto-provision a fresh MC org (rare — mostly true first-timers).
+ *   'login'   — email+password → org picker → link.
+ *
+ * Old design defaulted to 'default' with a tiny "I already have an account"
+ * link at the bottom-left; users repeatedly hit 'Connect' without noticing
+ * the link. Two-card landing forces a deliberate pick.
+ */
+type Branch = 'pick' | 'default' | 'login'
 type LoginStep = 'credentials' | 'pick-org'
 
 interface Props {
   onClose: () => void
   onConnected: (status: McConnectionStatus) => void
   /**
-   * Which branch the modal opens on. Defaults to 'default' (auto-provision) —
-   * appropriate for first-time Connect. Callers who are switching an existing
-   * connection should pass 'login' since a switch by definition means the user
-   * already has an MC account.
+   * Which branch the modal opens on.
+   *   'pick' (default) — landing screen with both options.
+   *   'login'          — jump straight to the email+pw form. Used by
+   *                      Settings 'Switch account' where the user has
+   *                      clearly said "I want to link a different account".
+   *   'default'        — jump straight to auto-provision. Not currently
+   *                      used by any caller; kept for tests / future.
    */
   initialBranch?: Branch
 }
@@ -51,7 +65,7 @@ interface McOrg {
   name: string
 }
 
-export function McConnectionModal({ onClose, onConnected, initialBranch = 'default' }: Props) {
+export function McConnectionModal({ onClose, onConnected, initialBranch = 'pick' }: Props) {
   const [branch, setBranch] = useState<Branch>(initialBranch)
   const [loginStep, setLoginStep] = useState<LoginStep>('credentials')
   const [submitting, setSubmitting] = useState(false)
@@ -197,7 +211,44 @@ export function McConnectionModal({ onClose, onConnected, initialBranch = 'defau
         </div>
 
         <div className="px-5 py-4">
-          {branch === 'default' ? (
+          {branch === 'pick' ? (
+            <>
+              <p className="text-[13px] text-grey-15 mb-4">Choose how to connect MockCustomer:</p>
+              <div className="grid grid-cols-1 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBranch('login')
+                    setLoginStep('credentials')
+                    setError(null)
+                  }}
+                  className="text-left p-4 rounded-[10px] border-2 border-surface-border hover:border-brand-500 hover:bg-brand-50/30 transition-colors"
+                >
+                  <div className="text-[13px] font-semibold text-ink">
+                    Log in with my MockCustomer account
+                  </div>
+                  <div className="text-[12px] text-grey-50 mt-1">
+                    Use your existing MC account. HireFunnel will see your AI Customers and past recordings.
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBranch('default')
+                    setError(null)
+                  }}
+                  className="text-left p-4 rounded-[10px] border-2 border-surface-border hover:border-brand-500 hover:bg-brand-50/30 transition-colors"
+                >
+                  <div className="text-[13px] font-semibold text-ink">
+                    Create a new MockCustomer workspace
+                  </div>
+                  <div className="text-[12px] text-grey-50 mt-1">
+                    Fresh setup with one default AI Customer. Free during beta. For users new to MockCustomer.
+                  </div>
+                </button>
+              </div>
+            </>
+          ) : branch === 'default' ? (
             <>
               <p className="text-[13px] text-grey-15">
                 Create a fresh MockCustomer workspace for HireFunnel. Ready in ~3 seconds. Free during beta.
@@ -310,67 +361,77 @@ export function McConnectionModal({ onClose, onConnected, initialBranch = 'defau
         </div>
 
         <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              if (submitting) return
-              setError(null)
-              if (branch === 'default') {
-                setBranch('login')
-                setLoginStep('credentials')
-              } else {
-                setBranch('default')
-                setLoginStep('credentials')
-                setGrantToken(null)
-                setOrgs([])
-                setPassword('')
-              }
-            }}
-            disabled={submitting}
-            className="text-[12px] text-grey-50 hover:text-ink disabled:opacity-50"
-          >
-            {branch === 'default' ? 'I already have an account →' : '← Back to new account'}
-          </button>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={submitting}
-              className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-grey-35 hover:text-ink transition-colors disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={
-                branch === 'default'
-                  ? submitDefault
-                  : loginStep === 'credentials'
-                    ? submitLoginStep1
-                    : submitLoginStep2
-              }
-              disabled={
-                submitting ||
-                (branch === 'login' &&
-                  loginStep === 'credentials' &&
-                  (!email.trim() || !password)) ||
-                (branch === 'login' && loginStep === 'pick-org' && !pickedOrgId)
-              }
-              className="px-3 py-2 rounded-[8px] bg-ink text-white text-[12px] font-semibold disabled:opacity-50 hover:bg-grey-15 transition-colors"
-            >
-              {submitting
-                ? branch === 'default'
-                  ? 'Connecting…'
-                  : loginStep === 'credentials'
-                    ? 'Signing in…'
-                    : 'Linking…'
-                : branch === 'default'
-                  ? 'Connect'
-                  : loginStep === 'credentials'
-                    ? 'Sign in'
-                    : 'Link this organization'}
-            </button>
-          </div>
+          {branch === 'pick' ? (
+            <>
+              <span />
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-grey-35 hover:text-ink transition-colors"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  if (submitting) return
+                  setError(null)
+                  setBranch('pick')
+                  setLoginStep('credentials')
+                  setGrantToken(null)
+                  setOrgs([])
+                  setPassword('')
+                }}
+                disabled={submitting}
+                className="text-[12px] text-grey-50 hover:text-ink disabled:opacity-50"
+              >
+                ← Back
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={submitting}
+                  className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-grey-35 hover:text-ink transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={
+                    branch === 'default'
+                      ? submitDefault
+                      : loginStep === 'credentials'
+                        ? submitLoginStep1
+                        : submitLoginStep2
+                  }
+                  disabled={
+                    submitting ||
+                    (branch === 'login' &&
+                      loginStep === 'credentials' &&
+                      (!email.trim() || !password)) ||
+                    (branch === 'login' && loginStep === 'pick-org' && !pickedOrgId)
+                  }
+                  className="px-3 py-2 rounded-[8px] bg-ink text-white text-[12px] font-semibold disabled:opacity-50 hover:bg-grey-15 transition-colors"
+                >
+                  {submitting
+                    ? branch === 'default'
+                      ? 'Creating…'
+                      : loginStep === 'credentials'
+                        ? 'Signing in…'
+                        : 'Linking…'
+                    : branch === 'default'
+                      ? 'Create new workspace'
+                      : loginStep === 'credentials'
+                        ? 'Sign in'
+                        : 'Link this organization'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
