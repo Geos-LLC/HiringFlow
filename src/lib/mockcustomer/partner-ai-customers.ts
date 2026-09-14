@@ -21,7 +21,30 @@ export interface ListAiCustomersResult {
   organizationId: string
   organizationSlug: string
   activeAiCustomerId: string | null
+  activeAiCustomerName: string | null
   aiCustomers: AiCustomerRow[]
+}
+
+export interface McCallRow {
+  id: string
+  status: string
+  destinationPhoneMasked: string
+  durationSec: number | null
+  queuedAt: string
+  completedAt: string | null
+  hasRecording: boolean
+  clientReferenceId: string | null
+}
+
+export interface ListCallsResult {
+  organizationId: string
+  organizationSlug: string
+  calls: McCallRow[]
+  pagination: {
+    nextCursor: string | null
+    hasMore: boolean
+    limit: number
+  }
 }
 
 export class McPartnerApiError extends Error {
@@ -107,6 +130,33 @@ export async function listMcAiCustomers(orgSlug: string): Promise<ListAiCustomer
     throw new McPartnerApiError('malformed_response', 'MC list-ai-customers response missing fields')
   }
   return body as ListAiCustomersResult
+}
+
+/**
+ * List MC ExternalCalls for an org. Cursor-paginated. Powers the
+ * "attach existing recording" picker.
+ */
+export async function listMcCalls(
+  orgSlug: string,
+  opts: { cursor?: string | null; limit?: number; onlyWithRecording?: boolean } = {},
+): Promise<ListCallsResult> {
+  const params = new URLSearchParams()
+  if (opts.cursor) params.set('cursor', opts.cursor)
+  if (opts.limit) params.set('limit', String(opts.limit))
+  if (opts.onlyWithRecording) params.set('onlyWithRecording', 'true')
+  const query = params.toString()
+  const path =
+    `/v1/partners/organizations/${encodeURIComponent(orgSlug)}/calls` +
+    (query ? `?${query}` : '')
+  const body = await partnerFetch(path)
+  if (
+    !body ||
+    typeof body !== 'object' ||
+    !Array.isArray((body as { calls?: unknown }).calls)
+  ) {
+    throw new McPartnerApiError('malformed_response', 'MC list-calls response missing calls[]')
+  }
+  return body as ListCallsResult
 }
 
 /**

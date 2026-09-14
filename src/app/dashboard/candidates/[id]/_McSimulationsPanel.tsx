@@ -23,6 +23,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { McConnectionModal, type McConnectionStatus } from './_McConnectionModal'
+import { AttachRecordingModal } from './_AttachRecordingModal'
 
 interface McSimulationRow {
   id: string
@@ -70,9 +71,11 @@ function StatusPill({ status }: { status: McSimulationRow['status'] }) {
 
 export function McSimulationsPanel({ sessionId, candidateName }: Props) {
   const [status, setStatus] = useState<McConnectionStatus | null>(null) // null = loading
+  const [activeAiCustomerName, setActiveAiCustomerName] = useState<string | null>(null)
   const [rows, setRows] = useState<McSimulationRow[]>([])
   const [rowsLoaded, setRowsLoaded] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
+  const [attachModalOpen, setAttachModalOpen] = useState(false)
   const [launching, setLaunching] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -109,6 +112,17 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
     }
   }, [sessionId])
 
+  const loadActiveAiCustomer = useCallback(async () => {
+    try {
+      const res = await fetch('/api/mc-connection/ai-customers', { method: 'GET' })
+      if (!res.ok) return
+      const data = (await res.json()) as { activeAiCustomerName: string | null }
+      setActiveAiCustomerName(data.activeAiCustomerName ?? null)
+    } catch {
+      // Non-fatal — the panel still works without the AC name.
+    }
+  }, [])
+
   useEffect(() => {
     void loadStatus()
   }, [loadStatus])
@@ -116,8 +130,11 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
   // Only load simulation rows when connected — no point pinging the
   // simulations endpoint for a workspace that will 403 on launch anyway.
   useEffect(() => {
-    if (status?.connected) void loadRows()
-  }, [status?.connected, loadRows])
+    if (status?.connected) {
+      void loadRows()
+      void loadActiveAiCustomer()
+    }
+  }, [status?.connected, loadRows, loadActiveAiCustomer])
 
   // Poll non-terminal rows.
   const hasNonTerminal = useMemo(
@@ -249,35 +266,40 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
   return (
     <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
       <div className="flex items-start justify-between mb-4">
-        <div>
+        <div className="flex-1">
           <h3 className="text-sm font-semibold text-grey-15">AI Customer Simulations</h3>
           <p className="text-[12px] text-grey-50 mt-0.5">
-            Recruiter-triggered voice simulation. MockCustomer places the call and returns a lightweight
-            evaluation here. Full transcript + detailed scoring live in{' '}
-            <a
-              href="https://mockcustomer.vercel.app/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-brand-600 hover:underline"
-            >
-              MockCustomer
-            </a>
-            .{' '}
+            Recruiter-triggered voice simulation. MockCustomer places the call and returns an evaluation here.
+          </p>
+          <div className="mt-2 flex items-center gap-2 text-[11px] text-grey-50 flex-wrap">
+            {activeAiCustomerName && (
+              <span>
+                Using AI Customer:{' '}
+                <span className="font-mono text-grey-15">{activeAiCustomerName}</span>
+              </span>
+            )}
             <a
               href="/dashboard/settings/mockcustomer"
               className="text-grey-35 hover:text-ink underline"
             >
-              Manage connection
+              {activeAiCustomerName ? 'Change' : 'Manage connection'}
             </a>
-          </p>
+          </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col items-end gap-2 flex-shrink-0">
           <button
             onClick={openConfirm}
             disabled={launching || confirmOpen}
-            className="text-[12px] px-3 py-1.5 rounded-[8px] bg-brand-500 text-white font-semibold hover:bg-brand-600 transition-colors disabled:opacity-50"
+            className="text-[12px] px-3 py-1.5 rounded-[8px] bg-brand-500 text-white font-semibold hover:bg-brand-600 transition-colors disabled:opacity-50 whitespace-nowrap"
           >
             Run AI Customer Simulation
+          </button>
+          <button
+            onClick={() => setAttachModalOpen(true)}
+            disabled={attachModalOpen}
+            className="text-[11px] px-2.5 py-1 rounded-[8px] border border-surface-border text-grey-35 hover:text-ink hover:bg-surface-light transition-colors disabled:opacity-50 whitespace-nowrap"
+          >
+            + Attach existing recording
           </button>
         </div>
       </div>
@@ -380,6 +402,17 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
             </li>
           ))}
         </ul>
+      )}
+
+      {attachModalOpen && (
+        <AttachRecordingModal
+          candidateId={sessionId}
+          onClose={() => setAttachModalOpen(false)}
+          onAttached={() => {
+            setAttachModalOpen(false)
+            void loadRows()
+          }}
+        />
       )}
     </div>
   )
