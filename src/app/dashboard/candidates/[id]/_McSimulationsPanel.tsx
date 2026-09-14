@@ -255,7 +255,7 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
             Recruiter-triggered voice simulation. MockCustomer places the call and returns a lightweight
             evaluation here. Full transcript + detailed scoring live in{' '}
             <a
-              href="https://mockcustomer.app/"
+              href="https://mockcustomer.vercel.app/"
               target="_blank"
               rel="noopener noreferrer"
               className="text-brand-600 hover:underline"

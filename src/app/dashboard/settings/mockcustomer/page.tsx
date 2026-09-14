@@ -118,7 +118,7 @@ export default function McSettingsPage() {
 
           <div className="mt-5 flex gap-2">
             <a
-              href={`https://mockcustomer.app/orgs/${status.mcOrganizationSlug}`}
+              href="https://mockcustomer.vercel.app/dashboard"
               target="_blank"
               rel="noopener noreferrer"
               className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-ink hover:bg-surface-light transition-colors"
