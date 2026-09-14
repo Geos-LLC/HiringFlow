@@ -906,7 +906,17 @@ function CampaignsPageInner() {
                 <div key={g.key} className="rounded-[12px] border border-surface-border bg-white p-5 flex flex-col gap-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-[15px] font-semibold text-ink truncate">{g.label}</div>
+                      {g.key === UNASSIGNED_POSITION_SLUG ? (
+                        <div className="text-[15px] font-semibold text-ink truncate">{g.label}</div>
+                      ) : (
+                        <Link
+                          href={`/dashboard/positions/${encodeURIComponent(g.key)}`}
+                          className="text-[15px] font-semibold text-ink truncate block hover:text-brand-600"
+                          title="Open position overview"
+                        >
+                          {g.label}
+                        </Link>
+                      )}
                       <div className="text-[12px] text-grey-40 mt-0.5">
                         {g.adsCount} ad{g.adsCount === 1 ? '' : 's'} · {g.activeCount} active
                       </div>

@@ -5,9 +5,11 @@ import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { TelegramPublishModal } from './_TelegramPublishModal'
 import { TelegramPlacementHistory } from './_TelegramPlacementHistory'
+import { PlacementsPanel } from './_PlacementsPanel'
 
 interface Ad {
   id: string; name: string; source: string; campaign: string | null
+  targetPosition: string | null
   slug: string; isActive: boolean
   templateId: string | null
   headline: string | null; bodyText: string | null
@@ -120,7 +122,16 @@ export default function AdPreviewPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Link href="/dashboard/campaigns" className="text-grey-40 hover:text-grey-15">&larr; Campaigns</Link>
+          {ad.targetPosition ? (
+            <Link
+              href={`/dashboard/positions/${encodeURIComponent(ad.targetPosition)}`}
+              className="text-grey-40 hover:text-grey-15"
+            >
+              &larr; {ad.targetPosition}
+            </Link>
+          ) : (
+            <Link href="/dashboard/campaigns" className="text-grey-40 hover:text-grey-15">&larr; Campaigns</Link>
+          )}
           <h1 className="text-xl font-semibold text-grey-15">Ad Preview</h1>
         </div>
         <div className="flex items-center gap-3">
@@ -246,6 +257,8 @@ export default function AdPreviewPage() {
           </p>
         </div>
       </div>
+
+      <PlacementsPanel adId={ad.id} defaultSource={ad.source} />
 
       <TelegramPlacementHistory adId={ad.id} refreshKey={tgHistoryKey} />
 

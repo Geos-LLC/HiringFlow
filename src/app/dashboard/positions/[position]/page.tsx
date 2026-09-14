@@ -17,7 +17,7 @@
 
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { Avatar } from '../../pipelines/_stage-shell'
@@ -33,7 +33,12 @@ interface PositionResponse {
   }
   pipelinePerformance: { stage: string; count: number; pct: number }[]
   topSources: { source: string; count: number; pct: number }[]
-  ads: { id: string; name: string; source: string; createdAt: string }[]
+  ads: {
+    id: string; name: string; source: string; slug: string; isActive: boolean
+    applicants: number; flowName: string | null
+    createdAt: string; updatedAt: string
+    placementCount: number; placementSources: string[]; lastPostedAt: string | null
+  }[]
   recentCandidates: {
     id: string; name: string; email: string | null; status: string
     pipelineStatus: string | null; flowName: string | null; lastActivityAt: string
@@ -46,17 +51,23 @@ export default function PositionDetailPage() {
   const [data, setData] = useState<PositionResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [markingAdId, setMarkingAdId] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    fetch(`/api/hf/positions/${position}`)
-      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(d => { if (!cancelled) setData(d) })
-      .catch(e => { if (!cancelled) setError(e.message) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/hf/positions/${position}`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const d = await r.json()
+      setData(d)
+      setError(null)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
   }, [position])
+
+  useEffect(() => { load() }, [load])
 
   if (loading) return <div className="text-grey-40 text-sm">Loading position…</div>
   if (error || !data) {
@@ -109,6 +120,11 @@ export default function PositionDetailPage() {
           <SummaryRow summary={data.summary} />
           <PipelinePerfCard rows={data.pipelinePerformance} />
           <TopSourcesCard rows={data.topSources} />
+          <AdsCard
+            rows={data.ads}
+            positionSlug={data.position.slug}
+            onMarkAsPosted={setMarkingAdId}
+          />
           <RecentCandidatesCard rows={data.recentCandidates} />
         </div>
 
@@ -117,6 +133,16 @@ export default function PositionDetailPage() {
           <DocumentsCard />
         </aside>
       </div>
+
+      {markingAdId && (
+        <MarkAsPostedModal
+          adId={markingAdId}
+          adName={data.ads.find(a => a.id === markingAdId)?.name || ''}
+          defaultSource={data.ads.find(a => a.id === markingAdId)?.source}
+          onClose={() => setMarkingAdId(null)}
+          onSaved={() => { setMarkingAdId(null); void load() }}
+        />
+      )}
     </div>
   )
 }
@@ -258,6 +284,134 @@ function RecentCandidatesCard({ rows }: { rows: PositionResponse['recentCandidat
   )
 }
 
+// ─── Ads table ──────────────────────────────────────────────────────────────
+
+function AdsCard({ rows, positionSlug, onMarkAsPosted }: {
+  rows: PositionResponse['ads']
+  positionSlug: string
+  onMarkAsPosted: (adId: string) => void
+}) {
+  return (
+    <div className="bg-white border border-surface-border rounded-[14px]">
+      <header className="flex items-center justify-between px-4 pt-4 pb-2">
+        <h3 className="text-[14px] font-semibold text-ink m-0">Ads ({rows.length})</h3>
+        <Link
+          href={`/dashboard/campaigns/${encodeURIComponent(positionSlug)}`}
+          className="text-[12px] text-brand-600 hover:text-brand-700 font-medium"
+        >
+          Manage ads →
+        </Link>
+      </header>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-[11px] uppercase text-grey-40 border-t border-surface-divider">
+              <th className="px-4 py-2 font-medium">Name</th>
+              <th className="px-4 py-2 font-medium">Source</th>
+              <th className="px-4 py-2 font-medium">Flow</th>
+              <th className="px-4 py-2 font-medium text-right">Applicants</th>
+              <th className="px-4 py-2 font-medium">Posted</th>
+              <th className="px-4 py-2 font-medium">Status</th>
+              <th className="px-4 py-2 font-medium">Created</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-surface-divider">
+            {rows.length === 0 && (
+              <tr><td colSpan={7} className="px-4 py-6 text-grey-40 text-center">No ads in this position yet.</td></tr>
+            )}
+            {rows.map(a => (
+              <tr key={a.id} className="hover:bg-surface-light">
+                <td className="px-4 py-3">
+                  <Link href={`/dashboard/campaigns/preview/${a.id}`} className="font-medium text-ink hover:text-brand-600">
+                    {a.name}
+                  </Link>
+                </td>
+                <td className="px-4 py-3 text-grey-35 capitalize">{a.source}</td>
+                <td className="px-4 py-3 text-grey-35">{a.flowName || '—'}</td>
+                <td className="px-4 py-3 text-right tabular-nums">
+                  {a.applicants > 0 ? (
+                    <Link href={`/dashboard/candidates?adId=${a.id}`} className="text-brand-600 hover:text-brand-700 font-medium">
+                      {a.applicants}
+                    </Link>
+                  ) : (
+                    <span className="text-grey-40">0</span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  <PostedCell
+                    adId={a.id}
+                    count={a.placementCount}
+                    sources={a.placementSources}
+                    lastPostedAt={a.lastPostedAt}
+                    onMark={() => onMarkAsPosted(a.id)}
+                  />
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${a.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-grey-40'}`}>
+                    {a.isActive ? 'Active' : 'Archived'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-grey-40 tabular-nums text-[12px]">
+                  {new Date(a.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function PostedCell({ adId, count, sources, lastPostedAt, onMark }: {
+  adId: string; count: number; sources: string[]; lastPostedAt: string | null
+  onMark: () => void
+}) {
+  if (count === 0) {
+    return (
+      <button
+        type="button"
+        onClick={onMark}
+        className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-gray-100 text-grey-40 hover:bg-gray-200 hover:text-ink"
+        title="Mark this ad as posted"
+      >
+        + Mark posted
+      </button>
+    )
+  }
+  const rel = lastPostedAt ? relativeDate(lastPostedAt) : ''
+  return (
+    <div className="inline-flex items-center gap-1.5">
+      <Link
+        href={`/dashboard/campaigns/preview/${adId}#placements`}
+        className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700 hover:bg-green-200"
+        title={sources.length > 0 ? `Posted on ${sources.join(', ')}` : 'Posted'}
+      >
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-600" />
+        {count === 1 ? 'Posted' : `Posted · ${count}`}{rel ? ` · ${rel}` : ''}
+      </Link>
+      <button
+        type="button"
+        onClick={onMark}
+        className="text-[11px] text-grey-40 hover:text-brand-600"
+        title="Log another posting"
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
+function relativeDate(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime()
+  const days = Math.floor(diffMs / (24 * 3600_000))
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 30) return `${days}d ago`
+  const months = Math.floor(days / 30)
+  return `${months}mo ago`
+}
+
 function StatusPill({ status }: { status: string }) {
   const tone = status === 'hired' ? 'success' : status === 'lost' ? 'danger' : status === 'stalled' ? 'warn' : 'brand'
   const map: Record<string, { bg: string; fg: string }> = {
@@ -319,6 +473,158 @@ function MetaRow({ label, value }: { label: string; value: string }) {
       <dt className="text-grey-40">{label}</dt>
       <dd className="m-0 text-ink">{value}</dd>
     </>
+  )
+}
+
+// ─── Mark-as-posted quick modal ─────────────────────────────────────────────
+
+const SOURCE_OPTIONS = [
+  'indeed', 'facebook', 'craigslist', 'linkedin', 'google',
+  'work.ua', 'bazar', 'olx', 'telegram', 'referral', 'other',
+]
+
+function todayInputValue(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function MarkAsPostedModal({ adId, adName, defaultSource, onClose, onSaved }: {
+  adId: string
+  adName: string
+  defaultSource?: string
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const initialSource = defaultSource && SOURCE_OPTIONS.includes(defaultSource.toLowerCase())
+    ? defaultSource.toLowerCase()
+    : 'indeed'
+  const [source, setSource] = useState(initialSource)
+  const [url, setUrl] = useState('')
+  const [postedAt, setPostedAt] = useState(todayInputValue())
+  const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  async function save() {
+    setError(null)
+    setSaving(true)
+    try {
+      const r = await fetch(`/api/ads/${adId}/placements`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source,
+          url: url.trim() || null,
+          postedAt: new Date(`${postedAt}T12:00:00`).toISOString(),
+          note: note.trim() || null,
+        }),
+      })
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${r.status}`)
+      }
+      onSaved()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="w-full max-w-md rounded-[14px] bg-white shadow-xl border border-surface-border">
+        <div className="px-5 py-4 border-b border-surface-divider flex items-center justify-between">
+          <div>
+            <h2 className="text-[15px] font-semibold text-ink m-0">Mark as posted</h2>
+            <p className="mt-0.5 text-[12px] text-grey-40 truncate max-w-[300px]">{adName}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-7 h-7 flex items-center justify-center rounded-md text-grey-50 hover:text-ink hover:bg-surface-light"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="p-5 flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] uppercase tracking-wide text-grey-40 font-medium">Source</span>
+            <select
+              value={source}
+              onChange={e => setSource(e.target.value)}
+              className="px-2 py-1.5 text-[13px] border border-surface-border rounded-[6px] bg-white capitalize"
+            >
+              {SOURCE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] uppercase tracking-wide text-grey-40 font-medium">Posted on</span>
+            <input
+              type="date"
+              value={postedAt}
+              onChange={e => setPostedAt(e.target.value)}
+              max={todayInputValue()}
+              className="px-2 py-1.5 text-[13px] border border-surface-border rounded-[6px] bg-white"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] uppercase tracking-wide text-grey-40 font-medium">URL <span className="text-grey-40 normal-case">(optional)</span></span>
+            <input
+              type="url"
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              placeholder="https://…"
+              className="px-2 py-1.5 text-[13px] border border-surface-border rounded-[6px] bg-white"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] uppercase tracking-wide text-grey-40 font-medium">Note <span className="text-grey-40 normal-case">(optional)</span></span>
+            <input
+              type="text"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="e.g. Miami-Dade board, expires in 30d"
+              className="px-2 py-1.5 text-[13px] border border-surface-border rounded-[6px] bg-white"
+            />
+          </label>
+
+          {error && <div className="text-[12px] text-red-600">{error}</div>}
+        </div>
+
+        <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-[13px] px-3 py-1.5 rounded-[8px] border border-surface-border text-ink hover:bg-surface-light"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !source}
+            className="text-[13px] px-4 py-1.5 rounded-[8px] bg-brand-500 text-white font-medium hover:bg-brand-600 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save posting'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
