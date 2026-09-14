@@ -338,25 +338,39 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
                 )}
               </div>
               {r.status === 'completed' && r.resultProjection && (
-                <div className="mt-2 flex items-center gap-3 text-[12px]">
-                  {typeof r.resultProjection.overallScore === 'number' && (
-                    <span className="font-mono">
-                      Score {Math.round(r.resultProjection.overallScore * 100)}%
-                    </span>
-                  )}
-                  {r.resultProjection.passed !== null && (
-                    <span
-                      className={
-                        r.resultProjection.passed
-                          ? 'text-emerald-700 font-semibold'
-                          : 'text-rose-700 font-semibold'
-                      }
-                    >
-                      {r.resultProjection.passed ? 'Pass' : 'Fail'}
-                    </span>
-                  )}
-                  {r.resultProjection.summary && (
-                    <span className="text-grey-30 truncate">{r.resultProjection.summary}</span>
+                <div className="mt-2 space-y-2">
+                  <div className="flex items-center gap-3 text-[12px]">
+                    {typeof r.resultProjection.overallScore === 'number' && (
+                      <span className="font-mono">
+                        Score {Math.round(r.resultProjection.overallScore * 100)}%
+                      </span>
+                    )}
+                    {r.resultProjection.passed !== null && (
+                      <span
+                        className={
+                          r.resultProjection.passed
+                            ? 'text-emerald-700 font-semibold'
+                            : 'text-rose-700 font-semibold'
+                        }
+                      >
+                        {r.resultProjection.passed ? 'Pass' : 'Fail'}
+                      </span>
+                    )}
+                    {r.resultProjection.summary && (
+                      <span className="text-grey-30 truncate">{r.resultProjection.summary}</span>
+                    )}
+                  </div>
+                  {r.mcCallId && (
+                    // MC's recording proxy is @Public() and gates access by
+                    // knowing the 36-char callId. Browser plays via <audio>
+                    // directly — MC handles the Twilio auth hop behind the
+                    // scenes and streams with Range support for scrub.
+                    <audio
+                      src={`https://mockcustomer-api-production-production.up.railway.app/v1/external-simulations/call/${encodeURIComponent(r.mcCallId)}/recording`}
+                      controls
+                      preload="none"
+                      className="w-full h-8"
+                    />
                   )}
                 </div>
               )}
