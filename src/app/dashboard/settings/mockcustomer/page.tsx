@@ -23,7 +23,7 @@ export default function McSettingsPage() {
   const [status, setStatus] = useState<Status | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [modalOpen, setModalOpen] = useState(false)
+  const [modalOpen, setModalOpen] = useState<false | 'default' | 'login'>(false)
 
   const load = useCallback(async () => {
     try {
@@ -63,11 +63,16 @@ export default function McSettingsPage() {
     }
   }, [load])
 
-  // Opens the connection modal so the user picks the auto-provision or
-  // link-existing-account branch. Same modal as the candidate panel.
-  const openConnectModal = useCallback(() => {
+  // Opens the connection modal.
+  //   'default' — fresh Connect (used when not yet connected). Modal
+  //               opens on the auto-provision branch since first-time
+  //               users don't have MC accounts.
+  //   'login'   — Switch account. Modal opens directly on the login
+  //               branch because if you're switching, you by definition
+  //               already have an MC account you want to link.
+  const openConnectModal = useCallback((initial: 'default' | 'login') => {
     setError(null)
-    setModalOpen(true)
+    setModalOpen(initial)
   }, [])
 
   return (
@@ -119,7 +124,7 @@ export default function McSettingsPage() {
             </a>
             <button
               type="button"
-              onClick={openConnectModal}
+              onClick={() => openConnectModal('login')}
               disabled={submitting}
               className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-ink hover:bg-surface-light transition-colors disabled:opacity-50"
             >
@@ -153,7 +158,7 @@ export default function McSettingsPage() {
           )}
           <button
             type="button"
-            onClick={openConnectModal}
+            onClick={() => openConnectModal('default')}
             disabled={submitting}
             className="px-3 py-2 rounded-[8px] bg-ink text-white text-[12px] font-semibold hover:bg-grey-15 transition-colors disabled:opacity-50"
           >
@@ -164,6 +169,7 @@ export default function McSettingsPage() {
 
       {modalOpen && (
         <McConnectionModal
+          initialBranch={modalOpen}
           onClose={() => setModalOpen(false)}
           onConnected={() => {
             setModalOpen(false)

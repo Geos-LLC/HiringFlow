@@ -30,13 +30,20 @@ export interface McConnectionStatus {
   mcEnvironment: 'test' | 'live' | null
 }
 
+type Branch = 'default' | 'login'
+type LoginStep = 'credentials' | 'pick-org'
+
 interface Props {
   onClose: () => void
   onConnected: (status: McConnectionStatus) => void
+  /**
+   * Which branch the modal opens on. Defaults to 'default' (auto-provision) —
+   * appropriate for first-time Connect. Callers who are switching an existing
+   * connection should pass 'login' since a switch by definition means the user
+   * already has an MC account.
+   */
+  initialBranch?: Branch
 }
-
-type Branch = 'default' | 'login'
-type LoginStep = 'credentials' | 'pick-org'
 
 interface McOrg {
   id: string
@@ -44,8 +51,8 @@ interface McOrg {
   name: string
 }
 
-export function McConnectionModal({ onClose, onConnected }: Props) {
-  const [branch, setBranch] = useState<Branch>('default')
+export function McConnectionModal({ onClose, onConnected, initialBranch = 'default' }: Props) {
+  const [branch, setBranch] = useState<Branch>(initialBranch)
   const [loginStep, setLoginStep] = useState<LoginStep>('credentials')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
