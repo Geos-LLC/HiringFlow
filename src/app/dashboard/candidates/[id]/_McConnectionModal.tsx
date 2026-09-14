@@ -1,18 +1,23 @@
 /**
- * Modal that walks a workspace through connecting MockCustomer.
+ * Connect MockCustomer modal — two paths:
  *
- * Two branches:
- *   - Default ("Connect") — hits POST /api/mc-connection/connect which
- *     provisions an MC organization + api key server-side, no user
- *     input needed. This is the recommended path for the ~99% of
- *     workspaces who don't already have MC.
- *   - "I already have an account" — reveals a form for pasting an
- *     existing api key + webhook secret + slug. Hits
- *     POST /api/mc-connection/manual, which validates the key
- *     against MC before storing.
+ *   default: auto-provision a fresh MC org for this workspace.
+ *            One click, ~3s, done. For users new to MC.
  *
- * On success either branch calls `onConnected(status)` and the parent
- * unmounts the modal.
+ *   login:   authenticate with an existing MC email + password (Chrome
+ *            autofills), pick which of the user's MC orgs to link, HF
+ *            mints a fresh api key on that org. For users who already
+ *            have MC and want to see their existing AI Customers +
+ *            past recordings.
+ *
+ * The two branches use different backends:
+ *   default → POST /api/mc-connection/connect
+ *   login   → POST /api/mc-connection/authenticate  (step 1)
+ *             POST /api/mc-connection/authenticate  (step 2 with grantToken)
+ *
+ * The login branch has two sub-states: 'credentials' (email+pw form)
+ * and 'pick-org' (radio list of orgs the user belongs to). If the user
+ * has exactly one org we skip 'pick-org' and complete immediately.
  */
 
 'use client'
@@ -30,17 +35,111 @@ interface Props {
   onConnected: (status: McConnectionStatus) => void
 }
 
-type Branch = 'default' | 'manual'
+type Branch = 'default' | 'login'
+type LoginStep = 'credentials' | 'pick-org'
+
+interface McOrg {
+  id: string
+  slug: string
+  name: string
+}
 
 export function McConnectionModal({ onClose, onConnected }: Props) {
   const [branch, setBranch] = useState<Branch>('default')
+  const [loginStep, setLoginStep] = useState<LoginStep>('credentials')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Manual-branch form state.
-  const [apiKey, setApiKey] = useState('')
-  const [webhookSecret, setWebhookSecret] = useState('')
-  const [orgSlug, setOrgSlug] = useState('')
+  // Login-branch state.
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [grantToken, setGrantToken] = useState<string | null>(null)
+  const [orgs, setOrgs] = useState<McOrg[]>([])
+  const [pickedOrgId, setPickedOrgId] = useState<string | null>(null)
+
+  const complete = useCallback(
+    async (organizationId: string, token: string) => {
+      const res = await fetch('/api/mc-connection/authenticate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grantToken: token, organizationId }),
+      })
+      const data = (await res.json().catch(() => ({}))) as {
+        connected?: boolean
+        mcOrganizationSlug?: string | null
+        mcEnvironment?: 'test' | 'live' | null
+        error?: string
+        reason?: string
+      }
+      if (!res.ok || !data.connected) {
+        setError(data.error ?? `Failed to link account (${res.status})`)
+        // If grant expired, kick user back to credentials step.
+        if (data.reason === 'grant_invalid') {
+          setLoginStep('credentials')
+          setGrantToken(null)
+        }
+        return
+      }
+      onConnected({
+        connected: true,
+        mcOrganizationSlug: data.mcOrganizationSlug ?? null,
+        mcEnvironment: data.mcEnvironment ?? null,
+      })
+    },
+    [onConnected],
+  )
+
+  const submitLoginStep1 = useCallback(async () => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/mc-connection/authenticate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      })
+      const data = (await res.json().catch(() => ({}))) as {
+        userId?: string
+        orgs?: McOrg[]
+        grantToken?: string | null
+        error?: string
+        reason?: string
+      }
+      if (!res.ok || !data.grantToken || !data.orgs) {
+        setError(data.error ?? `Login failed (${res.status})`)
+        return
+      }
+      setGrantToken(data.grantToken)
+      setOrgs(data.orgs)
+      // Wipe password from state as soon as we have the grant — narrows
+      // the window it lives in browser memory. Email stays for the
+      // "logged in as: X" display.
+      setPassword('')
+      if (data.orgs.length === 1) {
+        // Only one org — skip picker + complete immediately.
+        setPickedOrgId(data.orgs[0].id)
+        await complete(data.orgs[0].id, data.grantToken)
+      } else {
+        setPickedOrgId(data.orgs[0]?.id ?? null)
+        setLoginStep('pick-org')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }, [email, password, complete])
+
+  const submitLoginStep2 = useCallback(async () => {
+    if (!grantToken || !pickedOrgId) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await complete(pickedOrgId, grantToken)
+    } finally {
+      setSubmitting(false)
+    }
+  }, [grantToken, pickedOrgId, complete])
 
   const submitDefault = useCallback(async () => {
     setSubmitting(true)
@@ -69,41 +168,6 @@ export function McConnectionModal({ onClose, onConnected }: Props) {
     }
   }, [onConnected])
 
-  const submitManual = useCallback(async () => {
-    setSubmitting(true)
-    setError(null)
-    try {
-      const res = await fetch('/api/mc-connection/manual', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: apiKey.trim(),
-          webhookSecret: webhookSecret.trim(),
-          mcOrganizationSlug: orgSlug.trim(),
-        }),
-      })
-      const data = (await res.json().catch(() => ({}))) as {
-        connected?: boolean
-        mcOrganizationSlug?: string | null
-        mcEnvironment?: 'test' | 'live' | null
-        error?: string
-      }
-      if (!res.ok || !data.connected) {
-        setError(data.error ?? `Failed to connect (${res.status})`)
-        return
-      }
-      onConnected({
-        connected: true,
-        mcOrganizationSlug: data.mcOrganizationSlug ?? null,
-        mcEnvironment: data.mcEnvironment ?? null,
-      })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect')
-    } finally {
-      setSubmitting(false)
-    }
-  }, [apiKey, webhookSecret, orgSlug, onConnected])
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -129,15 +193,69 @@ export function McConnectionModal({ onClose, onConnected }: Props) {
           {branch === 'default' ? (
             <>
               <p className="text-[13px] text-grey-15">
-                MockCustomer places AI-driven test calls to candidates and returns evaluations directly on the
-                candidate detail page.
+                Create a fresh MockCustomer workspace for HireFunnel. Ready in ~3 seconds. Free during beta.
               </p>
               <ul className="mt-3 space-y-1.5 text-[12px] text-grey-35">
-                <li>• Free during beta — no credit card required</li>
-                <li>• Uses your HireFunnel account (no separate signup)</li>
-                <li>• Ready to use in ~3 seconds</li>
+                <li>• No credit card required</li>
+                <li>• Comes with a default AI Customer to run test calls immediately</li>
+                <li>• You can create more AI Customers in MockCustomer later</li>
               </ul>
-
+              {error && (
+                <div className="mt-3 text-[12px] px-3 py-2 rounded-[8px] bg-[color:var(--danger-bg)] text-[color:var(--danger-fg)]">
+                  {error}
+                </div>
+              )}
+            </>
+          ) : loginStep === 'credentials' ? (
+            <>
+              <p className="text-[12px] text-grey-35 mb-3">
+                Log in with your existing MockCustomer account. HireFunnel will link to your account and read
+                your AI Customers + past recordings.
+              </p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (!submitting && email.trim() && password) void submitLoginStep1()
+                }}
+                className="space-y-3"
+                // Standard email/password inputs so Chrome/1Password/etc autofill.
+                autoComplete="on"
+              >
+                <div>
+                  <label htmlFor="mc-email" className="block text-[12px] font-medium text-ink mb-1">
+                    Email
+                  </label>
+                  <input
+                    id="mc-email"
+                    type="email"
+                    name="username"
+                    autoComplete="username"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                    autoFocus
+                    required
+                  />
+                </div>
+                <div>
+                  <label htmlFor="mc-password" className="block text-[12px] font-medium text-ink mb-1">
+                    Password
+                  </label>
+                  <input
+                    id="mc-password"
+                    type="password"
+                    name="password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+                    required
+                  />
+                </div>
+                {/* Hidden submit so pressing Enter in either field submits. */}
+                <button type="submit" hidden />
+              </form>
               {error && (
                 <div className="mt-3 text-[12px] px-3 py-2 rounded-[8px] bg-[color:var(--danger-bg)] text-[color:var(--danger-fg)]">
                   {error}
@@ -147,44 +265,34 @@ export function McConnectionModal({ onClose, onConnected }: Props) {
           ) : (
             <>
               <p className="text-[12px] text-grey-35 mb-3">
-                Paste credentials from your MockCustomer dashboard.
+                Logged in as <span className="font-mono text-grey-15">{email}</span>. Pick which organization to
+                link to this HireFunnel workspace.
               </p>
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-[12px] font-medium text-ink mb-1">Organization slug</label>
-                  <input
-                    type="text"
-                    value={orgSlug}
-                    onChange={(e) => setOrgSlug(e.target.value)}
-                    placeholder="my-org"
-                    className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
-                    autoComplete="off"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[12px] font-medium text-ink mb-1">API key</label>
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="mc_live_…"
-                    className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
-                    autoComplete="off"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[12px] font-medium text-ink mb-1">Webhook secret</label>
-                  <input
-                    type="password"
-                    value={webhookSecret}
-                    onChange={(e) => setWebhookSecret(e.target.value)}
-                    placeholder="whsec_…"
-                    className="w-full px-3 py-2 border border-surface-border rounded-[10px] text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
-                    autoComplete="off"
-                  />
-                </div>
-              </div>
-
+              <ul className="space-y-1">
+                {orgs.map((o) => (
+                  <li key={o.id}>
+                    <label
+                      className={`flex items-center gap-2 p-2 rounded-[8px] border cursor-pointer transition-colors ${
+                        pickedOrgId === o.id
+                          ? 'border-brand-500 bg-brand-50/40'
+                          : 'border-surface-border hover:bg-surface-light'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="mc-org"
+                        value={o.id}
+                        checked={pickedOrgId === o.id}
+                        onChange={() => setPickedOrgId(o.id)}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[13px] text-ink truncate">{o.name}</div>
+                        <div className="text-[11px] text-grey-50 font-mono">{o.slug}</div>
+                      </div>
+                    </label>
+                  </li>
+                ))}
+              </ul>
               {error && (
                 <div className="mt-3 text-[12px] px-3 py-2 rounded-[8px] bg-[color:var(--danger-bg)] text-[color:var(--danger-fg)]">
                   {error}
@@ -200,12 +308,21 @@ export function McConnectionModal({ onClose, onConnected }: Props) {
             onClick={() => {
               if (submitting) return
               setError(null)
-              setBranch((b) => (b === 'default' ? 'manual' : 'default'))
+              if (branch === 'default') {
+                setBranch('login')
+                setLoginStep('credentials')
+              } else {
+                setBranch('default')
+                setLoginStep('credentials')
+                setGrantToken(null)
+                setOrgs([])
+                setPassword('')
+              }
             }}
             disabled={submitting}
             className="text-[12px] text-grey-50 hover:text-ink disabled:opacity-50"
           >
-            {branch === 'default' ? 'I already have an account →' : '← Back to auto-connect'}
+            {branch === 'default' ? 'I already have an account →' : '← Back to new account'}
           </button>
           <div className="flex items-center gap-2">
             <button
@@ -218,15 +335,33 @@ export function McConnectionModal({ onClose, onConnected }: Props) {
             </button>
             <button
               type="button"
-              onClick={branch === 'default' ? submitDefault : submitManual}
+              onClick={
+                branch === 'default'
+                  ? submitDefault
+                  : loginStep === 'credentials'
+                    ? submitLoginStep1
+                    : submitLoginStep2
+              }
               disabled={
                 submitting ||
-                (branch === 'manual' &&
-                  (!apiKey.trim() || !webhookSecret.trim() || !orgSlug.trim()))
+                (branch === 'login' &&
+                  loginStep === 'credentials' &&
+                  (!email.trim() || !password)) ||
+                (branch === 'login' && loginStep === 'pick-org' && !pickedOrgId)
               }
               className="px-3 py-2 rounded-[8px] bg-ink text-white text-[12px] font-semibold disabled:opacity-50 hover:bg-grey-15 transition-colors"
             >
-              {submitting ? 'Connecting…' : branch === 'default' ? 'Connect' : 'Save & connect'}
+              {submitting
+                ? branch === 'default'
+                  ? 'Connecting…'
+                  : loginStep === 'credentials'
+                    ? 'Signing in…'
+                    : 'Linking…'
+                : branch === 'default'
+                  ? 'Connect'
+                  : loginStep === 'credentials'
+                    ? 'Sign in'
+                    : 'Link this organization'}
             </button>
           </div>
         </div>
