@@ -22,7 +22,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { McConnectionModal, type McConnectionStatus } from './_McConnectionModal'
+import { McConnectionModal, type McConnectionStatus } from '@/components/mc/McConnectionModal'
 import { AttachRecordingModal } from './_AttachRecordingModal'
 
 interface McSimulationRow {

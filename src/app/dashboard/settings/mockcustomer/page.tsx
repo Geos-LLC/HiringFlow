@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { AiCustomerPicker } from './_AiCustomerPicker'
+import { McConnectionModal } from '@/components/mc/McConnectionModal'
 
 interface Status {
   connected: boolean
@@ -22,6 +23,7 @@ export default function McSettingsPage() {
   const [status, setStatus] = useState<Status | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [modalOpen, setModalOpen] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -61,23 +63,12 @@ export default function McSettingsPage() {
     }
   }, [load])
 
-  const reconnect = useCallback(async () => {
-    setSubmitting(true)
+  // Opens the connection modal so the user picks the auto-provision or
+  // link-existing-account branch. Same modal as the candidate panel.
+  const openConnectModal = useCallback(() => {
     setError(null)
-    try {
-      const res = await fetch('/api/mc-connection/connect', { method: 'POST' })
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string }
-        setError(body.error ?? `Reconnect failed (${res.status})`)
-        return
-      }
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Reconnect failed')
-    } finally {
-      setSubmitting(false)
-    }
-  }, [load])
+    setModalOpen(true)
+  }, [])
 
   return (
     <div className="max-w-2xl mx-auto p-6">
@@ -128,6 +119,14 @@ export default function McSettingsPage() {
             </a>
             <button
               type="button"
+              onClick={openConnectModal}
+              disabled={submitting}
+              className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-ink hover:bg-surface-light transition-colors disabled:opacity-50"
+            >
+              Switch account
+            </button>
+            <button
+              type="button"
               onClick={disconnect}
               disabled={submitting}
               className="px-3 py-2 rounded-[8px] border border-rose-200 text-[12px] text-rose-700 hover:bg-rose-50 transition-colors disabled:opacity-50"
@@ -154,13 +153,23 @@ export default function McSettingsPage() {
           )}
           <button
             type="button"
-            onClick={reconnect}
+            onClick={openConnectModal}
             disabled={submitting}
             className="px-3 py-2 rounded-[8px] bg-ink text-white text-[12px] font-semibold hover:bg-grey-15 transition-colors disabled:opacity-50"
           >
-            {submitting ? 'Connecting…' : 'Connect MockCustomer'}
+            Connect MockCustomer
           </button>
         </div>
+      )}
+
+      {modalOpen && (
+        <McConnectionModal
+          onClose={() => setModalOpen(false)}
+          onConnected={() => {
+            setModalOpen(false)
+            void load()
+          }}
+        />
       )}
     </div>
   )
