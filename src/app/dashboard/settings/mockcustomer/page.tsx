@@ -9,6 +9,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { AiCustomerPicker } from './_AiCustomerPicker'
 
 interface Status {
   connected: boolean
@@ -134,6 +135,8 @@ export default function McSettingsPage() {
               {submitting ? 'Disconnecting…' : 'Disconnect'}
             </button>
           </div>
+
+          <AiCustomerPicker />
         </div>
       ) : (
         <div className="bg-white rounded-[12px] border border-surface-border p-5">
