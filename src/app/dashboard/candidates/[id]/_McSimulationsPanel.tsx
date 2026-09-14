@@ -1,28 +1,28 @@
 /**
- * Candidate detail — MockCustomer simulations panel (PR1B).
+ * Candidate detail — MockCustomer simulations panel.
  *
- * Recruiter-facing surface for the new MC-backed simulation path. Kept
- * as its own component (rather than growing _AICallsPanel) so:
- *   - Legacy AICall* UI stays untouched — the freeze rule from the
- *     strategy note applies to that subsystem.
- *   - Removal is a single delete when MC eventually replaces AICall*.
+ * Three-state render:
+ *   - LOADING   → panel is null until we resolve connection status
+ *                 (avoids flash of "Connect" for connected workspaces)
+ *   - NOT_CONNECTED → single "Connect MockCustomer" CTA + copy explaining
+ *                     what MC does. Clicking opens McConnectionModal.
+ *   - CONNECTED → historical simulation rows + "Run AI Customer Simulation"
+ *                 button. Post-connect this is the default state.
  *
- * Rendering rules:
- *   - Fetches existing McSimulation rows on mount.
- *   - Renders a "Run AI Customer Simulation" launch button.
- *   - When the launch API returns 403 with `reason=canary_disabled` or
- *     `reason=mc_not_configured`, the panel silently returns null
- *     (workspace is not on the canary; UI stays hidden). The button
- *     stays visible during the initial fetch — probing the launch
- *     endpoint on click reveals the canary state.
- *   - Terminal rows show the lightweight projection + "Open full
- *     simulation" link when the deepLinkUrl is present.
- *   - No marketing UI, no upsell, no "Powered by MockCustomer" copy.
+ * The connection status is workspace-scoped and comes from
+ * GET /api/mc-connection/status. On successful connect the modal
+ * fires `onConnected(status)` and the panel switches to CONNECTED
+ * without reloading the page.
+ *
+ * Kept as its own component (not merged with _AICallsPanel) so the
+ * legacy AICall* UI stays untouched — the freeze rule from the
+ * MC integration strategy note applies to that subsystem.
  */
 
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { McConnectionModal, type McConnectionStatus } from './_McConnectionModal'
 
 interface McSimulationRow {
   id: string
@@ -69,49 +69,63 @@ function StatusPill({ status }: { status: McSimulationRow['status'] }) {
 }
 
 export function McSimulationsPanel({ sessionId, candidateName }: Props) {
-  const [enabled, setEnabled] = useState<boolean | null>(null) // null = unknown yet
+  const [status, setStatus] = useState<McConnectionStatus | null>(null) // null = loading
   const [rows, setRows] = useState<McSimulationRow[]>([])
-  const [initialLoaded, setInitialLoaded] = useState(false)
+  const [rowsLoaded, setRowsLoaded] = useState(false)
+  const [modalOpen, setModalOpen] = useState(false)
   const [launching, setLaunching] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Per-intent launch idempotency key. Minted when the recruiter opens
-  // the confirmation dialog, reused across:
-  //   - the initial POST
-  //   - any double-click on the "Launch" button
-  //   - any browser retry that survived a network hiccup
-  // The server treats a duplicate/concurrent POST with the same value
-  // as the same launch (returns the existing McSimulation, does NOT
-  // dial MC twice). A NEW UUID is minted only when the recruiter opens
-  // the confirmation dialog for a distinct intent.
+  // Per-intent launch idempotency key (see server-side runner for the dedup
+  // guarantee this is paired with).
   const launchRequestIdRef = useRef<string | null>(null)
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/mc-connection/status', { method: 'GET' })
+      if (!res.ok) {
+        // Treat any status-endpoint failure as "not connected" — safer to
+        // show the Connect CTA than to silently hide the panel forever.
+        setStatus({ connected: false, mcOrganizationSlug: null, mcEnvironment: null })
+        return
+      }
+      const data = (await res.json()) as McConnectionStatus
+      setStatus(data)
+    } catch {
+      setStatus({ connected: false, mcOrganizationSlug: null, mcEnvironment: null })
+    }
+  }, [])
 
   const loadRows = useCallback(async () => {
     try {
-      const res = await fetch(`/api/candidates/${sessionId}/mc-simulations`, {
-        method: 'GET',
-      })
-      if (res.status === 404) return // candidate wrong workspace — outer guards handled it already
+      const res = await fetch(`/api/candidates/${sessionId}/mc-simulations`, { method: 'GET' })
+      if (res.status === 404) return
       if (!res.ok) return
       const data = (await res.json()) as { simulations: McSimulationRow[] }
       setRows(data.simulations ?? [])
     } finally {
-      setInitialLoaded(true)
+      setRowsLoaded(true)
     }
   }, [sessionId])
 
   useEffect(() => {
-    void loadRows()
-  }, [loadRows])
+    void loadStatus()
+  }, [loadStatus])
 
-  // Poll non-terminal rows for their state; each row's own polling
-  // route reconciles against MC's authoritative status endpoint.
+  // Only load simulation rows when connected — no point pinging the
+  // simulations endpoint for a workspace that will 403 on launch anyway.
+  useEffect(() => {
+    if (status?.connected) void loadRows()
+  }, [status?.connected, loadRows])
+
+  // Poll non-terminal rows.
   const hasNonTerminal = useMemo(
     () => rows.some((r) => r.status !== 'completed' && r.status !== 'failed' && r.status !== 'cancelled'),
     [rows],
   )
   useEffect(() => {
+    if (!status?.connected) return
     if (!hasNonTerminal) return
     const timer = setInterval(async () => {
       const nonTerminals = rows.filter(
@@ -135,15 +149,10 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
       )
     }, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [hasNonTerminal, rows, sessionId])
+  }, [status?.connected, hasNonTerminal, rows, sessionId])
 
   const launch = useCallback(async () => {
-    // If the ref has been cleared (e.g. by a prior successful launch),
-    // mint a fresh id — this defends against a stale "Launch" click
-    // after the previous run completed and the dialog was left open.
-    if (!launchRequestIdRef.current) {
-      launchRequestIdRef.current = crypto.randomUUID()
-    }
+    if (!launchRequestIdRef.current) launchRequestIdRef.current = crypto.randomUUID()
     const launchRequestId = launchRequestIdRef.current
     setLaunching(true)
     setError(null)
@@ -153,22 +162,20 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ launchRequestId }),
       })
-      if (res.status === 403) {
-        const body = (await res.json().catch(() => ({}))) as { reason?: string }
-        if (body.reason === 'canary_disabled' || body.reason === 'mc_not_configured') {
-          setEnabled(false)
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string; reason?: string }
+        // If the server thinks we're not connected, sync state and open the
+        // connect modal instead of showing a raw error.
+        if (res.status === 403 && (body.reason === 'canary_disabled' || body.reason === 'mc_not_configured')) {
+          setStatus({ connected: false, mcOrganizationSlug: null, mcEnvironment: null })
+          setConfirmOpen(false)
+          setModalOpen(true)
           return
         }
-      }
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string }
         setError(body.error ?? `Launch failed (${res.status})`)
         return
       }
-      setEnabled(true)
       setConfirmOpen(false)
-      // Successful launch — retire this idempotency key. The next
-      // opening of the confirmation dialog mints a fresh one.
       launchRequestIdRef.current = null
       await loadRows()
     } catch (err) {
@@ -178,10 +185,6 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
     }
   }, [sessionId, loadRows])
 
-  // Mint a fresh launchRequestId per opening of the confirmation
-  // dialog — distinct intent = distinct launch. Reuse it across the
-  // launch call so a mid-flight double-click / network retry stays
-  // dedup'd server-side.
   const openConfirm = useCallback(() => {
     launchRequestIdRef.current = crypto.randomUUID()
     setError(null)
@@ -194,12 +197,54 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
     setConfirmOpen(false)
   }, [launching])
 
-  // On initial load, if any rows exist we know the workspace is
-  // enabled (they got launched somehow). Otherwise we don't know yet.
-  // The launch button is always visible until we prove disabled; a
-  // 403 from the first click flips the panel invisible.
-  if (enabled === false && rows.length === 0) return null
-  if (!initialLoaded) return null
+  const handleConnected = useCallback((s: McConnectionStatus) => {
+    setStatus(s)
+    setModalOpen(false)
+    // Kick off row load for the newly-connected workspace.
+    setRowsLoaded(false)
+  }, [])
+
+  // Wait for the status resolve before rendering anything — otherwise we'd
+  // flash the "Connect" CTA to already-connected workspaces on every mount.
+  if (status === null) return null
+
+  // NOT_CONNECTED state — single CTA + brief copy.
+  if (!status.connected) {
+    return (
+      <>
+        <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-grey-15">AI Customer Simulations</h3>
+              <p className="text-[12px] text-grey-50 mt-0.5">
+                Run AI-driven test calls with candidates. Connect MockCustomer to enable — free during beta, no
+                credit card required.
+              </p>
+            </div>
+            <button
+              onClick={() => setModalOpen(true)}
+              className="text-[12px] px-3 py-1.5 rounded-[8px] bg-brand-500 text-white font-semibold hover:bg-brand-600 transition-colors whitespace-nowrap"
+            >
+              Connect MockCustomer
+            </button>
+          </div>
+        </div>
+        {modalOpen && (
+          <McConnectionModal onClose={() => setModalOpen(false)} onConnected={handleConnected} />
+        )}
+      </>
+    )
+  }
+
+  // CONNECTED state — historical rows + Run button.
+  if (!rowsLoaded) {
+    return (
+      <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+        <h3 className="text-sm font-semibold text-grey-15">AI Customer Simulations</h3>
+        <div className="text-[12px] text-grey-50 mt-2">Loading…</div>
+      </div>
+    )
+  }
 
   return (
     <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
@@ -208,7 +253,22 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
           <h3 className="text-sm font-semibold text-grey-15">AI Customer Simulations</h3>
           <p className="text-[12px] text-grey-50 mt-0.5">
             Recruiter-triggered voice simulation. MockCustomer places the call and returns a lightweight
-            evaluation here. Full transcript + detailed scoring live in MockCustomer.
+            evaluation here. Full transcript + detailed scoring live in{' '}
+            <a
+              href="https://mockcustomer.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-brand-600 hover:underline"
+            >
+              MockCustomer
+            </a>
+            .{' '}
+            <a
+              href="/dashboard/settings/mockcustomer"
+              className="text-grey-35 hover:text-ink underline"
+            >
+              Manage connection
+            </a>
           </p>
         </div>
         <div className="flex gap-2">
@@ -225,11 +285,11 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
       {confirmOpen && (
         <div className="mb-4 p-3 bg-surface rounded-[8px] border border-surface-border">
           <div className="text-[13px] text-grey-15">
-            Run AI Customer Simulation for <span className="font-semibold">{candidateName || 'this candidate'}</span>?
+            Run AI Customer Simulation for{' '}
+            <span className="font-semibold">{candidateName || 'this candidate'}</span>?
           </div>
           <div className="text-[11px] text-grey-50 mt-1">
-            Uses the workspace&apos;s default MockCustomer configuration. MockCustomer will call the candidate&apos;s recorded
-            phone number and return an evaluation.
+            MockCustomer will call the candidate&apos;s recorded phone number and return an evaluation.
           </div>
           <div className="mt-3 flex gap-2">
             <button
