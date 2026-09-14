@@ -55,6 +55,9 @@ export default withAuth(
           if (path.startsWith('/api/webhooks/recall')) return true
           // Stripe billing webhook — Stripe-Signature HMAC verification inside the handler
           if (path.startsWith('/api/webhooks/stripe')) return true
+          // MockCustomer external-simulation lifecycle webhook — HMAC-SHA256 signature
+          // verification inside the handler (X-MC-Signature: t=<unix>,v1=<hex>).
+          if (path.startsWith('/api/webhooks/mockcustomer')) return true
           // Vercel Cron jobs — CRON_SECRET verification inside the handler
           if (path.startsWith('/api/cron/')) return true
           // Meet integration v2 artifact proxy — signed artifact token or session auth inside the handler
