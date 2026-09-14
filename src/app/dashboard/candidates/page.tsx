@@ -2032,8 +2032,16 @@ function NewCandidateModal({ open, onClose, flows, stages, defaultFlowId, custom
 
         <div className="px-5 py-4 space-y-3.5">
           {flows.length === 0 ? (
-            <div className="text-[13px] text-grey-35">
-              You need at least one flow before adding a candidate.
+            <div className="space-y-3">
+              <div className="text-[13px] text-grey-35">
+                You need at least one flow before adding a candidate.
+              </div>
+              <a
+                href="/dashboard/flows"
+                className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-600 hover:text-brand-700"
+              >
+                Create your first flow →
+              </a>
             </div>
           ) : (
             <>
