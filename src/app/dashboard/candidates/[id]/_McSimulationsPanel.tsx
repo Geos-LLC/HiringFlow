@@ -36,6 +36,13 @@ interface McSimulationRow {
     summary: string | null
     sessionId: string | null
     deepLinkUrl: string
+    // Discriminator + session-specific fields — populated when the row
+    // originated as an imported SimulationSession (INVITE mode). Absent
+    // for outbound-call rows (which use MC's recording proxy instead).
+    resourceType?: 'call' | 'session'
+    elevenLabsConversationId?: string | null
+    mode?: string | null
+    participantName?: string | null
   } | null
   queuedAt: string
   ringingAt: string | null
@@ -382,18 +389,27 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
                       <span className="text-grey-30 truncate">{r.resultProjection.summary}</span>
                     )}
                   </div>
-                  {r.mcCallId && (
-                    // MC's recording proxy is @Public() and gates access by
-                    // knowing the 36-char callId. Browser plays via <audio>
-                    // directly — MC handles the Twilio auth hop behind the
-                    // scenes and streams with Range support for scrub.
-                    <audio
-                      src={`https://mockcustomer-api-production-production.up.railway.app/v1/external-simulations/call/${encodeURIComponent(r.mcCallId)}/recording`}
-                      controls
-                      preload="none"
-                      className="w-full h-8"
-                    />
-                  )}
+                  {r.mcCallId && (() => {
+                    // Two audio backends depending on the McSimulation origin:
+                    //   - Session imports: MC's voice-public proxy against the
+                    //     ElevenLabs conversation.
+                    //   - Call imports OR HF-launched calls: MC's external-
+                    //     simulations recording proxy against Twilio.
+                    const isSession =
+                      r.resultProjection?.resourceType === 'session' &&
+                      r.resultProjection?.elevenLabsConversationId
+                    const audioUrl = isSession
+                      ? `https://mockcustomer-api-production-production.up.railway.app/voice/public/sessions/${encodeURIComponent(r.mcCallId)}/audio?id=${encodeURIComponent(r.resultProjection!.elevenLabsConversationId!)}`
+                      : `https://mockcustomer-api-production-production.up.railway.app/v1/external-simulations/call/${encodeURIComponent(r.mcCallId)}/recording`
+                    return (
+                      <audio
+                        src={audioUrl}
+                        controls
+                        preload="none"
+                        className="w-full h-8"
+                      />
+                    )
+                  })()}
                 </div>
               )}
               {(r.status === 'failed' || r.status === 'cancelled') && r.failureReason && (
