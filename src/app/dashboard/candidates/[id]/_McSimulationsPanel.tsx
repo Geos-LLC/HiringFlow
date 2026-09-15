@@ -282,7 +282,7 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
               href="/dashboard/settings/mockcustomer"
               className="text-grey-35 hover:text-ink underline"
             >
-              {activeAiCustomerName ? 'Change' : 'Manage connection'}
+              Manage connection
             </a>
           </div>
         </div>
