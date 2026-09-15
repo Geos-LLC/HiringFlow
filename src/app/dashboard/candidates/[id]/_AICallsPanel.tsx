@@ -193,7 +193,21 @@ function scoreColor(score: number): string {
   return 'text-red-600'
 }
 
-export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; candidateName: string | null }) {
+export function AICallsPanel({
+  sessionId,
+  candidateName,
+  chromeless = false,
+}: {
+  sessionId: string
+  candidateName: string | null
+  /**
+   * When true, skip the outer white card + border + margin so the panel
+   * body can be embedded inside another card. Used by VoiceEvaluationsPanel
+   * to render Training Calls and AI Customer Simulations under a single
+   * shared header without nested cards.
+   */
+  chromeless?: boolean
+}) {
   const [agents, setAgents] = useState<Agent[]>([])
   const [linkedCandidates, setLinkedCandidates] = useState<LinkedAICandidate[]>([])
   const [unlinkedCandidates, setUnlinkedCandidates] = useState<AICandidateAny[]>([])
@@ -340,19 +354,28 @@ export function AICallsPanel({ sessionId, candidateName }: { sessionId: string; 
     return `${origin}/call/${candidateRow.agentId}?name=${encodeURIComponent(candidateRow.name)}`
   }
 
+  const outerCls = chromeless
+    ? ''
+    : 'bg-white rounded-[12px] border border-surface-border p-6 mb-6'
+
   if (loading) {
     return (
-      <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+      <div className={outerCls}>
         <div className="text-sm text-grey-40">Loading AI training calls…</div>
       </div>
     )
   }
 
   return (
-    <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+    <div className={outerCls}>
       <div className="flex items-start justify-between mb-4">
         <div>
-          <h3 className="text-sm font-semibold text-grey-15">AI Training Calls & Evaluation</h3>
+          {!chromeless && (
+            <h3 className="text-sm font-semibold text-grey-15">AI Training Calls & Evaluation</h3>
+          )}
+          {chromeless && (
+            <h4 className="text-[13px] font-semibold text-grey-15">Training calls & JD evaluation</h4>
+          )}
           <p className="text-[12px] text-grey-50 mt-0.5">
             Voice training call transcripts and AI candidate evaluation against the position description.
           </p>
