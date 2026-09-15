@@ -58,6 +58,13 @@ export interface McSessionRow {
   elevenLabsConversationId: string | null
   hasAudio: boolean
   errorReason: string | null
+  /** Present once the session has been evaluated; null until then. */
+  result: {
+    overallScore: number
+    passed: boolean
+    passThreshold: number
+    summary: string | null
+  } | null
 }
 
 export interface ListSessionsResult {

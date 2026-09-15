@@ -1,20 +1,22 @@
 /**
- * Modal for attaching an existing MockCustomer artifact to a HireFunnel
- * candidate. Two artifact types are shown together:
+ * Modal for attaching one or more existing MockCustomer artifacts to a
+ * HireFunnel candidate. Two artifact types are merged:
  *
  *   - ExternalCalls: outbound Twilio dials with Twilio recordings.
- *     Fetched from /api/mc-connection/calls.
- *
  *   - SimulationSessions: browser-widget INVITE tests with ElevenLabs
- *     audio. Fetched from /api/mc-connection/sessions.
+ *     audio + SimulationResult scores.
  *
  * Both queries fire in parallel on modal open. Results are merged and
- * sorted by createdAt DESC. Each row shows a small type badge
- * ("Phone" vs "Widget") so the recruiter can tell them apart.
+ * sorted by createdAt DESC. Each row shows:
+ *   - Phone/Widget type badge
+ *   - Participant or destination phone label
+ *   - Status pill
+ *   - Score badge (widget only, when result is present)
+ *   - Audio indicator
  *
- * On confirm, POSTs to /api/candidates/[id]/mc-simulations/import with
- * the appropriate resourceType so the server routes to the right
- * verification + storage path.
+ * Multi-select via checkboxes. On submit, POSTs each selection to
+ * /api/candidates/[id]/mc-simulations/import in parallel; per-row
+ * failures surface without aborting the whole batch.
  */
 
 'use client'
@@ -43,6 +45,12 @@ interface McSessionRow {
   elevenLabsConversationId: string | null
   hasAudio: boolean
   errorReason: string | null
+  result: {
+    overallScore: number
+    passed: boolean
+    passThreshold: number
+    summary: string | null
+  } | null
 }
 
 type UnifiedRow =
@@ -52,7 +60,16 @@ type UnifiedRow =
 interface Props {
   candidateId: string
   onClose: () => void
-  onAttached: (simulationId: string) => void
+  onAttached: (simulationIds: string[]) => void
+}
+
+interface RowKey {
+  type: 'call' | 'session'
+  id: string
+}
+
+function keyToString(k: RowKey): string {
+  return `${k.type}:${k.id}`
 }
 
 export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props) {
@@ -60,20 +77,15 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
   const [error, setError] = useState<string | null>(null)
   const [calls, setCalls] = useState<McCallRow[]>([])
   const [sessions, setSessions] = useState<McSessionRow[]>([])
-  const [selected, setSelected] = useState<{ type: 'call' | 'session'; id: string } | null>(null)
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [submitting, setSubmitting] = useState(false)
   const [onlyWithAudio, setOnlyWithAudio] = useState(true)
+  const [perRowErrors, setPerRowErrors] = useState<Map<string, string>>(new Map())
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams()
-      params.set('limit', '50')
-      if (onlyWithAudio) {
-        // Note: /calls uses ?onlyWithRecording, /sessions uses ?onlyWithAudio.
-        // Different query names, same intent.
-      }
       const callsParams = new URLSearchParams({ limit: '50' })
       const sessionsParams = new URLSearchParams({ limit: '50' })
       if (onlyWithAudio) {
@@ -115,50 +127,102 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
       ...calls.map((c) => ({ ...c, resourceType: 'call' as const, sortAt: c.queuedAt })),
       ...sessions.map((s) => ({ ...s, resourceType: 'session' as const, sortAt: s.createdAt })),
     ]
-    // Newest first.
     merged.sort((a, b) => (a.sortAt < b.sortAt ? 1 : -1))
     return merged
   }, [calls, sessions])
 
+  const toggle = useCallback((k: RowKey) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev)
+      const s = keyToString(k)
+      if (next.has(s)) next.delete(s)
+      else next.add(s)
+      return next
+    })
+  }, [])
+
   const submit = useCallback(async () => {
-    if (!selected) return
+    if (selectedKeys.size === 0) return
     setSubmitting(true)
     setError(null)
-    try {
-      const body =
-        selected.type === 'call'
-          ? { resourceType: 'call', mcCallId: selected.id }
-          : { resourceType: 'session', mcSessionId: selected.id }
-      const res = await fetch(`/api/candidates/${candidateId}/mc-simulations/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = (await res.json().catch(() => ({}))) as {
-        simulationId?: string
-        error?: string
-        reason?: string
-        isSameCandidate?: boolean
-      }
-      if (!res.ok) {
-        if (data.reason === 'already_imported' && data.simulationId) {
-          if (data.isSameCandidate) {
-            onAttached(data.simulationId)
-            return
+    setPerRowErrors(new Map())
+
+    // Fire imports in parallel — failures per row don't abort the batch.
+    const results = await Promise.all(
+      Array.from(selectedKeys).map(async (keyStr) => {
+        const [type, id] = keyStr.split(':') as [RowKey['type'], string]
+        const body =
+          type === 'call'
+            ? { resourceType: 'call', mcCallId: id }
+            : { resourceType: 'session', mcSessionId: id }
+        try {
+          const res = await fetch(`/api/candidates/${candidateId}/mc-simulations/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+          const data = (await res.json().catch(() => ({}))) as {
+            simulationId?: string
+            error?: string
+            reason?: string
+            isSameCandidate?: boolean
           }
-          setError('This recording is already attached to a different candidate in your workspace.')
-          return
+          if (!res.ok) {
+            // already_imported to the SAME candidate is treated as success
+            // (idempotent — nothing to do, row already there).
+            if (data.reason === 'already_imported' && data.isSameCandidate) {
+              return { keyStr, ok: true, simulationId: data.simulationId ?? null, err: null }
+            }
+            return {
+              keyStr,
+              ok: false,
+              simulationId: null,
+              err:
+                data.reason === 'already_imported'
+                  ? 'Already attached to a different candidate.'
+                  : data.error ?? `Failed (${res.status})`,
+            }
+          }
+          return { keyStr, ok: true, simulationId: data.simulationId ?? null, err: null }
+        } catch (err) {
+          return {
+            keyStr,
+            ok: false,
+            simulationId: null,
+            err: err instanceof Error ? err.message : 'Network error',
+          }
         }
-        setError(data.error ?? `Attach failed (${res.status})`)
-        return
+      }),
+    )
+
+    const failures = new Map<string, string>()
+    const successIds: string[] = []
+    for (const r of results) {
+      if (r.ok) {
+        if (r.simulationId) successIds.push(r.simulationId)
+      } else if (r.err) {
+        failures.set(r.keyStr, r.err)
       }
-      if (data.simulationId) onAttached(data.simulationId)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Attach failed')
-    } finally {
-      setSubmitting(false)
     }
-  }, [selected, candidateId, onAttached])
+    setPerRowErrors(failures)
+    setSubmitting(false)
+
+    if (failures.size === 0) {
+      // Full batch success — tell parent + close self. onAttached fires
+      // first so the panel's row reload starts before the modal unmounts.
+      onAttached(successIds)
+      onClose()
+      return
+    }
+    // Partial success — keep modal open, narrow the selection to just
+    // the failed rows so the user can retry only them. Fire onAttached
+    // with the successful subset so the parent can refresh the panel
+    // now rather than waiting for the modal to close.
+    setSelectedKeys(new Set(failures.keys()))
+    if (successIds.length > 0) {
+      onAttached(successIds)
+    }
+  }, [selectedKeys, candidateId, onAttached, onClose])
 
   return (
     <div
@@ -183,8 +247,8 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
 
         <div className="px-5 py-4">
           <p className="text-[12px] text-grey-50 mb-3">
-            Pick a past MockCustomer test to attach to this candidate. The recording + evaluation will appear on
-            the candidate page.
+            Pick one or more past MockCustomer tests to attach to this candidate. Each becomes a row on the
+            candidate page with its recording + evaluation.
           </p>
 
           <label className="text-[11px] text-grey-35 flex items-center gap-1.5 mb-2">
@@ -208,7 +272,10 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
             <div className="max-h-96 overflow-y-auto -mx-1 pr-1">
               <ul className="space-y-1">
                 {unified.map((r) => {
-                  const isPicked = selected?.type === r.resourceType && selected?.id === r.id
+                  const key: RowKey = { type: r.resourceType, id: r.id }
+                  const keyStr = keyToString(key)
+                  const isPicked = selectedKeys.has(keyStr)
+                  const rowErr = perRowErrors.get(keyStr) ?? null
                   const badge = r.resourceType === 'call' ? 'Phone' : 'Widget'
                   const badgeCls =
                     r.resourceType === 'call'
@@ -224,22 +291,23 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
                       : `${new Date(r.createdAt).toLocaleString()} · ${r.mode}`
                   const audioIndicator =
                     r.resourceType === 'call' ? r.hasRecording : r.hasAudio
+                  const score = r.resourceType === 'session' ? r.result : null
                   return (
-                    <li key={`${r.resourceType}:${r.id}`}>
+                    <li key={keyStr}>
                       <label
                         className={`flex items-start gap-2 p-2 rounded-[8px] border cursor-pointer transition-colors ${
-                          isPicked
-                            ? 'border-brand-500 bg-brand-50/40'
-                            : 'border-surface-border hover:bg-surface-light'
+                          rowErr
+                            ? 'border-rose-300 bg-rose-50/40'
+                            : isPicked
+                              ? 'border-brand-500 bg-brand-50/40'
+                              : 'border-surface-border hover:bg-surface-light'
                         }`}
                       >
                         <input
-                          type="radio"
+                          type="checkbox"
                           name="mc-artifact"
                           checked={isPicked}
-                          onChange={() =>
-                            setSelected({ type: r.resourceType, id: r.id })
-                          }
+                          onChange={() => toggle(key)}
                           className="mt-1"
                         />
                         <div className="flex-1 min-w-0">
@@ -261,6 +329,18 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
                             >
                               {r.status}
                             </span>
+                            {score && (
+                              <span
+                                className={`inline-block text-[10px] px-1.5 py-0.5 rounded border font-mono ${
+                                  score.passed
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                                }`}
+                                title={`Threshold ${Math.round(score.passThreshold * 100)}%`}
+                              >
+                                {Math.round(score.overallScore * 100)}% {score.passed ? '· pass' : '· fail'}
+                              </span>
+                            )}
                             {audioIndicator && (
                               <span className="text-[10px] text-brand-600">▶ audio</span>
                             )}
@@ -269,6 +349,16 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
                             {secondary}
                             <span className="ml-2 text-grey-35">{r.id.slice(0, 8)}…</span>
                           </div>
+                          {score?.summary && (
+                            <div className="text-[11px] text-grey-35 mt-1 line-clamp-2">
+                              {score.summary}
+                            </div>
+                          )}
+                          {rowErr && (
+                            <div className="text-[11px] text-rose-700 mt-1" role="alert">
+                              {rowErr}
+                            </div>
+                          )}
                         </div>
                       </label>
                     </li>
@@ -285,23 +375,34 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={submitting}
-            className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-grey-35 hover:text-ink transition-colors disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!selected || submitting}
-            className="px-3 py-2 rounded-[8px] bg-ink text-white text-[12px] font-semibold disabled:opacity-50 hover:bg-grey-15 transition-colors"
-          >
-            {submitting ? 'Attaching…' : 'Attach to candidate'}
-          </button>
+        <div className="px-5 py-3 border-t border-surface-divider flex items-center justify-between gap-2">
+          <div className="text-[11px] text-grey-50">
+            {selectedKeys.size > 0
+              ? `${selectedKeys.size} selected`
+              : 'Pick at least one'}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-2 rounded-[8px] border border-surface-border text-[12px] text-grey-35 hover:text-ink transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={selectedKeys.size === 0 || submitting}
+              className="px-3 py-2 rounded-[8px] bg-ink text-white text-[12px] font-semibold disabled:opacity-50 hover:bg-grey-15 transition-colors"
+            >
+              {submitting
+                ? `Attaching ${selectedKeys.size}…`
+                : selectedKeys.size <= 1
+                  ? 'Attach to candidate'
+                  : `Attach ${selectedKeys.size} to candidate`}
+            </button>
+          </div>
         </div>
       </div>
     </div>
