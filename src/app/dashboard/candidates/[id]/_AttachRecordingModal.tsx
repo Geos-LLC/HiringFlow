@@ -1,17 +1,25 @@
 /**
- * Modal for attaching an existing MockCustomer call to a HireFunnel
- * candidate. Lists MC ExternalCalls for the workspace's connected org
- * (via /api/mc-connection/calls, defaulting to recordings-only) and
- * POSTs the picked one to /api/candidates/[id]/mc-simulations/import.
+ * Modal for attaching an existing MockCustomer artifact to a HireFunnel
+ * candidate. Two artifact types are shown together:
  *
- * UX intent: recruiters who ran calls in MC before connecting HF should
- * be able to bring those results + recordings into the candidate view
- * without re-running.
+ *   - ExternalCalls: outbound Twilio dials with Twilio recordings.
+ *     Fetched from /api/mc-connection/calls.
+ *
+ *   - SimulationSessions: browser-widget INVITE tests with ElevenLabs
+ *     audio. Fetched from /api/mc-connection/sessions.
+ *
+ * Both queries fire in parallel on modal open. Results are merged and
+ * sorted by createdAt DESC. Each row shows a small type badge
+ * ("Phone" vs "Widget") so the recruiter can tell them apart.
+ *
+ * On confirm, POSTs to /api/candidates/[id]/mc-simulations/import with
+ * the appropriate resourceType so the server routes to the right
+ * verification + storage path.
  */
 
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 interface McCallRow {
   id: string
@@ -24,10 +32,22 @@ interface McCallRow {
   clientReferenceId: string | null
 }
 
-interface ListResponse {
-  calls: McCallRow[]
-  pagination: { nextCursor: string | null; hasMore: boolean; limit: number }
+interface McSessionRow {
+  id: string
+  mode: string
+  status: string
+  participantName: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  elevenLabsConversationId: string | null
+  hasAudio: boolean
+  errorReason: string | null
 }
+
+type UnifiedRow =
+  | ({ resourceType: 'call'; sortAt: string } & McCallRow)
+  | ({ resourceType: 'session'; sortAt: string } & McSessionRow)
 
 interface Props {
   candidateId: string
@@ -39,54 +59,80 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [calls, setCalls] = useState<McCallRow[]>([])
-  const [nextCursor, setNextCursor] = useState<string | null>(null)
-  const [hasMore, setHasMore] = useState(false)
-  const [selected, setSelected] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<McSessionRow[]>([])
+  const [selected, setSelected] = useState<{ type: 'call' | 'session'; id: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [onlyWithRecording, setOnlyWithRecording] = useState(true)
+  const [onlyWithAudio, setOnlyWithAudio] = useState(true)
 
-  const load = useCallback(
-    async (cursor: string | null, replace: boolean) => {
-      if (replace) setLoading(true)
-      setError(null)
-      try {
-        const params = new URLSearchParams()
-        if (cursor) params.set('cursor', cursor)
-        params.set('limit', '25')
-        if (onlyWithRecording) params.set('onlyWithRecording', 'true')
-        const res = await fetch(`/api/mc-connection/calls?${params.toString()}`)
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string }
-          setError(body.error ?? `Failed to load MockCustomer calls (${res.status})`)
-          if (replace) setCalls([])
-          return
-        }
-        const data = (await res.json()) as ListResponse
-        setCalls((prev) => (replace ? data.calls : [...prev, ...data.calls]))
-        setNextCursor(data.pagination.nextCursor)
-        setHasMore(data.pagination.hasMore)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load')
-      } finally {
-        setLoading(false)
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const params = new URLSearchParams()
+      params.set('limit', '50')
+      if (onlyWithAudio) {
+        // Note: /calls uses ?onlyWithRecording, /sessions uses ?onlyWithAudio.
+        // Different query names, same intent.
       }
-    },
-    [onlyWithRecording],
-  )
+      const callsParams = new URLSearchParams({ limit: '50' })
+      const sessionsParams = new URLSearchParams({ limit: '50' })
+      if (onlyWithAudio) {
+        callsParams.set('onlyWithRecording', 'true')
+        sessionsParams.set('onlyWithAudio', 'true')
+      }
+      const [callsRes, sessionsRes] = await Promise.all([
+        fetch(`/api/mc-connection/calls?${callsParams.toString()}`),
+        fetch(`/api/mc-connection/sessions?${sessionsParams.toString()}`),
+      ])
+      const parseOrEmpty = async (res: Response, key: 'calls' | 'sessions'): Promise<unknown[]> => {
+        if (!res.ok) return []
+        const data = (await res.json()) as Record<string, unknown>
+        return Array.isArray(data[key]) ? (data[key] as unknown[]) : []
+      }
+      const [callsArr, sessionsArr] = await Promise.all([
+        parseOrEmpty(callsRes, 'calls'),
+        parseOrEmpty(sessionsRes, 'sessions'),
+      ])
+      setCalls(callsArr as McCallRow[])
+      setSessions(sessionsArr as McSessionRow[])
+      if (!callsRes.ok && !sessionsRes.ok) {
+        const anyBody = (await callsRes.json().catch(() => ({}))) as { error?: string }
+        setError(anyBody.error ?? 'Failed to load MockCustomer artifacts')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load')
+    } finally {
+      setLoading(false)
+    }
+  }, [onlyWithAudio])
 
   useEffect(() => {
-    void load(null, true)
+    void load()
   }, [load])
+
+  const unified: UnifiedRow[] = useMemo(() => {
+    const merged: UnifiedRow[] = [
+      ...calls.map((c) => ({ ...c, resourceType: 'call' as const, sortAt: c.queuedAt })),
+      ...sessions.map((s) => ({ ...s, resourceType: 'session' as const, sortAt: s.createdAt })),
+    ]
+    // Newest first.
+    merged.sort((a, b) => (a.sortAt < b.sortAt ? 1 : -1))
+    return merged
+  }, [calls, sessions])
 
   const submit = useCallback(async () => {
     if (!selected) return
     setSubmitting(true)
     setError(null)
     try {
+      const body =
+        selected.type === 'call'
+          ? { resourceType: 'call', mcCallId: selected.id }
+          : { resourceType: 'session', mcSessionId: selected.id }
       const res = await fetch(`/api/candidates/${candidateId}/mc-simulations/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mcCallId: selected }),
+        body: JSON.stringify(body),
       })
       const data = (await res.json().catch(() => ({}))) as {
         simulationId?: string
@@ -97,13 +143,10 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
       if (!res.ok) {
         if (data.reason === 'already_imported' && data.simulationId) {
           if (data.isSameCandidate) {
-            // Already on this candidate — treat as success.
             onAttached(data.simulationId)
             return
           }
-          setError(
-            'This MockCustomer call is already attached to a different candidate in your workspace.',
-          )
+          setError('This recording is already attached to a different candidate in your workspace.')
           return
         }
         setError(data.error ?? `Attach failed (${res.status})`)
@@ -140,89 +183,102 @@ export function AttachRecordingModal({ candidateId, onClose, onAttached }: Props
 
         <div className="px-5 py-4">
           <p className="text-[12px] text-grey-50 mb-3">
-            Pick a past MockCustomer call to attach to this candidate. The recording + evaluation will appear on
+            Pick a past MockCustomer test to attach to this candidate. The recording + evaluation will appear on
             the candidate page.
           </p>
 
           <label className="text-[11px] text-grey-35 flex items-center gap-1.5 mb-2">
             <input
               type="checkbox"
-              checked={onlyWithRecording}
-              onChange={(e) => setOnlyWithRecording(e.target.checked)}
+              checked={onlyWithAudio}
+              onChange={(e) => setOnlyWithAudio(e.target.checked)}
             />
-            Only show calls with a recording
+            Only show tests with a recording
           </label>
 
           {loading ? (
             <div className="text-[12px] text-grey-50 py-4">Loading…</div>
-          ) : error && calls.length === 0 ? (
+          ) : error && unified.length === 0 ? (
             <div className="text-[12px] text-rose-700 py-4">{error}</div>
-          ) : calls.length === 0 ? (
+          ) : unified.length === 0 ? (
             <div className="text-[12px] text-grey-50 py-4">
-              No MockCustomer calls found in your organization
-              {onlyWithRecording && ' with a recording'}.
+              No MockCustomer tests found in your organization{onlyWithAudio && ' with a recording'}.
             </div>
           ) : (
             <div className="max-h-96 overflow-y-auto -mx-1 pr-1">
               <ul className="space-y-1">
-                {calls.map((c) => (
-                  <li key={c.id}>
-                    <label
-                      className={`flex items-start gap-2 p-2 rounded-[8px] border cursor-pointer transition-colors ${
-                        selected === c.id
-                          ? 'border-brand-500 bg-brand-50/40'
-                          : 'border-surface-border hover:bg-surface-light'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="mc-call"
-                        value={c.id}
-                        checked={selected === c.id}
-                        onChange={() => setSelected(c.id)}
-                        className="mt-1"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 text-[12px]">
-                          <span className="font-mono text-grey-15">{c.destinationPhoneMasked}</span>
-                          <span
-                            className={`inline-block text-[10px] px-1.5 py-0.5 rounded border ${
-                              c.status === 'completed'
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                : c.status === 'failed' || c.status === 'cancelled'
-                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                  : 'bg-slate-50 text-slate-700 border-slate-200'
-                            } font-mono uppercase tracking-wider`}
-                          >
-                            {c.status}
-                          </span>
-                          {c.hasRecording && (
-                            <span className="text-[10px] text-brand-600">▶ recording</span>
-                          )}
+                {unified.map((r) => {
+                  const isPicked = selected?.type === r.resourceType && selected?.id === r.id
+                  const badge = r.resourceType === 'call' ? 'Phone' : 'Widget'
+                  const badgeCls =
+                    r.resourceType === 'call'
+                      ? 'bg-sky-50 text-sky-700 border-sky-200'
+                      : 'bg-violet-50 text-violet-700 border-violet-200'
+                  const label =
+                    r.resourceType === 'call'
+                      ? r.destinationPhoneMasked
+                      : r.participantName || '(anonymous)'
+                  const secondary =
+                    r.resourceType === 'call'
+                      ? `${new Date(r.queuedAt).toLocaleString()}${r.durationSec != null ? ` · ${r.durationSec}s` : ''}`
+                      : `${new Date(r.createdAt).toLocaleString()} · ${r.mode}`
+                  const audioIndicator =
+                    r.resourceType === 'call' ? r.hasRecording : r.hasAudio
+                  return (
+                    <li key={`${r.resourceType}:${r.id}`}>
+                      <label
+                        className={`flex items-start gap-2 p-2 rounded-[8px] border cursor-pointer transition-colors ${
+                          isPicked
+                            ? 'border-brand-500 bg-brand-50/40'
+                            : 'border-surface-border hover:bg-surface-light'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="mc-artifact"
+                          checked={isPicked}
+                          onChange={() =>
+                            setSelected({ type: r.resourceType, id: r.id })
+                          }
+                          className="mt-1"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 text-[12px] flex-wrap">
+                            <span
+                              className={`inline-block text-[10px] px-1.5 py-0.5 rounded border ${badgeCls} font-mono uppercase tracking-wider`}
+                            >
+                              {badge}
+                            </span>
+                            <span className="font-mono text-grey-15 truncate">{label}</span>
+                            <span
+                              className={`inline-block text-[10px] px-1.5 py-0.5 rounded border ${
+                                r.status.toLowerCase() === 'completed'
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : r.status.toLowerCase() === 'failed' || r.status.toLowerCase() === 'cancelled'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                    : 'bg-slate-50 text-slate-700 border-slate-200'
+                              } font-mono uppercase tracking-wider`}
+                            >
+                              {r.status}
+                            </span>
+                            {audioIndicator && (
+                              <span className="text-[10px] text-brand-600">▶ audio</span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-grey-50 mt-0.5 font-mono">
+                            {secondary}
+                            <span className="ml-2 text-grey-35">{r.id.slice(0, 8)}…</span>
+                          </div>
                         </div>
-                        <div className="text-[11px] text-grey-50 mt-0.5 font-mono">
-                          {new Date(c.queuedAt).toLocaleString()}
-                          {c.durationSec != null && ` · ${c.durationSec}s`}
-                          <span className="ml-2 text-grey-35">{c.id.slice(0, 8)}…</span>
-                        </div>
-                      </div>
-                    </label>
-                  </li>
-                ))}
+                      </label>
+                    </li>
+                  )
+                })}
               </ul>
-              {hasMore && (
-                <button
-                  type="button"
-                  onClick={() => void load(nextCursor, false)}
-                  className="mt-3 w-full text-[12px] py-2 text-grey-50 hover:text-ink border border-surface-border rounded-[8px]"
-                >
-                  Load more
-                </button>
-              )}
             </div>
           )}
 
-          {error && calls.length > 0 && (
+          {error && unified.length > 0 && (
             <div className="mt-2 text-[12px] text-rose-700" role="alert">
               {error}
             </div>

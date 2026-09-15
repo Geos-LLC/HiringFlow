@@ -47,6 +47,30 @@ export interface ListCallsResult {
   }
 }
 
+export interface McSessionRow {
+  id: string
+  mode: string
+  status: string
+  participantName: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  elevenLabsConversationId: string | null
+  hasAudio: boolean
+  errorReason: string | null
+}
+
+export interface ListSessionsResult {
+  organizationId: string
+  organizationSlug: string
+  sessions: McSessionRow[]
+  pagination: {
+    nextCursor: string | null
+    hasMore: boolean
+    limit: number
+  }
+}
+
 export class McPartnerApiError extends Error {
   constructor(
     public readonly reason:
@@ -157,6 +181,35 @@ export async function listMcCalls(
     throw new McPartnerApiError('malformed_response', 'MC list-calls response missing calls[]')
   }
   return body as ListCallsResult
+}
+
+/**
+ * List MC SimulationSessions for an org. Cursor-paginated. Complements
+ * listMcCalls — sessions are browser-widget INVITE runs that don't
+ * have ExternalCall rows.
+ */
+export async function listMcSessions(
+  orgSlug: string,
+  opts: { cursor?: string | null; limit?: number; onlyWithAudio?: boolean; mode?: string } = {},
+): Promise<ListSessionsResult> {
+  const params = new URLSearchParams()
+  if (opts.cursor) params.set('cursor', opts.cursor)
+  if (opts.limit) params.set('limit', String(opts.limit))
+  if (opts.onlyWithAudio) params.set('onlyWithAudio', 'true')
+  if (opts.mode) params.set('mode', opts.mode)
+  const query = params.toString()
+  const path =
+    `/v1/partners/organizations/${encodeURIComponent(orgSlug)}/sessions` +
+    (query ? `?${query}` : '')
+  const body = await partnerFetch(path)
+  if (
+    !body ||
+    typeof body !== 'object' ||
+    !Array.isArray((body as { sessions?: unknown }).sessions)
+  ) {
+    throw new McPartnerApiError('malformed_response', 'MC list-sessions response missing sessions[]')
+  }
+  return body as ListSessionsResult
 }
 
 /**
