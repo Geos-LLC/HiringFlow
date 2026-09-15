@@ -425,7 +425,9 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
           candidateId={sessionId}
           onClose={() => setAttachModalOpen(false)}
           onAttached={() => {
-            setAttachModalOpen(false)
+            // Modal fires this on any success (full or partial). It calls
+            // onClose itself on full success; on partial it stays open so
+            // the user can retry the failed rows. Either way we refresh.
             void loadRows()
           }}
         />
