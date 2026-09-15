@@ -56,6 +56,13 @@ interface McSimulationRow {
 interface Props {
   sessionId: string
   candidateName: string | null
+  /**
+   * When true, skip the outer white card + border + margin so the panel
+   * body can be embedded inside another card. Used by VoiceEvaluationsPanel
+   * to render AI Customer Simulations under a shared header without a
+   * nested card.
+   */
+  chromeless?: boolean
 }
 
 const POLL_INTERVAL_MS = 10_000
@@ -76,7 +83,14 @@ function StatusPill({ status }: { status: McSimulationRow['status'] }) {
   )
 }
 
-export function McSimulationsPanel({ sessionId, candidateName }: Props) {
+export function McSimulationsPanel({ sessionId, candidateName, chromeless = false }: Props) {
+  const outerCls = chromeless
+    ? ''
+    : 'bg-white rounded-[12px] border border-surface-border p-6 mb-6'
+  const HeaderTag = chromeless ? 'h4' : 'h3'
+  const headerCls = chromeless
+    ? 'text-[13px] font-semibold text-grey-15'
+    : 'text-sm font-semibold text-grey-15'
   const [status, setStatus] = useState<McConnectionStatus | null>(null) // null = loading
   const [activeAiCustomerName, setActiveAiCustomerName] = useState<string | null>(null)
   const [rows, setRows] = useState<McSimulationRow[]>([])
@@ -236,10 +250,10 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
   if (!status.connected) {
     return (
       <>
-        <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+        <div className={outerCls}>
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1">
-              <h3 className="text-sm font-semibold text-grey-15">AI Customer Simulations</h3>
+              <HeaderTag className={headerCls}>AI Customer Simulations</HeaderTag>
               <p className="text-[12px] text-grey-50 mt-0.5">
                 Run AI-driven test calls with candidates. Connect MockCustomer to enable — free during beta, no
                 credit card required.
@@ -263,18 +277,18 @@ export function McSimulationsPanel({ sessionId, candidateName }: Props) {
   // CONNECTED state — historical rows + Run button.
   if (!rowsLoaded) {
     return (
-      <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
-        <h3 className="text-sm font-semibold text-grey-15">AI Customer Simulations</h3>
+      <div className={outerCls}>
+        <HeaderTag className={headerCls}>AI Customer Simulations</HeaderTag>
         <div className="text-[12px] text-grey-50 mt-2">Loading…</div>
       </div>
     )
   }
 
   return (
-    <div className="bg-white rounded-[12px] border border-surface-border p-6 mb-6">
+    <div className={outerCls}>
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1">
-          <h3 className="text-sm font-semibold text-grey-15">AI Customer Simulations</h3>
+          <HeaderTag className={headerCls}>AI Customer Simulations</HeaderTag>
           <p className="text-[12px] text-grey-50 mt-0.5">
             Recruiter-triggered voice simulation. MockCustomer places the call and returns an evaluation here.
           </p>

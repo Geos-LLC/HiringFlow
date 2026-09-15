@@ -28,8 +28,7 @@ import { CurrentActivityCard } from './_CurrentActivityCard'
 import { BackgroundCheckCard } from './_BackgroundCheckCard'
 import { CapturesPanel } from './_CapturesPanel'
 import CapturePlayback from '@/components/CapturePlayback'
-import { AICallsPanel } from './_AICallsPanel'
-import { McSimulationsPanel } from './_McSimulationsPanel'
+import { VoiceEvaluationsPanel } from './_VoiceEvaluationsPanel'
 import { DispositionReasonPicker } from '../_DispositionReasonPicker'
 import { SendMessageModal } from '../_SendMessageModal'
 import AutomationPreviewModal from '@/components/AutomationPreviewModal'
@@ -1559,17 +1558,12 @@ export default function CandidateDetailPage() {
           the Captures tab below; single network call. */}
       <CapturesPanel captures={captures} loading={capturesLoading} />
 
-      {/* AI training calls + evaluation. Lets the recruiter create a new AI
-          call link pre-bound to this candidate, map an unattached existing
-          one, and run the AI evaluation against the candidate's accumulated
-          transcripts (AI calls, self-intro captures, meetings). */}
-      <AICallsPanel sessionId={id} candidateName={candidate.candidateName} />
-
-      {/* MockCustomer integration (PR1B). Renders only when the workspace is
-          on the canary — self-hides when the launch endpoint 403s with
-          canary_disabled or mc_not_configured. Legacy AICall stack above is
-          intentionally untouched. */}
-      <McSimulationsPanel sessionId={id} candidateName={candidate.candidateName} />
+      {/* Voice Evaluations — unified card that hosts both AI Customer
+          Simulations (MC) and AI Training Calls & Evaluation (legacy HF).
+          Each sub-panel still owns its own fetching + actions; the wrapper
+          just provides a single card shell + header so recruiters don't
+          see "two boxes for the same job". */}
+      <VoiceEvaluationsPanel sessionId={id} candidateName={candidate.candidateName} />
 
       {/* Background check — Certn integration; self-hides gracefully if the
           workspace hasn't connected Certn yet (the order button just returns
